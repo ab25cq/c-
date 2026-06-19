@@ -51,6 +51,15 @@ grep 'free(item);' tests/new_operator.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/new_operator.out.c -o tests/new_operator.out
 ./tests/new_operator.out
 
+./cauto tests/owned_reassign.cauto.c > tests/owned_reassign.out.c
+grep 'void\* __owned_old' tests/owned_reassign.out.c >/dev/null
+grep 'owned = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
+grep 'holder.value = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
+grep 'if (__owned_old' tests/owned_reassign.out.c >/dev/null
+grep 'free(__owned_old' tests/owned_reassign.out.c >/dev/null
+cc -std=c99 -Wall -Wextra -pedantic tests/owned_reassign.out.c -o tests/owned_reassign.out
+./tests/owned_reassign.out
+
 ./cauto tests/method_calls.cauto.c > tests/method_calls.out.c
 grep 'struct data\* p = calloc(1, sizeof(struct data));' tests/method_calls.out.c >/dev/null
 grep 'data_show(&d);' tests/method_calls.out.c >/dev/null

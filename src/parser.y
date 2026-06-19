@@ -205,6 +205,7 @@ static struct Text *add_zero_initializer(struct Text *in);
 static struct Text *rewrite_new_expressions(struct Text *in);
 static struct Text *rewrite_method_calls(struct Text *in);
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type);
+static struct Text *prepend_owned_assignment_release(struct Text *stmt, const char *original, const char *lhs_expr, struct Type type);
 static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name);
 %}
 
@@ -497,6 +498,15 @@ static char *xstrdup(const char *s)
     len = strlen(s) + 1;
     p = xmalloc(len);
     memcpy(p, s, len);
+    return p;
+}
+
+static char *xstrndup(const char *s, size_t len)
+{
+    char *p = xmalloc(len + 1);
+
+    memcpy(p, s, len);
+    p[len] = '\0';
     return p;
 }
 
@@ -1171,6 +1181,20 @@ static int extract_lhs_name(const char *s, int eq, char *name)
     memcpy(name, p, (size_t)(end - p));
     name[end - p] = '\0';
     return 1;
+}
+
+static char *slice_lhs_expr(const char *s, int eq)
+{
+    const char *p = s;
+    const char *end = s + eq;
+
+    while (p < end && isspace((unsigned char)*p)) {
+        p++;
+    }
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    return xstrndup(p, (size_t)(end - p));
 }
 
 static struct Type lhs_type_before_eq(const char *s, int eq, char *name)
@@ -2511,11 +2535,22 @@ static void append_finalize_for_type(struct Text *out, const char *indent, const
 
 static void append_release_pointer(struct Text *out, const char *indent, const char *expr, struct Type type)
 {
-    append_finalize_for_type(out, indent, expr, type);
+    struct Text *inner = text_new();
+
     text_add(out, indent);
+    text_add(out, "if (");
+    text_add(out, expr);
+    text_add(out, " != NULL) {\n");
+    text_add(inner, indent);
+    text_add(inner, "    ");
+    append_finalize_for_type(out, inner->text, expr, type);
+    text_add(out, inner->text);
     text_add(out, "free(");
     text_add(out, expr);
-    text_add(out, ");");
+    text_add(out, ");\n");
+    text_add(out, indent);
+    text_add(out, "}\n");
+    text_free(inner);
 }
 
 static void append_struct_finalizer_definition(struct Text *out, struct StructFinalizer *fin)
@@ -2559,6 +2594,31 @@ static void append_free_after_statement(struct Text *stmt, const char *original,
     text_free(indent);
 }
 
+static struct Text *prepend_owned_assignment_release(struct Text *stmt, const char *original, const char *lhs_expr, struct Type type)
+{
+    struct Text *out = text_new();
+    struct Text *indent = text_new();
+    char tmp[NAME_MAX_LEN];
+
+    snprintf(tmp, sizeof(tmp), "__owned_old%d", g_right_value_id++);
+    append_indent_from(original, indent);
+    text_add(out, indent->text);
+    text_add(out, "void* ");
+    text_add(out, tmp);
+    text_add(out, " = ");
+    text_add(out, lhs_expr);
+    text_add(out, ";\n");
+    text_add(out, stmt->text);
+    text_add_ch(out, '\n');
+    append_release_pointer(out, indent->text, tmp, type);
+    text_add_ch(out, '\n');
+    out->tail_return = stmt->tail_return;
+    out->ast = stmt->ast;
+    text_free(indent);
+    text_free(stmt);
+    return out;
+}
+
 static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name)
 {
     struct Text *indent = text_new();
@@ -2572,6 +2632,7 @@ static void append_zero_clear_after_decl(struct Text *stmt, const char *original
     text_add(stmt, ", 0, sizeof(");
     text_add(stmt, name);
     text_add(stmt, "));");
+    text_add_ch(stmt, '\n');
     text_free(indent);
 }
 
@@ -2709,12 +2770,16 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     int post_free = 0;
     char post_free_name[NAME_MAX_LEN];
     struct Type post_free_type;
+    int owned_assign = 0;
+    struct Type owned_assign_type;
+    char *owned_assign_lhs = NULL;
 
     post_free_name[0] = '\0';
     owned_name[0] = '\0';
     func_name[0] = '\0';
     lhs_name[0] = '\0';
     post_free_type = type_unknown();
+    owned_assign_type = type_unknown();
     new_type = type_unknown();
     register_tags_in_text(all->text);
     if (!g_in_function) {
@@ -2815,8 +2880,15 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             exit(1);
         }
         check_assignment_type(lhs_name, lhs_type, rhs_type);
-        if (lhs->type.owned) {
+        if (lhs != NULL && lhs->type.owned) {
             owned_add(lhs_name, lhs->type);
+            owned_assign = 1;
+            owned_assign_type = lhs->type;
+            owned_assign_lhs = slice_lhs_expr(all->text, eq);
+        } else if (lhs_type.owned) {
+            owned_assign = 1;
+            owned_assign_type = lhs_type;
+            owned_assign_lhs = slice_lhs_expr(all->text, eq);
         } else {
             post_free = 1;
             strcpy(post_free_name, lhs_name);
@@ -2850,8 +2922,13 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             check_assignment_type(lhs_name, lhs_type, rhs_type);
             if (lhs != NULL && lhs->type.owned) {
                 strcpy(owned_name, lhs_name);
+                owned_assign = 1;
+                owned_assign_type = lhs->type;
+                owned_assign_lhs = slice_lhs_expr(all->text, eq);
             } else if (lhs_type.owned) {
-                owned_name[0] = '\0';
+                owned_assign = 1;
+                owned_assign_type = lhs_type;
+                owned_assign_lhs = slice_lhs_expr(all->text, eq);
             } else {
                 post_free = 1;
                 strcpy(post_free_name, lhs_name);
@@ -2885,6 +2962,11 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = rewrite_control_condition(all);
     all = rewrite_s_string_temporaries(all);
     all = rewrite_new_expressions(all);
+    if (owned_assign) {
+        all = prepend_owned_assignment_release(all, all->text, owned_assign_lhs, owned_assign_type);
+        free(owned_assign_lhs);
+        owned_assign_lhs = NULL;
+    }
     if (post_free) {
         append_free_after_statement(all, all->text, post_free_name, post_free_type);
     }
