@@ -51,6 +51,15 @@ grep 'free(item);' tests/new_operator.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/new_operator.out.c -o tests/new_operator.out
 ./tests/new_operator.out
 
+./cauto tests/clone.cauto.c > tests/clone.out.c
+grep 'Pair_clone(struct Pair\* self)' tests/clone.out.c >/dev/null
+grep 'left_copy =({' tests/clone.out.c >/dev/null
+grep 'right_copy =({' tests/clone.out.c >/dev/null
+grep 'q =({' tests/clone.out.c >/dev/null
+grep 'Pair_clone(' tests/clone.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/clone.out.c -o tests/clone.out
+./tests/clone.out
+
 ./cauto tests/owned_reassign.cauto.c > tests/owned_reassign.out.c
 grep 'void\* __owned_old' tests/owned_reassign.out.c >/dev/null
 grep 'owned = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null

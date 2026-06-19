@@ -69,6 +69,11 @@ struct StructFinalizers {
     int count;
 };
 
+struct StructClones {
+    struct StructFinalizer fin[MAX_FINALIZERS];
+    int count;
+};
+
 enum NodeKind {
     ND_NULL_EXPR,
     ND_BLOCK,
@@ -154,6 +159,7 @@ static struct Symbols g_globals;
 static struct Symbols g_locals;
 static struct Tags g_tags;
 static struct StructFinalizers g_struct_finalizers;
+static struct StructClones g_struct_clones;
 static struct Obj *g_objs;
 static struct VarScope *g_var_scope;
 static struct TagScope *g_tag_scope;
@@ -197,13 +203,19 @@ static int malloc_func_index(const char *name);
 static void append_indent_from(const char *s, struct Text *out);
 static int rhs_has_malloc_call(const char *rhs, char *func_name);
 static int rhs_has_new_expr(const char *rhs, struct Type *type);
+static int rhs_has_clone_expr(const char *rhs, struct Type *type);
 static struct Text *strip_attributes(struct Text *in);
 static struct Text *remove_percent(struct Text *in);
 static void check_owned_pointer_arithmetic(const char *stmt);
 static int struct_field_type(const char *tag, const char *field, struct Type *type);
+static struct StructFinalizer *struct_clone_find(const char *tag);
+static struct StructFinalizer *struct_clone_get(const char *tag);
 static struct Text *add_zero_initializer(struct Text *in);
 static struct Text *rewrite_new_expressions(struct Text *in);
+static struct Text *rewrite_clone_expressions(struct Text *in);
 static struct Text *rewrite_method_calls(struct Text *in);
+static void append_struct_clone_name(struct Text *out, const char *tag);
+static void append_struct_clone_definition(struct Text *out, struct StructFinalizer *clone);
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type);
 static struct Text *prepend_owned_assignment_release(struct Text *stmt, const char *original, const char *lhs_expr, struct Type type);
 static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name);
@@ -762,6 +774,24 @@ static void type_to_string(struct Type t, char *buf, size_t size)
     if (t.owned && off + 1 < size) {
         buf[off] = '%';
         buf[off + 1] = '\0';
+    }
+}
+
+static void append_c_type(struct Text *out, struct Type t)
+{
+    int i;
+
+    if (t.kind == TY_STRUCT || t.kind == TY_UNION || t.kind == TY_ENUM) {
+        text_add(out, type_kind_name(t.kind));
+        if (t.tag[0] != '\0') {
+            text_add(out, " ");
+            text_add(out, t.tag);
+        }
+    } else {
+        text_add(out, type_kind_name(t.kind));
+    }
+    for (i = 0; i < t.ptr; i++) {
+        text_add_ch(out, '*');
     }
 }
 
@@ -1334,15 +1364,41 @@ static struct Type expr_type(const char *s)
     if (is_ident_start((unsigned char)*p)) {
         const char *end = read_name(p, name);
         p = skip_ws(end);
+        sym = symbol_find(name);
+        if (sym != NULL) {
+            t = sym->type;
+            while (*p == '.' || (*p == '-' && p[1] == '>')) {
+                char field[NAME_MAX_LEN];
+                const char *field_end;
+
+                if (*p == '.') {
+                    p++;
+                } else {
+                    p += 2;
+                }
+                p = skip_ws(p);
+                if (!is_ident_start((unsigned char)*p)) {
+                    return type_unknown();
+                }
+                field_end = read_name(p, field);
+                if (t.kind != TY_STRUCT || !struct_field_type(t.tag, field, &t)) {
+                    return type_unknown();
+                }
+                p = skip_ws(field_end);
+            }
+            if (*p == '(') {
+                if (malloc_func_index(name) >= 0) {
+                    return g_malloc_funcs.ret[malloc_func_index(name)];
+                }
+                return type_unknown();
+            }
+            return t;
+        }
         if (*p == '(') {
             if (malloc_func_index(name) >= 0) {
                 return g_malloc_funcs.ret[malloc_func_index(name)];
             }
             return type_unknown();
-        }
-        sym = symbol_find(name);
-        if (sym != NULL) {
-            return sym->type;
         }
     }
     return type_unknown();
@@ -1431,8 +1487,12 @@ static int type_has_finalizer(struct Type type)
 static int struct_field_type(const char *tag, const char *field, struct Type *type)
 {
     struct StructFinalizer *fin = struct_finalizer_find(tag);
+    struct StructFinalizer *clone = struct_clone_find(tag);
     int i;
 
+    if (fin == NULL) {
+        fin = clone;
+    }
     if (fin == NULL) {
         return 0;
     }
@@ -1468,6 +1528,72 @@ static void struct_finalizer_add_field(const char *tag, const char *field, struc
     fin->count++;
 }
 
+static struct StructFinalizer *struct_clone_find(const char *tag)
+{
+    int i;
+
+    if (tag[0] == '\0') {
+        return NULL;
+    }
+    for (i = 0; i < g_struct_clones.count; i++) {
+        if (strcmp(g_struct_clones.fin[i].tag, tag) == 0) {
+            return &g_struct_clones.fin[i];
+        }
+    }
+    return NULL;
+}
+
+static struct StructFinalizer *struct_clone_get(const char *tag)
+{
+    struct StructFinalizer *clone = struct_clone_find(tag);
+
+    if (clone != NULL) {
+        return clone;
+    }
+    if (g_struct_clones.count >= MAX_FINALIZERS) {
+        die("too many struct clones");
+    }
+    clone = &g_struct_clones.fin[g_struct_clones.count++];
+    memset(clone, 0, sizeof(*clone));
+    strncpy(clone->tag, tag, NAME_MAX_LEN - 1);
+    clone->tag[NAME_MAX_LEN - 1] = '\0';
+    return clone;
+}
+
+static void struct_clone_add_field(const char *tag, const char *field, struct Type type)
+{
+    struct StructFinalizer *clone = struct_clone_get(tag);
+    int i;
+
+    if (field[0] == '\0') {
+        return;
+    }
+    for (i = 0; i < clone->count; i++) {
+        if (strcmp(clone->fields[i].name, field) == 0) {
+            clone->fields[i].type = type;
+            return;
+        }
+    }
+    if (clone->count >= MAX_FIELDS) {
+        die("too many fields in one struct clone");
+    }
+    strncpy(clone->fields[clone->count].name, field, NAME_MAX_LEN - 1);
+    clone->fields[clone->count].name[NAME_MAX_LEN - 1] = '\0';
+    clone->fields[clone->count].type = type;
+    clone->count++;
+}
+
+static int type_has_clone(struct Type type)
+{
+    struct StructFinalizer *clone;
+
+    if (type.kind != TY_STRUCT || type.tag[0] == '\0') {
+        return 0;
+    }
+    clone = struct_clone_find(type.tag);
+    return clone != NULL;
+}
+
 static void begin_function(void)
 {
     g_owned.count = 0;
@@ -1491,6 +1617,7 @@ static void begin_top_block(struct Text *head)
         strncpy(g_current_struct_tag, name, NAME_MAX_LEN - 1);
         g_current_struct_tag[NAME_MAX_LEN - 1] = '\0';
         struct_finalizer_get(name);
+        struct_clone_get(name);
     }
 }
 
@@ -1738,6 +1865,258 @@ static int rhs_has_new_expr(const char *rhs, struct Type *type)
 
     text_free(sizeof_type);
     return ok;
+}
+
+static const char *scan_clone_source_end(const char *s)
+{
+    const char *p = s;
+    int paren = 0;
+    int bracket = 0;
+    int brace = 0;
+
+    while (*p != '\0') {
+        if (*p == '"') {
+            p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '"') {
+                    p++;
+                    break;
+                }
+                p++;
+            }
+            continue;
+        }
+        if (*p == '\'') {
+            p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '\'') {
+                    p++;
+                    break;
+                }
+                p++;
+            }
+            continue;
+        }
+        if (*p == '(') {
+            paren++;
+        } else if (*p == ')') {
+            if (paren == 0 && bracket == 0 && brace == 0) {
+                break;
+            }
+            if (paren > 0) {
+                paren--;
+            }
+        } else if (*p == '[') {
+            bracket++;
+        } else if (*p == ']') {
+            if (paren == 0 && bracket == 0 && brace == 0) {
+                break;
+            }
+            if (bracket > 0) {
+                bracket--;
+            }
+        } else if (*p == '{') {
+            brace++;
+        } else if (*p == '}') {
+            if (paren == 0 && bracket == 0 && brace == 0) {
+                break;
+            }
+            if (brace > 0) {
+                brace--;
+            }
+        } else if (paren == 0 && bracket == 0 && brace == 0 && (*p == ';' || *p == ',')) {
+            break;
+        }
+        p++;
+    }
+    while (p > s && isspace((unsigned char)p[-1])) {
+        p--;
+    }
+    return p;
+}
+
+static struct Text *build_clone_expression(const char *source, struct Type source_type)
+{
+    struct Text *out = text_new();
+    char src_tmp[NAME_MAX_LEN];
+    char dst_tmp[NAME_MAX_LEN];
+    struct Type base = source_type;
+
+    snprintf(src_tmp, sizeof(src_tmp), "__right_value_src%d", g_right_value_id++);
+    if (source_type.ptr > 0) {
+        snprintf(dst_tmp, sizeof(dst_tmp), "__right_value%d", g_right_value_id++);
+        base.ptr--;
+        text_add(out, "({ ");
+        append_c_type(out, source_type);
+        text_add(out, " ");
+        text_add(out, src_tmp);
+        text_add(out, " = ");
+        text_add(out, source);
+        text_add(out, "; ");
+        append_c_type(out, source_type);
+        text_add(out, " ");
+        text_add(out, dst_tmp);
+        text_add(out, " = NULL; ");
+        text_add(out, "if (");
+        text_add(out, src_tmp);
+        text_add(out, " != NULL) { ");
+        text_add(out, dst_tmp);
+        text_add(out, " = calloc(1, sizeof(");
+        append_c_type(out, base);
+        text_add(out, ")); ");
+        text_add(out, "*");
+        text_add(out, dst_tmp);
+        text_add(out, " = ");
+        if (base.kind == TY_STRUCT) {
+            if (!type_has_clone(base)) {
+                text_free(out);
+                return NULL;
+            }
+            append_struct_clone_name(out, base.tag);
+            text_add(out, "(");
+            text_add(out, src_tmp);
+            text_add(out, "); ");
+        } else {
+            text_add(out, "*");
+            text_add(out, src_tmp);
+            text_add(out, "; ");
+        }
+        text_add(out, "} ");
+        text_add(out, dst_tmp);
+        text_add(out, "; })");
+    } else if (source_type.kind == TY_STRUCT) {
+        if (!type_has_clone(source_type)) {
+            text_free(out);
+            return NULL;
+        }
+        text_add(out, "({ ");
+        append_c_type(out, source_type);
+        text_add(out, " ");
+        text_add(out, src_tmp);
+        text_add(out, " = ");
+        text_add(out, source);
+        text_add(out, "; ");
+        append_struct_clone_name(out, source_type.tag);
+        text_add(out, "(&");
+        text_add(out, src_tmp);
+        text_add(out, "); })");
+    } else {
+        text_free(out);
+        return NULL;
+    }
+    return out;
+}
+
+static int parse_clone_expr(const char *rhs, const char **clone_start, const char **clone_end, struct Type *type, char *source_name)
+{
+    const char *p = skip_ws(rhs);
+    const char *src;
+    const char *end;
+    struct Type source_type;
+    char *tmp;
+
+    if (!starts_word(p, "clone")) {
+        return 0;
+    }
+    src = skip_ws(p + 5);
+    end = scan_clone_source_end(src);
+    if (end <= src) {
+        return 0;
+    }
+    tmp = xstrndup(src, (size_t)(end - src));
+    source_type = expr_type(tmp);
+    free(tmp);
+    if (source_type.kind == TY_UNKNOWN) {
+        return 0;
+    }
+    if (source_type.ptr == 0 && source_type.kind != TY_STRUCT) {
+        return 0;
+    }
+    if (source_type.kind == TY_STRUCT && !type_has_clone(source_type)) {
+        return 0;
+    }
+    if (source_type.ptr > 0 && source_type.kind == TY_STRUCT) {
+        struct Type base = source_type;
+        base.ptr--;
+        if (!type_has_clone(base)) {
+            return 0;
+        }
+    }
+    if (source_name != NULL) {
+        source_name[0] = '\0';
+    }
+    if (type != NULL) {
+        *type = source_type;
+        if (source_type.ptr > 0) {
+            type->owned = 1;
+            if (source_type.kind != TY_STRUCT) {
+                type->owned = 1;
+            }
+        }
+    }
+    if (clone_start != NULL) {
+        *clone_start = p;
+    }
+    if (clone_end != NULL) {
+        *clone_end = end;
+    }
+    return 1;
+}
+
+static int rhs_has_clone_expr(const char *rhs, struct Type *type)
+{
+    return parse_clone_expr(rhs, NULL, NULL, type, NULL);
+}
+
+static struct Text *rewrite_clone_expressions(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        const char *clone_start;
+        const char *clone_end;
+        struct Text *replacement = NULL;
+        struct Type type;
+
+        if ((p == in->text || !is_ident((unsigned char)p[-1])) &&
+            parse_clone_expr(p, &clone_start, &clone_end, &type, NULL)) {
+            char *source;
+            struct Text *built;
+
+            source = xstrndup(skip_ws(clone_start + 5), (size_t)(clone_end - skip_ws(clone_start + 5)));
+            built = build_clone_expression(source, type);
+            free(source);
+            if (built != NULL) {
+                text_add(out, built->text);
+                text_free(built);
+                p = clone_end;
+                changed = 1;
+                continue;
+            }
+        }
+        text_free(replacement);
+        text_add_ch(out, *p);
+        p++;
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    text_free(in);
+    return out;
 }
 
 static struct Text *rewrite_new_expressions(struct Text *in)
@@ -2516,6 +2895,12 @@ static void append_struct_finalizer_name(struct Text *out, const char *tag)
     text_add(out, "_finalize");
 }
 
+static void append_struct_clone_name(struct Text *out, const char *tag)
+{
+    text_add(out, tag);
+    text_add(out, "_clone");
+}
+
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type)
 {
     if (!type_has_finalizer(type)) {
@@ -2582,6 +2967,91 @@ static void append_struct_finalizer_definition(struct Text *out, struct StructFi
         }
         text_free(expr);
     }
+    text_add(out, "}\n");
+}
+
+static void append_struct_clone_field(struct Text *out, struct Type type, const char *field_name, int index)
+{
+    struct Text *expr = text_new();
+
+    text_add(expr, "self->");
+    text_add(expr, field_name);
+    if (type.kind == TY_STRUCT && type.ptr == 0) {
+        text_add(out, "    copy.");
+        text_add(out, field_name);
+        text_add(out, " = ");
+        append_struct_clone_name(out, type.tag);
+        text_add(out, "(&");
+        text_add(out, expr->text);
+        text_add(out, ");\n");
+    } else if (type.ptr > 0 && type.owned) {
+        struct Type base = type;
+
+        base.ptr--;
+        text_add(out, "    if (");
+        text_add(out, expr->text);
+        text_add(out, " != NULL) {\n");
+        text_add(out, "        copy.");
+        text_add(out, field_name);
+        text_add(out, " = calloc(1, sizeof(");
+        append_c_type(out, base);
+        text_add(out, "));\n");
+        text_add(out, "        ");
+        text_add(out, "*copy.");
+        text_add(out, field_name);
+        text_add(out, " = ");
+        if (base.kind == TY_STRUCT) {
+            append_struct_clone_name(out, base.tag);
+            text_add(out, "(");
+            text_add(out, expr->text);
+            text_add(out, ");\n");
+        } else {
+            text_add(out, "*");
+            text_add(out, expr->text);
+            text_add(out, ";\n");
+        }
+        text_add(out, "    }\n");
+    } else if (type.kind == TY_STRUCT && type.ptr > 0) {
+        text_add(out, "    copy.");
+        text_add(out, field_name);
+        text_add(out, " = ");
+        text_add(out, expr->text);
+        text_add(out, ";\n");
+    } else {
+        text_add(out, "    copy.");
+        text_add(out, field_name);
+        text_add(out, " = ");
+        text_add(out, expr->text);
+        text_add(out, ";\n");
+    }
+    (void)index;
+    text_free(expr);
+}
+
+static void append_struct_clone_definition(struct Text *out, struct StructFinalizer *clone)
+{
+    int i;
+
+    if (clone == NULL) {
+        return;
+    }
+    text_add(out, "\n\nstatic __attribute__((unused)) struct ");
+    text_add(out, clone->tag);
+    text_add(out, " ");
+    append_struct_clone_name(out, clone->tag);
+    text_add(out, "(struct ");
+    text_add(out, clone->tag);
+    text_add(out, "* self)\n{\n");
+    text_add(out, "    struct ");
+    text_add(out, clone->tag);
+    text_add(out, " copy = {0};\n");
+    text_add(out, "    if (self == NULL) {\n");
+    text_add(out, "        return copy;\n");
+    text_add(out, "    }\n");
+    for (i = 0; i < clone->count; i++) {
+        append_struct_clone_field(out, clone->fields[i].type, clone->fields[i].name, i);
+    }
+    text_add(out, "    return copy;\n");
     text_add(out, "}\n");
 }
 
@@ -2785,8 +3255,11 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     if (!g_in_function) {
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0' &&
             parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' &&
-            (decl.type.owned || type_has_finalizer(decl.type))) {
+            decl.type.ptr >= 0) {
+            struct_clone_add_field(g_current_struct_tag, decl.name, decl.type);
+            if (decl.type.owned || type_has_finalizer(decl.type)) {
             struct_finalizer_add_field(g_current_struct_tag, decl.name, decl.type);
+            }
         }
         all->tail_return = 0;
         all->ast = ast_raw(ND_RAW, all->text);
@@ -2824,6 +3297,22 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 out->ast = ast_raw(ND_S_STRING, out->text);
                 text_free(all);
                 return out;
+            } else if (rhs_has_clone_expr(decl.init, &new_type)) {
+                rhs_type = new_type;
+                if (new_type.ptr > 0) {
+                    if (decl.type.ptr <= 0) {
+                        fprintf(stderr, "cauto: type error: clone result requires a pointer %% declaration for '%s'\n", decl.name);
+                        text_free(all);
+                        exit(1);
+                    }
+                    if (decl.type.owned) {
+                        owned_add(decl.name, decl.type);
+                    } else {
+                        post_free = 1;
+                        strcpy(post_free_name, decl.name);
+                        post_free_type = decl.type;
+                    }
+                }
             } else if (rhs_has_malloc_call(decl.init, func_name) || rhs_has_new_expr(decl.init, &new_type)) {
                 if (decl.type.ptr <= 0) {
                     if (func_name[0] != '\0') {
@@ -2854,6 +3343,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all = rewrite_method_calls(all);
         all = rewrite_control_condition(all);
         all = rewrite_s_string_temporaries(all);
+        all = rewrite_clone_expressions(all);
         all = rewrite_new_expressions(all);
         if (!decl.has_init) {
             all = add_zero_initializer(all);
@@ -2900,6 +3390,50 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         }
         all->ast = ast_raw(ND_S_STRING, all->text);
         return all;
+    } else if (eq >= 0 && rhs_has_clone_expr(all->text + eq + 1, &new_type)) {
+        rhs_type = new_type;
+        if (extract_owned_decl_name(all->text, owned_name)) {
+            lhs = symbol_find(owned_name);
+            if (lhs != NULL && lhs->type.ptr <= 0) {
+                fprintf(stderr, "cauto: type error: clone result requires a pointer %% declaration for '%s'\n", owned_name);
+                text_free(all);
+                exit(1);
+            }
+            lhs_type = lhs != NULL ? lhs->type : type_unknown();
+        } else if (extract_lhs_name(all->text, eq, lhs_name)) {
+            lhs = symbol_find(lhs_name);
+            lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
+            if (new_type.ptr > 0 && (!type_is_known(lhs_type) || lhs_type.ptr <= 0)) {
+                fprintf(stderr, "cauto: type error: clone result requires a pointer lvalue for '%s'\n", lhs_name);
+                text_free(all);
+                exit(1);
+            }
+            check_assignment_type(lhs_name, lhs_type, rhs_type);
+            if (new_type.ptr > 0) {
+                if (lhs != NULL && lhs->type.owned) {
+                    strcpy(owned_name, lhs_name);
+                    owned_assign = 1;
+                    owned_assign_type = lhs->type;
+                    owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                } else if (lhs_type.owned) {
+                    owned_assign = 1;
+                    owned_assign_type = lhs_type;
+                    owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                } else {
+                    post_free = 1;
+                    strcpy(post_free_name, lhs_name);
+                    post_free_type = lhs_type;
+                    owned_name[0] = '\0';
+                }
+            }
+        } else {
+            fprintf(stderr, "cauto: result of clone must be assigned to a matching declaration\n");
+            text_free(all);
+            exit(1);
+        }
+        if (owned_name[0] != '\0') {
+            owned_add(owned_name, lhs != NULL ? lhs->type : lhs_type);
+        }
     } else if (eq >= 0 && (rhs_has_malloc_call(all->text + eq + 1, func_name) ||
                            rhs_has_new_expr(all->text + eq + 1, &new_type))) {
         if (extract_owned_decl_name(all->text, owned_name)) {
@@ -2959,6 +3493,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all->ast = ast_raw(eq >= 0 ? ND_ASSIGN : ND_EXPR_STMT, all->text);
     all = remove_percent(strip_attributes(all));
     all = rewrite_method_calls(all);
+    all = rewrite_clone_expressions(all);
     all = rewrite_control_condition(all);
     all = rewrite_s_string_temporaries(all);
     all = rewrite_new_expressions(all);
@@ -3016,12 +3551,16 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
 
     if (!g_top_block_is_function) {
         struct StructFinalizer *fin = struct_finalizer_find(g_current_struct_tag);
+        struct StructFinalizer *clone = struct_clone_find(g_current_struct_tag);
         register_tags_in_text(head->text);
         out = text_join3(head, lb, body);
         out = text_join(out, rb);
-        if (g_in_aggregate_struct && fin != NULL && fin->count > 0) {
+        if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0') {
             text_add(out, ";");
-            append_struct_finalizer_definition(out, fin);
+            if (fin != NULL && fin->count > 0) {
+                append_struct_finalizer_definition(out, fin);
+            }
+            append_struct_clone_definition(out, clone);
             g_skip_next_semi = 1;
         }
         out->ast = ast_block(body_ast);
