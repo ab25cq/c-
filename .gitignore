@@ -1,0 +1,13 @@
+cauto
+src/parser.c
+src/parser.h
+src/lexer.c
+tests/*.out
+tests/*.out.c
+tests/*.out.o
+tests/*.err
+*.o
+/a.out
+/a.c
+/b.c
+/z.c

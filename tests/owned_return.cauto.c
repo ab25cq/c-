@@ -1,0 +1,18 @@
+#include <stdlib.h>
+
+struct Pair {
+    int x;
+};
+
+struct Pair*% make_pair(void);
+
+struct Pair*% make_pair(void)
+{
+    return malloc(sizeof(struct Pair));
+}
+
+int main(void)
+{
+    struct Pair* p = make_pair();
+    return 0;
+}
