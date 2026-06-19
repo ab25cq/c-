@@ -2,6 +2,6 @@
 
 void fill(void)
 {
-    int*% a = malloc(sizeof(int));
+    int*% a = new int;
     *a = 456;
 }

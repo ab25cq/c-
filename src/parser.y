@@ -12,6 +12,8 @@ extern int yylineno;
 #define MAX_FUNCS 128
 #define MAX_SYMBOLS 256
 #define MAX_TAGS 128
+#define MAX_FINALIZERS 128
+#define MAX_FIELDS 64
 
 struct Text {
     char *text;
@@ -19,11 +21,6 @@ struct Text {
     size_t cap;
     int tail_return;
     struct Node *ast;
-};
-
-struct Owned {
-    char name[MAX_OWNED][NAME_MAX_LEN];
-    int count;
 };
 
 enum TypeKind {
@@ -48,6 +45,28 @@ struct Type {
     int size;
     int align;
     char tag[NAME_MAX_LEN];
+};
+
+struct Owned {
+    char name[MAX_OWNED][NAME_MAX_LEN];
+    struct Type type[MAX_OWNED];
+    int count;
+};
+
+struct OwnedField {
+    char name[NAME_MAX_LEN];
+    struct Type type;
+};
+
+struct StructFinalizer {
+    char tag[NAME_MAX_LEN];
+    struct OwnedField fields[MAX_FIELDS];
+    int count;
+};
+
+struct StructFinalizers {
+    struct StructFinalizer fin[MAX_FINALIZERS];
+    int count;
 };
 
 enum NodeKind {
@@ -129,16 +148,22 @@ struct Tags {
 
 static struct Text *g_output;
 static struct Owned g_owned;
+static struct Owned g_finalized_locals;
 static struct Funcs g_malloc_funcs;
 static struct Symbols g_globals;
 static struct Symbols g_locals;
 static struct Tags g_tags;
+static struct StructFinalizers g_struct_finalizers;
 static struct Obj *g_objs;
 static struct VarScope *g_var_scope;
 static struct TagScope *g_tag_scope;
 static int g_in_function;
 static int g_top_block_is_function;
+static int g_in_aggregate_struct;
+static int g_skip_next_semi;
+static char g_current_struct_tag[NAME_MAX_LEN];
 static int g_right_value_id;
+static int g_need_string_h;
 
 int yylex(void);
 static void yyerror(const char *msg);
@@ -161,6 +186,7 @@ static struct Type *type_copy(struct Type type);
 static struct Obj *obj_new(const char *name, struct Type type, int is_local, int is_function);
 static void begin_function(void);
 static void begin_top_block(struct Text *head);
+static struct Text *process_standalone_semi(struct Text *semi);
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
 static struct Text *process_statement(struct Text *stmt, struct Text *semi);
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi);
@@ -168,12 +194,18 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi);
 static struct Text *process_control_head(struct Text *head);
 static int find_assignment(const char *s);
 static int malloc_func_index(const char *name);
-static void extract_decl_name(const char *s, char *name);
 static void append_indent_from(const char *s, struct Text *out);
 static int rhs_has_malloc_call(const char *rhs, char *func_name);
+static int rhs_has_new_expr(const char *rhs, struct Type *type);
 static struct Text *strip_attributes(struct Text *in);
 static struct Text *remove_percent(struct Text *in);
 static void check_owned_pointer_arithmetic(const char *stmt);
+static int struct_field_type(const char *tag, const char *field, struct Type *type);
+static struct Text *add_zero_initializer(struct Text *in);
+static struct Text *rewrite_new_expressions(struct Text *in);
+static struct Text *rewrite_method_calls(struct Text *in);
+static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type);
+static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name);
 %}
 
 %code requires {
@@ -206,7 +238,7 @@ external_item
     : PP_LINE
         { $$ = $1; }
     | SEMI
-        { $$ = $1; }
+        { $$ = process_standalone_semi($1); }
     | top_seq SEMI
         { $$ = process_external_decl($1, $2); }
     | top_seq LBRACE
@@ -1162,6 +1194,51 @@ static struct Type lhs_type_before_eq(const char *s, int eq, char *name)
     if (!extract_lhs_name(s, eq, name)) {
         return type_unknown();
     }
+    {
+        const char *field_start = s + eq;
+        const char *q;
+        const char *op;
+        const char *owner_end;
+        const char *owner_start;
+        char owner[NAME_MAX_LEN];
+        struct Type field_type;
+
+        while (field_start > s && isspace((unsigned char)field_start[-1])) {
+            field_start--;
+        }
+        while (field_start > s && is_ident((unsigned char)field_start[-1])) {
+            field_start--;
+        }
+        q = field_start;
+        while (q > s && isspace((unsigned char)q[-1])) {
+            q--;
+        }
+        op = NULL;
+        if (q > s && q[-1] == '.') {
+            op = q - 1;
+        } else if (q > s + 1 && q[-1] == '>' && q[-2] == '-') {
+            op = q - 2;
+        }
+        if (op != NULL) {
+            owner_end = op;
+            while (owner_end > s && isspace((unsigned char)owner_end[-1])) {
+                owner_end--;
+            }
+            owner_start = owner_end;
+            while (owner_start > s && is_ident((unsigned char)owner_start[-1])) {
+                owner_start--;
+            }
+            if (owner_start < owner_end && (size_t)(owner_end - owner_start) < NAME_MAX_LEN) {
+                memcpy(owner, owner_start, (size_t)(owner_end - owner_start));
+                owner[owner_end - owner_start] = '\0';
+                sym = symbol_find(owner);
+                if (sym != NULL && sym->type.kind == TY_STRUCT &&
+                    struct_field_type(sym->type.tag, name, &field_type)) {
+                    return field_type;
+                }
+            }
+        }
+    }
     sym = symbol_find(name);
     if (sym == NULL) {
         return type_unknown();
@@ -1192,6 +1269,9 @@ static struct Type expr_type(const char *s)
             t.owned = 1;
             return t;
         }
+    }
+    if (rhs_has_new_expr(p, &t)) {
+        return t;
     }
     if (*p == '"') {
         return type_make(TY_CHAR, 1, NULL);
@@ -1257,9 +1337,117 @@ static int looks_like_aggregate_head(const char *s)
     return starts_word(p, "struct") || starts_word(p, "union") || starts_word(p, "enum");
 }
 
+static int parse_struct_head(const char *s, char *tag)
+{
+    const char *p = skip_ws(s);
+    char word[NAME_MAX_LEN];
+
+    tag[0] = '\0';
+    while (is_ident_start((unsigned char)*p)) {
+        const char *next = read_name(p, word);
+        if (!skip_decl_word(word)) {
+            break;
+        }
+        p = skip_ws(next);
+    }
+    if (!starts_word(p, "struct")) {
+        return 0;
+    }
+    p = skip_ws(p + 6);
+    if (!is_ident_start((unsigned char)*p)) {
+        return 0;
+    }
+    read_name(p, tag);
+    return tag[0] != '\0';
+}
+
+static struct StructFinalizer *struct_finalizer_find(const char *tag)
+{
+    int i;
+
+    if (tag[0] == '\0') {
+        return NULL;
+    }
+    for (i = 0; i < g_struct_finalizers.count; i++) {
+        if (strcmp(g_struct_finalizers.fin[i].tag, tag) == 0) {
+            return &g_struct_finalizers.fin[i];
+        }
+    }
+    return NULL;
+}
+
+static struct StructFinalizer *struct_finalizer_get(const char *tag)
+{
+    struct StructFinalizer *fin = struct_finalizer_find(tag);
+
+    if (fin != NULL) {
+        return fin;
+    }
+    if (g_struct_finalizers.count >= MAX_FINALIZERS) {
+        die("too many struct finalizers");
+    }
+    fin = &g_struct_finalizers.fin[g_struct_finalizers.count++];
+    memset(fin, 0, sizeof(*fin));
+    strncpy(fin->tag, tag, NAME_MAX_LEN - 1);
+    fin->tag[NAME_MAX_LEN - 1] = '\0';
+    return fin;
+}
+
+static int type_has_finalizer(struct Type type)
+{
+    struct StructFinalizer *fin;
+
+    if (type.kind != TY_STRUCT || type.tag[0] == '\0') {
+        return 0;
+    }
+    fin = struct_finalizer_find(type.tag);
+    return fin != NULL && fin->count > 0;
+}
+
+static int struct_field_type(const char *tag, const char *field, struct Type *type)
+{
+    struct StructFinalizer *fin = struct_finalizer_find(tag);
+    int i;
+
+    if (fin == NULL) {
+        return 0;
+    }
+    for (i = 0; i < fin->count; i++) {
+        if (strcmp(fin->fields[i].name, field) == 0) {
+            *type = fin->fields[i].type;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void struct_finalizer_add_field(const char *tag, const char *field, struct Type type)
+{
+    struct StructFinalizer *fin = struct_finalizer_get(tag);
+    int i;
+
+    if (field[0] == '\0') {
+        return;
+    }
+    for (i = 0; i < fin->count; i++) {
+        if (strcmp(fin->fields[i].name, field) == 0) {
+            fin->fields[i].type = type;
+            return;
+        }
+    }
+    if (fin->count >= MAX_FIELDS) {
+        die("too many owned fields in one struct");
+    }
+    strncpy(fin->fields[fin->count].name, field, NAME_MAX_LEN - 1);
+    fin->fields[fin->count].name[NAME_MAX_LEN - 1] = '\0';
+    fin->fields[fin->count].type = type;
+    fin->count++;
+}
+
 static void begin_function(void)
 {
     g_owned.count = 0;
+    g_finalized_locals.count = 0;
     g_locals.count = 0;
     g_in_function = 1;
 }
@@ -1270,33 +1458,62 @@ static void begin_top_block(struct Text *head)
     struct Type ret;
     register_tags_in_text(head->text);
     g_top_block_is_function = parse_function_signature(head->text, name, &ret) || !looks_like_aggregate_head(head->text);
+    g_in_aggregate_struct = 0;
+    g_current_struct_tag[0] = '\0';
     if (g_top_block_is_function) {
         begin_function();
+    } else if (parse_struct_head(head->text, name)) {
+        g_in_aggregate_struct = 1;
+        strncpy(g_current_struct_tag, name, NAME_MAX_LEN - 1);
+        g_current_struct_tag[NAME_MAX_LEN - 1] = '\0';
+        struct_finalizer_get(name);
     }
 }
 
-static int owned_index(const char *name)
+static struct Text *process_standalone_semi(struct Text *semi)
+{
+    if (g_skip_next_semi) {
+        struct Text *out = text_new();
+        g_skip_next_semi = 0;
+        text_free(semi);
+        return out;
+    }
+    return semi;
+}
+
+static int owned_index_in(struct Owned *owned, const char *name)
 {
     int i;
-    for (i = 0; i < g_owned.count; i++) {
-        if (strcmp(g_owned.name[i], name) == 0) {
+    for (i = 0; i < owned->count; i++) {
+        if (strcmp(owned->name[i], name) == 0) {
             return i;
         }
     }
     return -1;
 }
 
-static void owned_add(const char *name)
+static void owned_add_to(struct Owned *owned, const char *name, struct Type type)
 {
-    if (name[0] == '\0' || owned_index(name) >= 0) {
+    if (name[0] == '\0' || owned_index_in(owned, name) >= 0) {
         return;
     }
-    if (g_owned.count >= MAX_OWNED) {
+    if (owned->count >= MAX_OWNED) {
         die("too many owned variables in one function");
     }
-    strncpy(g_owned.name[g_owned.count], name, NAME_MAX_LEN - 1);
-    g_owned.name[g_owned.count][NAME_MAX_LEN - 1] = '\0';
-    g_owned.count++;
+    strncpy(owned->name[owned->count], name, NAME_MAX_LEN - 1);
+    owned->name[owned->count][NAME_MAX_LEN - 1] = '\0';
+    owned->type[owned->count] = type;
+    owned->count++;
+}
+
+static void owned_add(const char *name, struct Type type)
+{
+    owned_add_to(&g_owned, name, type);
+}
+
+static void finalized_local_add(const char *name, struct Type type)
+{
+    owned_add_to(&g_finalized_locals, name, type);
 }
 
 static int malloc_func_index(const char *name)
@@ -1329,13 +1546,6 @@ static void owned_func_add_type(const char *name, struct Type ret)
     g_malloc_funcs.count++;
 }
 
-static void malloc_func_add(const char *name)
-{
-    struct Type ret = type_make(TY_VOID, 1, NULL);
-    ret.owned = 1;
-    owned_func_add_type(name, ret);
-}
-
 static int text_has_word(const char *s, const char *word)
 {
     size_t n = strlen(word);
@@ -1349,73 +1559,21 @@ static int text_has_word(const char *s, const char *word)
     return 0;
 }
 
-static int contains_malloc_attribute(const char *s)
-{
-    const char *attr = strstr(s, "__attribute__");
-    if (attr == NULL) {
-        return 0;
-    }
-    return strstr(attr, "malloc") != NULL || strstr(attr, "__malloc__") != NULL;
-}
-
 static void register_owned_function_signature(const char *s)
 {
     char name[NAME_MAX_LEN];
     struct Type ret;
-    int has_attr = contains_malloc_attribute(s);
 
     if (!parse_function_signature(s, name, &ret)) {
-        if (has_attr) {
-            extract_decl_name(s, name);
-            malloc_func_add(name);
-        }
         return;
     }
-    if (ret.owned || has_attr) {
+    if (ret.owned) {
         if (ret.ptr <= 0) {
             ret = type_make(TY_VOID, 1, NULL);
         }
         ret.owned = 1;
         owned_func_add_type(name, ret);
     }
-}
-
-static void extract_decl_name(const char *s, char *name)
-{
-    const char *attr = strstr(s, "__attribute__");
-    const char *p;
-    const char *open = NULL;
-    const char *end;
-    const char *start;
-
-    name[0] = '\0';
-    if (attr == NULL) {
-        attr = s + strlen(s);
-    }
-    for (p = s; p < attr; p++) {
-        if (*p == '(') {
-            open = p;
-        }
-    }
-    if (open == NULL) {
-        return;
-    }
-    end = open;
-    while (end > s && isspace((unsigned char)end[-1])) {
-        end--;
-    }
-    start = end;
-    while (start > s && is_ident((unsigned char)start[-1])) {
-        start--;
-    }
-    if (start == end || !is_ident_start((unsigned char)*start)) {
-        return;
-    }
-    if ((size_t)(end - start) >= NAME_MAX_LEN) {
-        return;
-    }
-    memcpy(name, start, (size_t)(end - start));
-    name[end - start] = '\0';
 }
 
 static struct Text *strip_attributes(struct Text *in)
@@ -1501,6 +1659,97 @@ static int rhs_has_malloc_call(const char *rhs, char *func_name)
     }
     func_name[0] = '\0';
     return 0;
+}
+
+static int parse_new_expr(const char *rhs, const char **new_start, const char **new_end,
+                          struct Type *type, struct Text *sizeof_type)
+{
+    const char *p = skip_ws(rhs);
+    const char *type_start;
+    const char *base_end;
+    const char *end;
+    struct Type base;
+    int ptr = 0;
+
+    if (!starts_word(p, "new")) {
+        return 0;
+    }
+    type_start = skip_ws(p + 3);
+    if (!parse_base_type_prefix(type_start, &base_end, &base)) {
+        return 0;
+    }
+    end = base_end;
+    while (isspace((unsigned char)*end)) {
+        end++;
+    }
+    while (*end == '*') {
+        ptr++;
+        end++;
+        while (isspace((unsigned char)*end)) {
+            end++;
+        }
+    }
+    *type = base;
+    type->ptr += ptr + 1;
+    type->owned = 1;
+
+    while (end > type_start && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    text_add_n(sizeof_type, type_start, (size_t)(end - type_start));
+
+    if (new_start != NULL) {
+        *new_start = p;
+    }
+    if (new_end != NULL) {
+        *new_end = end;
+    }
+    return 1;
+}
+
+static int rhs_has_new_expr(const char *rhs, struct Type *type)
+{
+    struct Text *sizeof_type = text_new();
+    int ok = parse_new_expr(rhs, NULL, NULL, type, sizeof_type);
+
+    text_free(sizeof_type);
+    return ok;
+}
+
+static struct Text *rewrite_new_expressions(struct Text *in)
+{
+    const char *new_start;
+    const char *new_end;
+    const char *p;
+    struct Type type;
+    struct Text *sizeof_type = text_new();
+    struct Text *out;
+
+    new_start = NULL;
+    new_end = NULL;
+    for (p = in->text; *p != '\0'; p++) {
+        if ((p == in->text || !is_ident((unsigned char)p[-1])) && starts_word(p, "new") &&
+            parse_new_expr(p, &new_start, &new_end, &type, sizeof_type)) {
+            break;
+        }
+    }
+    if (new_start == NULL) {
+        text_free(sizeof_type);
+        return in;
+    }
+
+    out = text_new();
+    text_add_n(out, in->text, (size_t)(new_start - in->text));
+    text_add(out, "calloc(1, sizeof(");
+    text_add(out, sizeof_type->text);
+    text_add(out, "))");
+    text_add(out, new_end);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+
+    text_free(sizeof_type);
+    text_free(in);
+    return out;
 }
 
 static const char *find_s_string_literal(const char *rhs)
@@ -1876,6 +2125,160 @@ static const char *matching_paren(const char *open)
     return NULL;
 }
 
+static const char *scan_string_end(const char *quote)
+{
+    const char *p = quote + 1;
+
+    while (*p != '\0') {
+        if (*p == '\\' && p[1] != '\0') {
+            p += 2;
+            continue;
+        }
+        if (*p == '"') {
+            return p + 1;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static int try_rewrite_string_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *receiver_end;
+    const char *dot;
+    const char *method_start;
+    const char *method_end;
+    const char *open;
+    const char *close;
+    char method[NAME_MAX_LEN];
+
+    if (*s != '"') {
+        return 0;
+    }
+    receiver_end = scan_string_end(s);
+    if (receiver_end == NULL) {
+        return 0;
+    }
+    dot = skip_ws(receiver_end);
+    if (*dot != '.') {
+        return 0;
+    }
+    method_start = skip_ws(dot + 1);
+    if (!is_ident_start((unsigned char)*method_start)) {
+        return 0;
+    }
+    method_end = read_name(method_start, method);
+    open = skip_ws(method_end);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+
+    text_add(replacement, method);
+    text_add_ch(replacement, '(');
+    text_add_n(replacement, s, (size_t)(receiver_end - s));
+    if (close > open + 1) {
+        text_add(replacement, ", ");
+        text_add_n(replacement, open + 1, (size_t)(close - open - 1));
+    }
+    text_add_ch(replacement, ')');
+    *end = close + 1;
+    return 1;
+}
+
+static int try_rewrite_struct_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *name_end;
+    const char *dot;
+    const char *method_start;
+    const char *method_end;
+    const char *open;
+    const char *close;
+    char obj[NAME_MAX_LEN];
+    char method[NAME_MAX_LEN];
+    struct Symbol *sym;
+
+    if (!is_ident_start((unsigned char)*s)) {
+        return 0;
+    }
+    name_end = read_name(s, obj);
+    sym = symbol_find(obj);
+    if (sym == NULL || sym->type.kind != TY_STRUCT) {
+        return 0;
+    }
+    dot = skip_ws(name_end);
+    if (*dot != '.') {
+        return 0;
+    }
+    method_start = skip_ws(dot + 1);
+    if (!is_ident_start((unsigned char)*method_start)) {
+        return 0;
+    }
+    method_end = read_name(method_start, method);
+    open = skip_ws(method_end);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+
+    text_add(replacement, sym->type.tag);
+    text_add_ch(replacement, '_');
+    text_add(replacement, method);
+    text_add_ch(replacement, '(');
+    if (sym->type.ptr > 0) {
+        text_add(replacement, obj);
+    } else {
+        text_add_ch(replacement, '&');
+        text_add(replacement, obj);
+    }
+    if (close > open + 1) {
+        text_add(replacement, ", ");
+        text_add_n(replacement, open + 1, (size_t)(close - open - 1));
+    }
+    text_add_ch(replacement, ')');
+    *end = close + 1;
+    return 1;
+}
+
+static struct Text *rewrite_method_calls(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        const char *end = NULL;
+        struct Text *replacement = text_new();
+
+        if (try_rewrite_string_method(p, &end, replacement) ||
+            try_rewrite_struct_method(p, &end, replacement)) {
+            text_add(out, replacement->text);
+            p = end;
+            changed = 1;
+            text_free(replacement);
+            continue;
+        }
+        text_free(replacement);
+        text_add_ch(out, *p);
+        p++;
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    text_free(in);
+    return out;
+}
+
 static struct Text *build_condition_expr(const char *expr, size_t len)
 {
     const char *cursor;
@@ -1984,6 +2387,7 @@ static struct Text *process_control_head(struct Text *head)
         kind = ND_DO;
     }
     check_owned_pointer_arithmetic(head->text);
+    head = rewrite_method_calls(head);
     head = rewrite_control_condition(head);
     head->ast = ast_raw(kind, head->text);
     return head;
@@ -2057,15 +2461,117 @@ static struct Text *remove_percent(struct Text *in)
     return out;
 }
 
-static void append_free_after_statement(struct Text *stmt, const char *original, const char *name)
+static struct Text *add_zero_initializer(struct Text *in)
+{
+    struct Text *out = text_new();
+    const char *semi = in->text + in->len;
+
+    while (semi > in->text && isspace((unsigned char)semi[-1])) {
+        semi--;
+    }
+    if (semi > in->text && semi[-1] == ';') {
+        semi--;
+        while (semi > in->text && isspace((unsigned char)semi[-1])) {
+            semi--;
+        }
+        text_add_n(out, in->text, (size_t)(semi - in->text));
+        text_add(out, " = {0}");
+        text_add(out, semi);
+    } else {
+        text_add(out, in->text);
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    text_free(in);
+    return out;
+}
+
+static void append_struct_finalizer_name(struct Text *out, const char *tag)
+{
+    text_add(out, tag);
+    text_add(out, "_finalize");
+}
+
+static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type)
+{
+    if (!type_has_finalizer(type)) {
+        return;
+    }
+    text_add(out, indent);
+    append_struct_finalizer_name(out, type.tag);
+    text_add_ch(out, '(');
+    if (type.ptr > 0) {
+        text_add(out, expr);
+    } else {
+        text_add_ch(out, '&');
+        text_add(out, expr);
+    }
+    text_add(out, ");\n");
+}
+
+static void append_release_pointer(struct Text *out, const char *indent, const char *expr, struct Type type)
+{
+    append_finalize_for_type(out, indent, expr, type);
+    text_add(out, indent);
+    text_add(out, "free(");
+    text_add(out, expr);
+    text_add(out, ");");
+}
+
+static void append_struct_finalizer_definition(struct Text *out, struct StructFinalizer *fin)
+{
+    int i;
+
+    if (fin == NULL || fin->count == 0) {
+        return;
+    }
+    text_add(out, "\n\nstatic void ");
+    append_struct_finalizer_name(out, fin->tag);
+    text_add(out, "(struct ");
+    text_add(out, fin->tag);
+    text_add(out, "* self)\n{\n");
+    text_add(out, "    if (self == NULL) {\n");
+    text_add(out, "        return;\n");
+    text_add(out, "    }\n");
+    for (i = 0; i < fin->count; i++) {
+        struct Type type = fin->fields[i].type;
+        struct Text *expr = text_new();
+
+        text_add(expr, "self->");
+        text_add(expr, fin->fields[i].name);
+        if (type.ptr > 0 && type.owned) {
+            append_release_pointer(out, "    ", expr->text, type);
+            text_add_ch(out, '\n');
+        } else {
+            append_finalize_for_type(out, "    ", expr->text, type);
+        }
+        text_free(expr);
+    }
+    text_add(out, "}\n");
+}
+
+static void append_free_after_statement(struct Text *stmt, const char *original, const char *name, struct Type type)
 {
     struct Text *indent = text_new();
     append_indent_from(original, indent);
     text_add_ch(stmt, '\n');
+    append_release_pointer(stmt, indent->text, name, type);
+    text_free(indent);
+}
+
+static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name)
+{
+    struct Text *indent = text_new();
+
+    g_need_string_h = 1;
+    append_indent_from(original, indent);
+    text_add_ch(stmt, '\n');
     text_add(stmt, indent->text);
-    text_add(stmt, "free(");
+    text_add(stmt, "memset(&");
     text_add(stmt, name);
-    text_add(stmt, ");");
+    text_add(stmt, ", 0, sizeof(");
+    text_add(stmt, name);
+    text_add(stmt, "));");
     text_free(indent);
 }
 
@@ -2161,11 +2667,12 @@ static const char *skip_leading_space(const char *s)
 static void emit_frees(struct Text *out, const char *indent)
 {
     int i;
+    for (i = g_finalized_locals.count - 1; i >= 0; i--) {
+        append_finalize_for_type(out, indent, g_finalized_locals.name[i], g_finalized_locals.type[i]);
+    }
     for (i = g_owned.count - 1; i >= 0; i--) {
-        text_add(out, indent);
-        text_add(out, "free(");
-        text_add(out, g_owned.name[i]);
-        text_add(out, ");\n");
+        append_release_pointer(out, indent, g_owned.name[i], g_owned.type[i]);
+        text_add_ch(out, '\n');
     }
 }
 
@@ -2196,14 +2703,26 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     struct Symbol *lhs;
     struct Type lhs_type;
     struct Type rhs_type;
+    struct Type new_type;
     struct Text *all = text_join(stmt, semi);
     int eq = find_assignment(all->text);
     int post_free = 0;
     char post_free_name[NAME_MAX_LEN];
+    struct Type post_free_type;
 
     post_free_name[0] = '\0';
+    owned_name[0] = '\0';
+    func_name[0] = '\0';
+    lhs_name[0] = '\0';
+    post_free_type = type_unknown();
+    new_type = type_unknown();
     register_tags_in_text(all->text);
     if (!g_in_function) {
+        if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0' &&
+            parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' &&
+            (decl.type.owned || type_has_finalizer(decl.type))) {
+            struct_finalizer_add_field(g_current_struct_tag, decl.name, decl.type);
+        }
         all->tail_return = 0;
         all->ast = ast_raw(ND_RAW, all->text);
         return remove_percent(strip_attributes(all));
@@ -2222,10 +2741,11 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                     exit(1);
                 }
                 if (decl.type.owned) {
-                    owned_add(decl.name);
+                    owned_add(decl.name, decl.type);
                 } else {
                     post_free = 1;
                     strcpy(post_free_name, decl.name);
+                    post_free_type = decl.type;
                 }
                 check_assignment_type(decl.name, decl.type, rhs_type);
                 symbol_add(decl.name, decl.type);
@@ -2234,34 +2754,48 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 text_add_ch(out, '\n');
                 out = text_join(out, call);
                 if (post_free) {
-                    append_free_after_statement(out, all->text, post_free_name);
+                    append_free_after_statement(out, all->text, post_free_name, post_free_type);
                 }
                 out->ast = ast_raw(ND_S_STRING, out->text);
                 text_free(all);
                 return out;
-            } else if (rhs_has_malloc_call(decl.init, func_name)) {
+            } else if (rhs_has_malloc_call(decl.init, func_name) || rhs_has_new_expr(decl.init, &new_type)) {
                 if (decl.type.ptr <= 0) {
-                    fprintf(stderr, "cauto: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
+                    if (func_name[0] != '\0') {
+                        fprintf(stderr, "cauto: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
+                    } else {
+                        fprintf(stderr, "cauto: type error: new result requires a pointer %% declaration for '%s'\n", decl.name);
+                    }
                     text_free(all);
                     exit(1);
                 }
                 if (decl.type.owned) {
-                    owned_add(decl.name);
+                    owned_add(decl.name, decl.type);
                 } else {
                     post_free = 1;
                     strcpy(post_free_name, decl.name);
+                    post_free_type = decl.type;
                 }
             }
             check_assignment_type(decl.name, decl.type, rhs_type);
         }
         symbol_add(decl.name, decl.type);
+        if (decl.type.ptr == 0 && type_has_finalizer(decl.type)) {
+            finalized_local_add(decl.name, decl.type);
+        }
         all->tail_return = 0;
         all->ast = ast_raw(ND_DECL, all->text);
         all = remove_percent(strip_attributes(all));
+        all = rewrite_method_calls(all);
         all = rewrite_control_condition(all);
         all = rewrite_s_string_temporaries(all);
+        all = rewrite_new_expressions(all);
+        if (!decl.has_init) {
+            all = add_zero_initializer(all);
+            append_zero_clear_after_decl(all, all->text, decl.name);
+        }
         if (post_free) {
-            append_free_after_statement(all, all->text, post_free_name);
+            append_free_after_statement(all, all->text, post_free_name, post_free_type);
         }
         return all;
     }
@@ -2282,18 +2816,20 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         }
         check_assignment_type(lhs_name, lhs_type, rhs_type);
         if (lhs->type.owned) {
-            owned_add(lhs_name);
+            owned_add(lhs_name, lhs->type);
         } else {
             post_free = 1;
             strcpy(post_free_name, lhs_name);
+            post_free_type = lhs_type;
         }
         all = build_asprintf_statement(lhs_name, all->text + eq + 1, all->text);
         if (post_free) {
-            append_free_after_statement(all, all->text, post_free_name);
+            append_free_after_statement(all, all->text, post_free_name, post_free_type);
         }
         all->ast = ast_raw(ND_S_STRING, all->text);
         return all;
-    } else if (eq >= 0 && rhs_has_malloc_call(all->text + eq + 1, func_name)) {
+    } else if (eq >= 0 && (rhs_has_malloc_call(all->text + eq + 1, func_name) ||
+                           rhs_has_new_expr(all->text + eq + 1, &new_type))) {
         if (extract_owned_decl_name(all->text, owned_name)) {
             lhs = symbol_find(owned_name);
             if (lhs != NULL && lhs->type.ptr <= 0) {
@@ -2301,30 +2837,38 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 text_free(all);
                 exit(1);
             }
+            lhs_type = lhs != NULL ? lhs->type : type_unknown();
         } else if (extract_lhs_name(all->text, eq, lhs_name)) {
             lhs = symbol_find(lhs_name);
             lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
             rhs_type = expr_type(all->text + eq + 1);
-            if (lhs == NULL || lhs_type.ptr <= 0) {
+            if (!type_is_known(lhs_type) || lhs_type.ptr <= 0) {
                 fprintf(stderr, "cauto: type error: malloc result requires a pointer lvalue for '%s'\n", lhs_name);
                 text_free(all);
                 exit(1);
             }
             check_assignment_type(lhs_name, lhs_type, rhs_type);
-            if (lhs->type.owned) {
+            if (lhs != NULL && lhs->type.owned) {
                 strcpy(owned_name, lhs_name);
+            } else if (lhs_type.owned) {
+                owned_name[0] = '\0';
             } else {
                 post_free = 1;
                 strcpy(post_free_name, lhs_name);
+                post_free_type = lhs_type;
                 owned_name[0] = '\0';
             }
         } else {
-            fprintf(stderr, "cauto: result of malloc function '%s' must be assigned to a %% pointer declaration\n", func_name);
+            if (func_name[0] != '\0') {
+                fprintf(stderr, "cauto: result of owned function '%s' must be assigned to a %% pointer declaration\n", func_name);
+            } else {
+                fprintf(stderr, "cauto: result of new must be assigned to a %% pointer declaration\n");
+            }
             text_free(all);
             exit(1);
         }
         if (owned_name[0] != '\0') {
-            owned_add(owned_name);
+            owned_add(owned_name, lhs != NULL ? lhs->type : lhs_type);
         }
     } else if (eq >= 0 && extract_lhs_name(all->text, eq, lhs_name)) {
         lhs = symbol_find(lhs_name);
@@ -2337,10 +2881,12 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all->tail_return = 0;
     all->ast = ast_raw(eq >= 0 ? ND_ASSIGN : ND_EXPR_STMT, all->text);
     all = remove_percent(strip_attributes(all));
+    all = rewrite_method_calls(all);
     all = rewrite_control_condition(all);
     all = rewrite_s_string_temporaries(all);
+    all = rewrite_new_expressions(all);
     if (post_free) {
-        append_free_after_statement(all, all->text, post_free_name);
+        append_free_after_statement(all, all->text, post_free_name, post_free_type);
     }
     return all;
 }
@@ -2361,7 +2907,8 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     struct Text *all = text_join3(ret, expr, semi);
     all->ast = ast_raw(ND_RETURN, all->text);
     check_owned_pointer_arithmetic(all->text);
-    if (g_owned.count > 0 && !return_uses_owned(all->text)) {
+    all = rewrite_method_calls(all);
+    if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
         struct Text *out = text_new();
         struct Text *indent = text_new();
         append_leading_newlines(all->text, out);
@@ -2386,11 +2933,19 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     char name[NAME_MAX_LEN];
 
     if (!g_top_block_is_function) {
+        struct StructFinalizer *fin = struct_finalizer_find(g_current_struct_tag);
         register_tags_in_text(head->text);
         out = text_join3(head, lb, body);
         out = text_join(out, rb);
+        if (g_in_aggregate_struct && fin != NULL && fin->count > 0) {
+            text_add(out, ";");
+            append_struct_finalizer_definition(out, fin);
+            g_skip_next_semi = 1;
+        }
         out->ast = ast_block(body_ast);
         g_top_block_is_function = 0;
+        g_in_aggregate_struct = 0;
+        g_current_struct_tag[0] = '\0';
         return out;
     }
 
@@ -2400,7 +2955,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     {
         int body_tail_return = body->tail_return;
         out = text_join3(head, lb, body);
-        if (g_owned.count > 0 && !body_tail_return) {
+        if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !body_tail_return) {
             const char *last = out->len > 0 ? out->text + out->len - 1 : out->text;
             if (out->len == 0 || *last != '\n') {
                 text_add_ch(out, '\n');
@@ -2411,6 +2966,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     out = text_join(out, rb);
     out->ast = ast_block(body_ast);
     g_owned.count = 0;
+    g_finalized_locals.count = 0;
     g_locals.count = 0;
     g_in_function = 0;
     return out;
@@ -2434,7 +2990,7 @@ int main(int argc, char **argv)
     g_output = text_new();
     g_malloc_funcs.count = 0;
     g_right_value_id = 0;
-    malloc_func_add("malloc");
+    g_need_string_h = 0;
 
     rc = yyparse();
     if (rc != 0) {
@@ -2442,6 +2998,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (g_need_string_h) {
+        fputs("#include <string.h>\n", stdout);
+    }
     fputs(g_output->text, stdout);
     text_free(g_output);
     fclose(yyin);

@@ -5,12 +5,13 @@ Small C-to-C translator experiment.
 The first feature is an owned pointer marker:
 
 ```c
-int*% a = malloc(sizeof(int));
+int*% a = new int;
 ```
 
-`malloc` is treated as an owning allocator. If a function has a GCC-style
-`malloc` function attribute in a visible prototype, or its return type is
-marked with `%`, `cauto` also treats its return value as owning.
+`malloc` is an ordinary function call. GCC-style `malloc` function attributes
+are ignored by ownership analysis. A function result is treated as owning only
+when the function return type itself is marked with `%`, or when the expression
+uses `new`.
 
 Owning results assigned to `%` pointer declarations are bound to the current
 function scope, and the output C receives a `free(a);` before function exits.
@@ -18,8 +19,93 @@ Owning results assigned to ordinary pointer lvalues are not bound; the output C
 keeps the heap object alive for that statement and inserts `free(a);`
 immediately after the statement.
 
+The `new` operator allocates one zeroed object with `calloc` and returns an
+owning pointer:
+
+```c
+int*% value = new int;
+```
+
+is lowered to:
+
+```c
+int* value = calloc(1, sizeof(int));
+```
+
+Like `%`-marked function results, a `new` result bound to `%` lives until the
+current function exit. A `new` result bound to an ordinary pointer is freed at
+the end of that statement.
+
 Pointer arithmetic on `%` owned pointers is rejected, including `+`, `-`,
 `++`, `--`, `+=`, and `-=`.
+
+Simple method-call syntax is lowered to plain C calls. If `d` has type
+`struct data`, then:
+
+```c
+d.show();
+```
+
+is lowered to:
+
+```c
+data_show(&d);
+```
+
+String literal receivers are passed as the first argument:
+
+```c
+"aaa".strcmp("aaa")
+```
+
+is lowered to:
+
+```c
+strcmp("aaa", "aaa")
+```
+
+Local variable declarations without initializers receive a zero initializer and
+are then zero-cleared immediately after the declaration with `memset`,
+including aggregate variables:
+
+```c
+struct Pair pair;
+```
+
+is lowered to:
+
+```c
+struct Pair pair = {0};
+memset(&pair, 0, sizeof(pair));
+```
+
+Struct fields may also use `%` to express owned heap pointers:
+
+```c
+struct Holder {
+    int*% value;
+};
+```
+
+`cauto` removes the marker from the output field and emits a finalizer:
+
+```c
+struct Holder {
+    int* value;
+};
+
+static void Holder_finalize(struct Holder* self)
+{
+    if (self == NULL) {
+        return;
+    }
+    free(self->value);
+}
+```
+
+When a local struct value reaches the function exit, or when an owned struct
+pointer is released, the generated code calls the finalizer before the
+existing `free` operation.
 
 Heap strings use the `s"..."` syntax. They must be assigned to a `char*`
 lvalue. For example:
