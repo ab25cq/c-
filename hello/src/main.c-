@@ -1,0 +1,12 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    int*% value = new int;
+    *value = 123;
+    if (*value == 123) {
+        puts("value 123");
+    }
+    return 0;
+}
