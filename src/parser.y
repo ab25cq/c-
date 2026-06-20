@@ -170,6 +170,7 @@ static int g_skip_next_semi;
 static char g_current_struct_tag[NAME_MAX_LEN];
 static int g_right_value_id;
 static int g_need_string_h;
+static int g_need_string_typedef;
 
 int yylex(void);
 static void yyerror(const char *msg);
@@ -725,6 +726,11 @@ static int type_is_known(struct Type t)
     return t.kind != TY_UNKNOWN;
 }
 
+static int type_is_string(struct Type t)
+{
+    return t.kind == TY_CHAR && t.ptr == 1 && t.owned;
+}
+
 static const char *type_kind_name(enum TypeKind kind)
 {
     switch (kind) {
@@ -1033,6 +1039,13 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
         }
     } else if (is_ident_start((unsigned char)*p)) {
         const char *next = read_name(p, word);
+        if (strcmp(word, "string") == 0) {
+            *base_end = next;
+            *type = type_make(TY_CHAR, 1, NULL);
+            type->owned = 1;
+            g_need_string_typedef = 1;
+            return 1;
+        }
         kind = keyword_type(word);
         if (kind == TY_UNKNOWN) {
             return 0;
@@ -1128,23 +1141,17 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     const char *name_start = NULL;
     const char *name_end = NULL;
     char word[NAME_MAX_LEN];
-    enum TypeKind kind = TY_UNKNOWN;
-    char tag[NAME_MAX_LEN];
     int eq;
     int ptr = 0;
     struct Type base_type;
 
     memset(decl, 0, sizeof(*decl));
     decl->type = type_unknown();
-    tag[0] = '\0';
 
     (void)word;
     if (!parse_base_type_prefix(p, &base_end, &base_type)) {
         return 0;
     }
-    kind = base_type.kind;
-    strncpy(tag, base_type.tag, NAME_MAX_LEN - 1);
-    tag[NAME_MAX_LEN - 1] = '\0';
     eq = find_assignment(s);
     limit = s + strlen(s);
     if (eq >= 0) {
@@ -1172,7 +1179,8 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     }
     if (name_start == NULL) {
         decl->is_decl = 1;
-        decl->type = type_make(kind, ptr, tag);
+        decl->type = base_type;
+        decl->type.ptr += ptr;
         return 1;
     }
     if ((size_t)(name_end - name_start) >= NAME_MAX_LEN) {
@@ -1180,14 +1188,29 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     }
     memcpy(decl->name, name_start, (size_t)(name_end - name_start));
     decl->name[name_end - name_start] = '\0';
-    decl->type = type_make(kind, ptr, tag);
-    decl->type.owned = strchr(base_end, '%') != NULL;
+    decl->type = base_type;
+    decl->type.ptr += ptr;
+    decl->type.owned = base_type.owned || strchr(base_end, '%') != NULL;
     scan = skip_ws(name_end);
     if (*scan == '(' && eq < 0) {
         decl->is_function = 1;
     }
     decl->is_decl = 1;
     return 1;
+}
+
+static int is_string_typedef_decl(const char *s)
+{
+    struct DeclInfo decl;
+    const char *p = skip_ws(s);
+
+    if (!starts_word(p, "typedef")) {
+        return 0;
+    }
+    if (!parse_decl(s, &decl)) {
+        return 0;
+    }
+    return strcmp(decl.name, "string") == 0;
 }
 
 static int extract_lhs_name(const char *s, int eq, char *name)
@@ -1969,12 +1992,26 @@ static struct Text *build_clone_expression(const char *source, struct Type sourc
         text_add(out, src_tmp);
         text_add(out, " != NULL) { ");
         text_add(out, dst_tmp);
-        text_add(out, " = calloc(1, sizeof(");
-        append_c_type(out, base);
-        text_add(out, ")); ");
-        text_add(out, "*");
-        text_add(out, dst_tmp);
-        text_add(out, " = ");
+        if (type_is_string(source_type)) {
+            g_need_string_h = 1;
+            text_add(out, " = calloc(strlen(");
+            text_add(out, src_tmp);
+            text_add(out, ") + 1, sizeof(char)); ");
+            text_add(out, "strncpy(");
+            text_add(out, dst_tmp);
+            text_add(out, ", ");
+            text_add(out, src_tmp);
+            text_add(out, ", strlen(");
+            text_add(out, src_tmp);
+            text_add(out, ") + 1); ");
+        } else {
+            text_add(out, " = calloc(1, sizeof(");
+            append_c_type(out, base);
+            text_add(out, ")); ");
+            text_add(out, "*");
+            text_add(out, dst_tmp);
+            text_add(out, " = ");
+        }
         if (base.kind == TY_STRUCT) {
             if (!type_has_clone(base)) {
                 text_free(out);
@@ -1984,7 +2021,7 @@ static struct Text *build_clone_expression(const char *source, struct Type sourc
             text_add(out, "(");
             text_add(out, src_tmp);
             text_add(out, "); ");
-        } else {
+        } else if (!type_is_string(source_type)) {
             text_add(out, "*");
             text_add(out, src_tmp);
             text_add(out, "; ");
@@ -2988,6 +3025,27 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
         struct Type base = type;
 
         base.ptr--;
+        if (type_is_string(type)) {
+            g_need_string_h = 1;
+            text_add(out, "    if (");
+            text_add(out, expr->text);
+            text_add(out, " != NULL) {\n");
+            text_add(out, "        copy.");
+            text_add(out, field_name);
+            text_add(out, " = calloc(strlen(");
+            text_add(out, expr->text);
+            text_add(out, ") + 1, sizeof(char));\n");
+            text_add(out, "        strncpy(copy.");
+            text_add(out, field_name);
+            text_add(out, ", ");
+            text_add(out, expr->text);
+            text_add(out, ", strlen(");
+            text_add(out, expr->text);
+            text_add(out, ") + 1);\n");
+            text_add(out, "    }\n");
+            text_free(expr);
+            return;
+        }
         text_add(out, "    if (");
         text_add(out, expr->text);
         text_add(out, " != NULL) {\n");
@@ -3218,6 +3276,12 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     register_tags_in_text(all->text);
     is_func_sig = parse_function_signature(all->text, func_name, &ret);
     register_owned_function_signature(all->text);
+    if (is_string_typedef_decl(all->text)) {
+        struct Text *out = text_new();
+        g_need_string_typedef = 1;
+        text_free(all);
+        return out;
+    }
     if (!is_func_sig && parse_decl(all->text, &info) && info.name[0] != '\0' && !info.is_function) {
         symbol_add_to(&g_globals, info.name, info.type);
     }
@@ -3612,6 +3676,7 @@ int main(int argc, char **argv)
     g_malloc_funcs.count = 0;
     g_right_value_id = 0;
     g_need_string_h = 0;
+    g_need_string_typedef = 0;
 
     rc = yyparse();
     if (rc != 0) {
@@ -3619,10 +3684,26 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (g_need_string_h) {
-        fputs("#include <string.h>\n", stdout);
+    {
+        const char *p = g_output->text;
+        while (strncmp(p, "#define", 7) == 0) {
+            const char *nl = strchr(p, '\n');
+            if (nl == NULL) {
+                fputs(p, stdout);
+                p += strlen(p);
+                break;
+            }
+            fwrite(p, 1, (size_t)(nl + 1 - p), stdout);
+            p = nl + 1;
+        }
+        if (g_need_string_h) {
+            fputs("#include <string.h>\n", stdout);
+        }
+        if (g_need_string_typedef) {
+            fputs("typedef char* string;\n", stdout);
+        }
+        fputs(p, stdout);
     }
-    fputs(g_output->text, stdout);
     text_free(g_output);
     fclose(yyin);
     return 0;

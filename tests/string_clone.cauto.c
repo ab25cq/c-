@@ -1,0 +1,30 @@
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct Person {
+    string name;
+    int age;
+};
+
+int main(void)
+{
+    string source = s"Alice";
+    struct Person*% person = new struct Person;
+
+    person->name = clone source;
+    person->age = 42;
+    struct Person*% copy = clone person;
+
+    if (person->name == NULL || copy == NULL || copy->name == NULL) {
+        return 1;
+    }
+    if (copy->name == person->name) {
+        return 2;
+    }
+    if (strcmp(copy->name, "Alice") != 0 || copy->age != 42) {
+        return 3;
+    }
+    return 0;
+}
