@@ -99,13 +99,48 @@ static void Holder_finalize(struct Holder* self)
     if (self == NULL) {
         return;
     }
-    free(self->value);
+    if (self->value != NULL) {
+        free(self->value);
+    }
 }
 ```
 
 When a local struct value reaches the function exit, or when an owned struct
 pointer is released, the generated code calls the finalizer before the
 existing `free` operation.
+
+`string` is a built-in owned string alias. Source code may either use it
+directly or write `typedef char*% string;`; the output C receives a single
+plain C definition:
+
+```c
+typedef char* string;
+```
+
+Inside structs, `string` fields are treated like owned heap fields. The
+generated finalizer frees the field, and the generated `StructName_clone`
+function deep-copies it with `calloc(strlen(src) + 1, sizeof(char))` and
+`strncpy`, rather than copying the pointer:
+
+```c
+struct Person {
+    string name;
+    int age;
+};
+```
+
+emits clone/finalize logic equivalent to:
+
+```c
+if (self->name != NULL) {
+    free(self->name);
+}
+
+if (self->name != NULL) {
+    copy.name = calloc(strlen(self->name) + 1, sizeof(char));
+    strncpy(copy.name, self->name, strlen(self->name) + 1);
+}
+```
 
 Heap strings use the `s"..."` syntax. They must be assigned to a `char*`
 lvalue. For example:
