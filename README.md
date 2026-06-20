@@ -119,8 +119,9 @@ typedef char* string;
 
 Inside structs, `string` fields are treated like owned heap fields. The
 generated finalizer frees the field, and the generated `StructName_clone`
-function deep-copies it with `calloc(strlen(src) + 1, sizeof(char))` and
-`strncpy`, rather than copying the pointer:
+function returns an owned `struct StructName*` allocated with `calloc`.
+String fields are deep-copied with `calloc(strlen(src) + 1, sizeof(char))`
+and `strncpy`, rather than copying the pointer:
 
 ```c
 struct Person {
@@ -137,8 +138,8 @@ if (self->name != NULL) {
 }
 
 if (self->name != NULL) {
-    copy.name = calloc(strlen(self->name) + 1, sizeof(char));
-    strncpy(copy.name, self->name, strlen(self->name) + 1);
+    copy->name = calloc(strlen(self->name) + 1, sizeof(char));
+    strncpy(copy->name, self->name, strlen(self->name) + 1);
 }
 ```
 

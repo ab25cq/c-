@@ -63,7 +63,8 @@ cc -std=gnu99 -Wall -Wextra tests/clone.out.c -o tests/clone.out
 ./cauto tests/string_clone.cauto.c > tests/string_clone.out.c
 grep 'typedef char\* string;' tests/string_clone.out.c >/dev/null
 grep 'free(self->name);' tests/string_clone.out.c >/dev/null
-grep 'strncpy(copy.name, self->name, strlen(self->name) + 1);' tests/string_clone.out.c >/dev/null
+grep 'struct Person\* Person_clone(struct Person\* self)' tests/string_clone.out.c >/dev/null
+grep 'strncpy(copy->name, self->name, strlen(self->name) + 1);' tests/string_clone.out.c >/dev/null
 grep 'Person_finalize(person);' tests/string_clone.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/string_clone.out.c -o tests/string_clone.out
 ./tests/string_clone.out

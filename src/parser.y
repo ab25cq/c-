@@ -1992,7 +1992,17 @@ static struct Text *build_clone_expression(const char *source, struct Type sourc
         text_add(out, src_tmp);
         text_add(out, " != NULL) { ");
         text_add(out, dst_tmp);
-        if (type_is_string(source_type)) {
+        if (base.kind == TY_STRUCT) {
+            if (!type_has_clone(base)) {
+                text_free(out);
+                return NULL;
+            }
+            text_add(out, " = ");
+            append_struct_clone_name(out, base.tag);
+            text_add(out, "(");
+            text_add(out, src_tmp);
+            text_add(out, "); ");
+        } else if (type_is_string(source_type)) {
             g_need_string_h = 1;
             text_add(out, " = calloc(strlen(");
             text_add(out, src_tmp);
@@ -2011,17 +2021,6 @@ static struct Text *build_clone_expression(const char *source, struct Type sourc
             text_add(out, "*");
             text_add(out, dst_tmp);
             text_add(out, " = ");
-        }
-        if (base.kind == TY_STRUCT) {
-            if (!type_has_clone(base)) {
-                text_free(out);
-                return NULL;
-            }
-            append_struct_clone_name(out, base.tag);
-            text_add(out, "(");
-            text_add(out, src_tmp);
-            text_add(out, "); ");
-        } else if (!type_is_string(source_type)) {
             text_add(out, "*");
             text_add(out, src_tmp);
             text_add(out, "; ");
@@ -2092,7 +2091,10 @@ static int parse_clone_expr(const char *rhs, const char **clone_start, const cha
     }
     if (type != NULL) {
         *type = source_type;
-        if (source_type.ptr > 0) {
+        if (source_type.kind == TY_STRUCT && source_type.ptr == 0) {
+            type->ptr = 1;
+            type->owned = 1;
+        } else if (source_type.ptr > 0) {
             type->owned = 1;
             if (source_type.kind != TY_STRUCT) {
                 type->owned = 1;
@@ -3014,13 +3016,32 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
     text_add(expr, "self->");
     text_add(expr, field_name);
     if (type.kind == TY_STRUCT && type.ptr == 0) {
-        text_add(out, "    copy.");
-        text_add(out, field_name);
+        char tmp[NAME_MAX_LEN];
+
+        snprintf(tmp, sizeof(tmp), "__clone_field%d", index);
+        text_add(out, "    {\n");
+        text_add(out, "        struct ");
+        text_add(out, type.tag);
+        text_add(out, "* ");
+        text_add(out, tmp);
         text_add(out, " = ");
         append_struct_clone_name(out, type.tag);
         text_add(out, "(&");
         text_add(out, expr->text);
         text_add(out, ");\n");
+        text_add(out, "        if (");
+        text_add(out, tmp);
+        text_add(out, " != NULL) {\n");
+        text_add(out, "            copy->");
+        text_add(out, field_name);
+        text_add(out, " = *");
+        text_add(out, tmp);
+        text_add(out, ";\n");
+        text_add(out, "            free(");
+        text_add(out, tmp);
+        text_add(out, ");\n");
+        text_add(out, "        }\n");
+        text_add(out, "    }\n");
     } else if (type.ptr > 0 && type.owned) {
         struct Type base = type;
 
@@ -3030,12 +3051,12 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
             text_add(out, "    if (");
             text_add(out, expr->text);
             text_add(out, " != NULL) {\n");
-            text_add(out, "        copy.");
+            text_add(out, "        copy->");
             text_add(out, field_name);
             text_add(out, " = calloc(strlen(");
             text_add(out, expr->text);
             text_add(out, ") + 1, sizeof(char));\n");
-            text_add(out, "        strncpy(copy.");
+            text_add(out, "        strncpy(copy->");
             text_add(out, field_name);
             text_add(out, ", ");
             text_add(out, expr->text);
@@ -3049,13 +3070,7 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
         text_add(out, "    if (");
         text_add(out, expr->text);
         text_add(out, " != NULL) {\n");
-        text_add(out, "        copy.");
-        text_add(out, field_name);
-        text_add(out, " = calloc(1, sizeof(");
-        append_c_type(out, base);
-        text_add(out, "));\n");
-        text_add(out, "        ");
-        text_add(out, "*copy.");
+        text_add(out, "        copy->");
         text_add(out, field_name);
         text_add(out, " = ");
         if (base.kind == TY_STRUCT) {
@@ -3064,25 +3079,31 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
             text_add(out, expr->text);
             text_add(out, ");\n");
         } else {
+            text_add(out, "calloc(1, sizeof(");
+            append_c_type(out, base);
+            text_add(out, "));\n");
+            text_add(out, "        ");
+            text_add(out, "*copy->");
+            text_add(out, field_name);
+            text_add(out, " = ");
             text_add(out, "*");
             text_add(out, expr->text);
             text_add(out, ";\n");
         }
         text_add(out, "    }\n");
     } else if (type.kind == TY_STRUCT && type.ptr > 0) {
-        text_add(out, "    copy.");
+        text_add(out, "    copy->");
         text_add(out, field_name);
         text_add(out, " = ");
         text_add(out, expr->text);
         text_add(out, ";\n");
     } else {
-        text_add(out, "    copy.");
+        text_add(out, "    copy->");
         text_add(out, field_name);
         text_add(out, " = ");
         text_add(out, expr->text);
         text_add(out, ";\n");
     }
-    (void)index;
     text_free(expr);
 }
 
@@ -3095,15 +3116,17 @@ static void append_struct_clone_definition(struct Text *out, struct StructFinali
     }
     text_add(out, "\n\nstatic __attribute__((unused)) struct ");
     text_add(out, clone->tag);
-    text_add(out, " ");
+    text_add(out, "* ");
     append_struct_clone_name(out, clone->tag);
     text_add(out, "(struct ");
     text_add(out, clone->tag);
     text_add(out, "* self)\n{\n");
     text_add(out, "    struct ");
     text_add(out, clone->tag);
-    text_add(out, " copy = {0};\n");
-    text_add(out, "    if (self == NULL) {\n");
+    text_add(out, "* copy = calloc(1, sizeof(struct ");
+    text_add(out, clone->tag);
+    text_add(out, "));\n");
+    text_add(out, "    if (copy == NULL || self == NULL) {\n");
     text_add(out, "        return copy;\n");
     text_add(out, "    }\n");
     for (i = 0; i < clone->count; i++) {
