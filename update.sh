@@ -10,6 +10,6 @@ git add .
 git commit 
 git remote add origin git@github.com:ab25cq/c-.git
 git remote set-url origin git@github.com:ab25cq/c-.git
-git push --force origin master 
+git push --force origin main 
 
 
