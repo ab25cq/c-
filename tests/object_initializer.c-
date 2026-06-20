@@ -1,0 +1,22 @@
+#include <string.h>
+#include <stdlib.h>
+
+typedef char* string;
+
+struct Person {
+    string name;
+    int age;
+};
+
+int main(void)
+{
+    struct Person*% person = new Person { name: strdup("aaa"), age: 48 };
+
+    if (strcmp(person->name, "aaa") != 0) {
+        return 1;
+    }
+    if (person->age != 48) {
+        return 2;
+    }
+    return 0;
+}

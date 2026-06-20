@@ -13,6 +13,6 @@ struct Pair*% make_pair(void)
 
 int main(void)
 {
-    struct Pair* p = make_pair();
+    struct Pair*% p = make_pair();
     return 0;
 }

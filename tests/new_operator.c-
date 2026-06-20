@@ -7,7 +7,6 @@ struct Item {
 int main(void)
 {
     int*% owned = new int;
-    int* unbound = new int;
     struct Item*% item = new struct Item;
 
     if (owned == NULL || item == NULL) {

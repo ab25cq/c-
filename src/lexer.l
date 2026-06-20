@@ -23,6 +23,20 @@ struct Text {
 static char *pending;
 static size_t pending_len;
 static size_t pending_cap;
+static int new_type_scan;
+static int object_init_depth;
+static FILE *include_files[16];
+static int include_depth;
+
+void cminus_push_include(FILE *fp)
+{
+    if (include_depth >= 16) {
+        fputs("c-: include depth exceeded\n", stderr);
+        exit(1);
+    }
+    include_files[include_depth++] = fp;
+    yypush_buffer_state(yy_create_buffer(fp, YY_BUF_SIZE));
+}
 
 static void *lex_xmalloc(size_t size)
 {
@@ -151,6 +165,19 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
 
 %%
 
+<<EOF>>     {
+                if (include_depth > 0) {
+                    fclose(include_files[--include_depth]);
+                    yypop_buffer_state();
+                    if (YY_CURRENT_BUFFER != NULL) {
+                        return yylex();
+                    }
+                } else {
+                    yyterminate();
+                }
+                yyterminate();
+            }
+
 {PP}        { return emit_token(PP_LINE); }
 {WS}        { pending_add(yytext, (size_t)yyleng); }
 {LINE}      { pending_add(yytext, (size_t)yyleng); }
@@ -158,6 +185,9 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
 
 "return"    { return emit_token(RETURN); }
 {ID_START}{ID_CONT}* {
+                if (strcmp(yytext, "new") == 0) {
+                    new_type_scan = 1;
+                }
                 if (is_c_keyword_text(yytext, (size_t)yyleng)) {
                     return emit_token(KEYWORD);
                 }
@@ -173,14 +203,33 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
                 return emit_token(OP);
             }
 
-"{"         { return emit_token(LBRACE); }
-"}"         { return emit_token(RBRACE); }
+"{"         {
+                if (new_type_scan || object_init_depth > 0) {
+                    new_type_scan = 0;
+                    object_init_depth++;
+                    return emit_token(OTHER);
+                }
+                return emit_token(LBRACE);
+            }
+"}"         {
+                if (object_init_depth > 0) {
+                    object_init_depth--;
+                    return emit_token(OTHER);
+                }
+                return emit_token(RBRACE);
+            }
 "("         { return emit_token(LPAREN); }
-")"         { return emit_token(RPAREN); }
+")"         { new_type_scan = 0; return emit_token(RPAREN); }
 "["         { return emit_token(LBRACKET); }
 "]"         { return emit_token(RBRACKET); }
-";"         { return emit_token(SEMI); }
-","         { return emit_token(COMMA); }
+";"         { new_type_scan = 0; return emit_token(SEMI); }
+","         {
+                if (object_init_depth > 0) {
+                    return emit_token(OTHER);
+                }
+                new_type_scan = 0;
+                return emit_token(COMMA);
+            }
 "="         { return emit_token(EQUAL); }
 "%"         { return emit_token(PERCENT); }
 

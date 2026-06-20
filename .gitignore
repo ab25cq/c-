@@ -1,4 +1,5 @@
-cauto
+/c-
+/cpm
 src/parser.c
 src/parser.h
 src/lexer.c

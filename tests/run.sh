@@ -1,23 +1,24 @@
 set -eu
+ROOT=$(pwd)
 
-./cauto tests/good.cauto.c > tests/good.out.c
+./c- tests/good.c- > tests/good.out.c
 grep 'int\* a = calloc(1, sizeof(int));' tests/good.out.c >/dev/null
 grep 'free(a);' tests/good.out.c >/dev/null
 test "$(grep -c 'free(a);' tests/good.out.c)" = "1"
 cc -std=c99 -Wall -Wextra -pedantic tests/good.out.c -o tests/good.out
 ./tests/good.out
 
-./cauto tests/no_return.cauto.c > tests/no_return.out.c
+./c- tests/no_return.c- > tests/no_return.out.c
 grep 'free(a);' tests/no_return.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic -c tests/no_return.out.c -o tests/no_return.out.o
 
-./cauto tests/types_ok.cauto.c > tests/types_ok.out.c
+./c- tests/types_ok.c- > tests/types_ok.out.c
 grep 'struct Pair\* p = calloc(1, sizeof(struct Pair));' tests/types_ok.out.c >/dev/null
 grep 'free(p);' tests/types_ok.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/types_ok.out.c -o tests/types_ok.out
 ./tests/types_ok.out
 
-./cauto tests/local_zero.cauto.c > tests/local_zero.out.c
+./c- tests/local_zero.c- > tests/local_zero.out.c
 grep '#include <string.h>' tests/local_zero.out.c >/dev/null
 grep 'int value = {0};' tests/local_zero.out.c >/dev/null
 grep 'struct Pair pair = {0};' tests/local_zero.out.c >/dev/null
@@ -29,7 +30,7 @@ grep 'int initialized = 7;' tests/local_zero.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/local_zero.out.c -o tests/local_zero.out
 ./tests/local_zero.out
 
-./cauto tests/struct_finalizer.cauto.c > tests/struct_finalizer.out.c
+./c- tests/struct_finalizer.c- > tests/struct_finalizer.out.c
 grep 'int\* value;' tests/struct_finalizer.out.c >/dev/null
 grep 'static void Holder_finalize(struct Holder\* self)' tests/struct_finalizer.out.c >/dev/null
 grep 'free(self->value);' tests/struct_finalizer.out.c >/dev/null
@@ -41,17 +42,68 @@ grep 'free(heap);' tests/struct_finalizer.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/struct_finalizer.out.c -o tests/struct_finalizer.out
 ./tests/struct_finalizer.out
 
-./cauto tests/new_operator.cauto.c > tests/new_operator.out.c
+./c- tests/new_operator.c- > tests/new_operator.out.c
 grep 'int\* owned = calloc(1, sizeof(int));' tests/new_operator.out.c >/dev/null
-grep 'int\* unbound = calloc(1, sizeof(int));' tests/new_operator.out.c >/dev/null
 grep 'struct Item\* item = calloc(1, sizeof(struct Item));' tests/new_operator.out.c >/dev/null
-grep 'free(unbound);' tests/new_operator.out.c >/dev/null
 grep 'free(owned);' tests/new_operator.out.c >/dev/null
 grep 'free(item);' tests/new_operator.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/new_operator.out.c -o tests/new_operator.out
 ./tests/new_operator.out
 
-./cauto tests/clone.cauto.c > tests/clone.out.c
+rm -rf /tmp/cpm-smoke
+./cpm new /tmp/cpm-smoke
+(cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" run > run.out)
+grep 'value 123' /tmp/cpm-smoke/run.out >/dev/null
+test -x /tmp/cpm-smoke/target/debug/cpm-smoke
+test -f /tmp/cpm-smoke/lib/c-/vec.c-
+(cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" leak > leak.out 2> leak.err)
+(cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" val > val.out 2> val.err)
+
+rm -rf /tmp/cpm-leak-smoke
+./cpm new /tmp/cpm-leak-smoke
+cat > /tmp/cpm-leak-smoke/src/main.c- <<'SRC'
+#include <stdlib.h>
+
+int main(void)
+{
+    malloc(16);
+    return 0;
+}
+SRC
+if (cd /tmp/cpm-leak-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" val > val.out 2> val.err); then
+    echo "cpm val unexpectedly missed a leak" >&2
+    exit 1
+fi
+grep 'definitely lost' /tmp/cpm-leak-smoke/val.err >/dev/null
+
+./c- tests/object_initializer.c- > tests/object_initializer.out.c
+grep 'struct Person\* person = ({ struct Person\* __right_value' tests/object_initializer.out.c >/dev/null
+grep 'calloc(1, sizeof(struct Person))' tests/object_initializer.out.c >/dev/null
+grep '__right_value[0-9]*->name = strdup("aaa");' tests/object_initializer.out.c >/dev/null
+grep '__right_value[0-9]*->age = 48;' tests/object_initializer.out.c >/dev/null
+grep 'Person_finalize(person);' tests/object_initializer.out.c >/dev/null
+grep 'free(person);' tests/object_initializer.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/object_initializer.out.c -o tests/object_initializer.out
+./tests/object_initializer.out
+
+./c- tests/default_params.c- > tests/default_params.out.c
+grep 'void fun(int a, int b, int c);' tests/default_params.out.c >/dev/null
+grep 'void fun(int a, int b, int c)' tests/default_params.out.c >/dev/null
+grep 'fun(b + 1, 22, 33);' tests/default_params.out.c >/dev/null
+grep 'fun(7, 22, 9);' tests/default_params.out.c >/dev/null
+grep 'fun(1, 22, 3);' tests/default_params.out.c >/dev/null
+cc -std=c99 -Wall -Wextra -pedantic tests/default_params.out.c -o tests/default_params.out
+./tests/default_params.out
+
+./c- tests/generics_foreach.c- > tests/generics_foreach.out.c
+grep 'struct Vec_int' tests/generics_foreach.out.c >/dev/null
+grep 'struct Vec_Item' tests/generics_foreach.out.c >/dev/null
+grep 'Vec_first_int' tests/generics_foreach.out.c >/dev/null
+grep '__foreach' tests/generics_foreach.out.c >/dev/null
+cc -std=c99 -Wall -Wextra -pedantic tests/generics_foreach.out.c -o tests/generics_foreach.out
+./tests/generics_foreach.out
+
+./c- tests/clone.c- > tests/clone.out.c
 grep 'Pair_clone(struct Pair\* self)' tests/clone.out.c >/dev/null
 grep 'left_copy =({' tests/clone.out.c >/dev/null
 grep 'right_copy =({' tests/clone.out.c >/dev/null
@@ -60,7 +112,7 @@ grep 'Pair_clone(' tests/clone.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/clone.out.c -o tests/clone.out
 ./tests/clone.out
 
-./cauto tests/string_clone.cauto.c > tests/string_clone.out.c
+./c- tests/string_clone.c- > tests/string_clone.out.c
 grep 'typedef char\* string;' tests/string_clone.out.c >/dev/null
 grep 'free(self->name);' tests/string_clone.out.c >/dev/null
 grep 'struct Person\* Person_clone(struct Person\* self)' tests/string_clone.out.c >/dev/null
@@ -69,13 +121,13 @@ grep 'Person_finalize(person);' tests/string_clone.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/string_clone.out.c -o tests/string_clone.out
 ./tests/string_clone.out
 
-./cauto tests/string_typedef.cauto.c > tests/string_typedef.out.c
+./c- tests/string_typedef.c- > tests/string_typedef.out.c
 test "$(grep -c 'typedef char\* string;' tests/string_typedef.out.c)" = "1"
 grep 'free(self->name);' tests/string_typedef.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/string_typedef.out.c -o tests/string_typedef.out
 ./tests/string_typedef.out
 
-./cauto tests/owned_reassign.cauto.c > tests/owned_reassign.out.c
+./c- tests/owned_reassign.c- > tests/owned_reassign.out.c
 grep 'void\* __owned_old' tests/owned_reassign.out.c >/dev/null
 grep 'owned = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
 grep 'holder.value = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
@@ -84,7 +136,7 @@ grep 'free(__owned_old' tests/owned_reassign.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/owned_reassign.out.c -o tests/owned_reassign.out
 ./tests/owned_reassign.out
 
-./cauto tests/method_calls.cauto.c > tests/method_calls.out.c
+./c- tests/method_calls.c- > tests/method_calls.out.c
 grep 'struct data\* p = calloc(1, sizeof(struct data));' tests/method_calls.out.c >/dev/null
 grep 'data_show(&d);' tests/method_calls.out.c >/dev/null
 grep 'data_show(p);' tests/method_calls.out.c >/dev/null
@@ -93,19 +145,20 @@ grep 'return strcmp("aaa", "aaa");' tests/method_calls.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/method_calls.out.c -o tests/method_calls.out
 ./tests/method_calls.out
 
-./cauto tests/bad.cauto.c > tests/unbound_malloc.out.c
-grep 'int\* a = calloc(1, sizeof(int));' tests/unbound_malloc.out.c >/dev/null
-grep 'free(a);' tests/unbound_malloc.out.c >/dev/null
-cc -std=c99 -Wall -Wextra -pedantic -c tests/unbound_malloc.out.c -o tests/unbound_malloc.out.o
+if ./c- tests/bad.c- > /dev/null 2> tests/unowned_new.err; then
+    echo "unowned new unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "new result requires a pointer % declaration" tests/unowned_new.err >/dev/null
 
-./cauto tests/owned_return.cauto.c > tests/owned_return.out.c
+./c- tests/owned_return.c- > tests/owned_return.out.c
 grep 'struct Pair\* make_pair(void);' tests/owned_return.out.c >/dev/null
 grep 'struct Pair\* p = make_pair();' tests/owned_return.out.c >/dev/null
 grep 'free(p);' tests/owned_return.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/owned_return.out.c -o tests/owned_return.out
 ./tests/owned_return.out
 
-./cauto tests/attr_malloc_return.cauto.c > tests/attr_malloc_return.out.c
+./c- tests/attr_malloc_return.c- > tests/attr_malloc_return.out.c
 grep 'int\* p = raw_alloc(sizeof(int));' tests/attr_malloc_return.out.c >/dev/null
 if grep 'free(p);' tests/attr_malloc_return.out.c >/dev/null; then
     echo "malloc attribute unexpectedly made raw_alloc owned" >&2
@@ -114,7 +167,7 @@ fi
 cc -std=c99 -Wall -Wextra -pedantic tests/attr_malloc_return.out.c -o tests/attr_malloc_return.out
 ./tests/attr_malloc_return.out
 
-./cauto tests/s_string_owned.cauto.c > tests/s_string_owned.out.c
+./c- tests/s_string_owned.c- > tests/s_string_owned.out.c
 grep 'char\* text;' tests/s_string_owned.out.c >/dev/null
 grep 'asprintf(&text, "aaa %d", 1+1);' tests/s_string_owned.out.c >/dev/null
 grep 'free(text);' tests/s_string_owned.out.c >/dev/null
@@ -122,14 +175,14 @@ test "$(grep -c 'free(text);' tests/s_string_owned.out.c)" = "1"
 cc -std=c99 -Wall -Wextra -pedantic tests/s_string_owned.out.c -o tests/s_string_owned.out
 ./tests/s_string_owned.out
 
-./cauto tests/s_string_unbound.cauto.c > tests/s_string_unbound.out.c
+./c- tests/s_string_unbound.c- > tests/s_string_unbound.out.c
 grep 'char\* text;' tests/s_string_unbound.out.c >/dev/null
 grep 'asprintf(&text, "abc");' tests/s_string_unbound.out.c >/dev/null
 grep 'free(text);' tests/s_string_unbound.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/s_string_unbound.out.c -o tests/s_string_unbound.out
 ./tests/s_string_unbound.out
 
-./cauto tests/s_string_rvalue.cauto.c > tests/s_string_rvalue.out.c
+./c- tests/s_string_rvalue.c- > tests/s_string_rvalue.out.c
 grep 'char\* __right_value0 = NULL;' tests/s_string_rvalue.out.c >/dev/null
 grep 'asprintf(&__right_value0, "abc");' tests/s_string_rvalue.out.c >/dev/null
 grep 'strcmp(__right_value0, "abc") == 0' tests/s_string_rvalue.out.c >/dev/null
@@ -137,38 +190,38 @@ grep 'free(__right_value0);' tests/s_string_rvalue.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/s_string_rvalue.out.c -o tests/s_string_rvalue.out
 ./tests/s_string_rvalue.out
 
-./cauto tests/s_string_conditions.cauto.c > tests/s_string_conditions.out.c
+./c- tests/s_string_conditions.c- > tests/s_string_conditions.out.c
 grep 'if (({' tests/s_string_conditions.out.c >/dev/null
 grep 'while (({' tests/s_string_conditions.out.c >/dev/null
 grep 'free(__right_value' tests/s_string_conditions.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/s_string_conditions.out.c -o tests/s_string_conditions.out
 ./tests/s_string_conditions.out
 
-if ./cauto tests/bad_owned_non_pointer.cauto.c > /dev/null 2> tests/bad_owned_non_pointer.err; then
+if ./c- tests/bad_owned_non_pointer.c- > /dev/null 2> tests/bad_owned_non_pointer.err; then
     echo "bad owned non-pointer unexpectedly succeeded" >&2
     exit 1
 fi
 grep "new result requires a pointer % declaration" tests/bad_owned_non_pointer.err >/dev/null
 
-if ./cauto tests/bad_type_pointer_to_int.cauto.c > /dev/null 2> tests/bad_type_pointer_to_int.err; then
+if ./c- tests/bad_type_pointer_to_int.c- > /dev/null 2> tests/bad_type_pointer_to_int.err; then
     echo "bad pointer-to-int assignment unexpectedly succeeded" >&2
     exit 1
 fi
 grep "cannot assign char\\* to int" tests/bad_type_pointer_to_int.err >/dev/null
 
-if ./cauto tests/bad_type_struct.cauto.c > /dev/null 2> tests/bad_type_struct.err; then
+if ./c- tests/bad_type_struct.c- > /dev/null 2> tests/bad_type_struct.err; then
     echo "bad struct assignment unexpectedly succeeded" >&2
     exit 1
 fi
 grep "cannot assign struct B to struct A" tests/bad_type_struct.err >/dev/null
 
-if ./cauto tests/bad_owned_arith.cauto.c > /dev/null 2> tests/bad_owned_arith.err; then
+if ./c- tests/bad_owned_arith.c- > /dev/null 2> tests/bad_owned_arith.err; then
     echo "bad owned pointer arithmetic unexpectedly succeeded" >&2
     exit 1
 fi
 grep "pointer arithmetic is forbidden for owned pointer 'p'" tests/bad_owned_arith.err >/dev/null
 
-if ./cauto tests/bad_s_string_type.cauto.c > /dev/null 2> tests/bad_s_string_type.err; then
+if ./c- tests/bad_s_string_type.c- > /dev/null 2> tests/bad_s_string_type.err; then
     echo "bad s string type unexpectedly succeeded" >&2
     exit 1
 fi

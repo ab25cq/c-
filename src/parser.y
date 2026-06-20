@@ -14,6 +14,10 @@ extern int yylineno;
 #define MAX_TAGS 128
 #define MAX_FINALIZERS 128
 #define MAX_FIELDS 64
+#define MAX_PARAMS 32
+#define MAX_GENERIC_TEMPLATES 64
+#define MAX_GENERIC_INSTANCES 128
+#define DEFAULT_EXPR_MAX 256
 
 struct Text {
     char *text;
@@ -129,6 +133,22 @@ struct Funcs {
     int count;
 };
 
+struct ParamInfo {
+    char name[NAME_MAX_LEN];
+    char def[DEFAULT_EXPR_MAX];
+};
+
+struct FunctionParams {
+    char name[NAME_MAX_LEN];
+    struct ParamInfo param[MAX_PARAMS];
+    int count;
+};
+
+struct FunctionParamTable {
+    struct FunctionParams fn[MAX_FUNCS];
+    int count;
+};
+
 struct Symbol {
     char name[NAME_MAX_LEN];
     struct Type type;
@@ -151,13 +171,35 @@ struct Tags {
     int count;
 };
 
+struct GenericInstance {
+    char arg[NAME_MAX_LEN];
+    char concrete[NAME_MAX_LEN];
+};
+
+struct GenericTemplate {
+    char param[NAME_MAX_LEN];
+    char name[NAME_MAX_LEN];
+    char head[DEFAULT_EXPR_MAX * 2];
+    char *body;
+    struct GenericInstance inst[MAX_GENERIC_INSTANCES];
+    int inst_count;
+};
+
+struct GenericTemplates {
+    struct GenericTemplate tmpl[MAX_GENERIC_TEMPLATES];
+    int count;
+};
+
 static struct Text *g_output;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
 static struct Funcs g_malloc_funcs;
+static struct FunctionParamTable g_param_funcs;
 static struct Symbols g_globals;
 static struct Symbols g_locals;
 static struct Tags g_tags;
+static struct GenericTemplates g_generic_structs;
+static struct GenericTemplates g_generic_funcs;
 static struct StructFinalizers g_struct_finalizers;
 static struct StructClones g_struct_clones;
 static struct Obj *g_objs;
@@ -171,8 +213,11 @@ static char g_current_struct_tag[NAME_MAX_LEN];
 static int g_right_value_id;
 static int g_need_string_h;
 static int g_need_string_typedef;
+static int g_current_generic_kind;
+static int g_foreach_id;
 
 int yylex(void);
+void cminus_push_include(FILE *fp);
 static void yyerror(const char *msg);
 
 static void die(const char *msg);
@@ -193,6 +238,7 @@ static struct Type *type_copy(struct Type type);
 static struct Obj *obj_new(const char *name, struct Type type, int is_local, int is_function);
 static void begin_function(void);
 static void begin_top_block(struct Text *head);
+static struct Text *process_pp_line(struct Text *line);
 static struct Text *process_standalone_semi(struct Text *semi);
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
 static struct Text *process_statement(struct Text *stmt, struct Text *semi);
@@ -200,6 +246,7 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
 static struct Text *process_external_decl(struct Text *decl, struct Text *semi);
 static struct Text *process_control_head(struct Text *head);
 static int find_assignment(const char *s);
+static int parse_function_signature(const char *s, char *name, struct Type *ret);
 static int malloc_func_index(const char *name);
 static void append_indent_from(const char *s, struct Text *out);
 static int rhs_has_malloc_call(const char *rhs, char *func_name);
@@ -215,6 +262,14 @@ static struct Text *add_zero_initializer(struct Text *in);
 static struct Text *rewrite_new_expressions(struct Text *in);
 static struct Text *rewrite_clone_expressions(struct Text *in);
 static struct Text *rewrite_method_calls(struct Text *in);
+static struct Text *rewrite_parameter_calls(struct Text *in);
+static struct Text *rewrite_generics(struct Text *in);
+static struct Text *rewrite_foreach_head(struct Text *head);
+static const char *matching_paren(const char *open);
+static int is_generic_decl_head(const char *s);
+static int parse_generic_struct_head(const char *s, char *param, char *name);
+static int parse_generic_function_head(const char *s, char *param, char *name);
+static void emit_generic_instances(FILE *out);
 static void append_struct_clone_name(struct Text *out, const char *tag);
 static void append_struct_clone_definition(struct Text *out, struct StructFinalizer *clone);
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type);
@@ -250,7 +305,7 @@ translation_unit
 
 external_item
     : PP_LINE
-        { $$ = $1; }
+        { $$ = process_pp_line($1); }
     | SEMI
         { $$ = process_standalone_semi($1); }
     | top_seq SEMI
@@ -621,7 +676,7 @@ static int is_ident(int c)
 
 static void yyerror(const char *msg)
 {
-    fprintf(stderr, "cauto: parse error near line %d: %s\n", yylineno, msg);
+    fprintf(stderr, "c-: parse error near line %d: %s\n", yylineno, msg);
 }
 
 static int starts_word(const char *s, const char *word)
@@ -657,6 +712,317 @@ static const char *read_name(const char *s, char *name)
     memcpy(name, s, n);
     name[n] = '\0';
     return p;
+}
+
+static void copy_trimmed(char *out, size_t out_size, const char *start, const char *end)
+{
+    size_t n;
+
+    while (start < end && isspace((unsigned char)*start)) {
+        start++;
+    }
+    while (end > start && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    n = (size_t)(end - start);
+    if (n >= out_size) {
+        n = out_size - 1;
+    }
+    memcpy(out, start, n);
+    out[n] = '\0';
+}
+
+static void mangle_type_arg(char *out, size_t out_size, const char *arg)
+{
+    const char *p = skip_ws(arg);
+    size_t n = 0;
+
+    if (starts_word(p, "struct")) {
+        p = skip_ws(p + 6);
+    } else if (starts_word(p, "union")) {
+        p = skip_ws(p + 5);
+    } else if (starts_word(p, "enum")) {
+        p = skip_ws(p + 4);
+    }
+    while (*p != '\0' && n + 1 < out_size) {
+        if (isalnum((unsigned char)*p)) {
+            out[n++] = *p;
+        } else if (*p == '*') {
+            const char *word = "ptr";
+            while (*word != '\0' && n + 1 < out_size) {
+                out[n++] = *word++;
+            }
+        } else if (*p == '_' || isspace((unsigned char)*p)) {
+            if (n > 0 && out[n - 1] != '_') {
+                out[n++] = '_';
+            }
+        }
+        p++;
+    }
+    while (n > 0 && out[n - 1] == '_') {
+        n--;
+    }
+    if (n == 0 && out_size > 1) {
+        out[n++] = 'T';
+    }
+    out[n] = '\0';
+}
+
+static void make_concrete_name(char *out, size_t out_size, const char *name, const char *arg)
+{
+    char mangled[NAME_MAX_LEN];
+
+    mangle_type_arg(mangled, sizeof(mangled), arg);
+    snprintf(out, out_size, "%s_%s", name, mangled);
+}
+
+static const char *parse_generic_prefix(const char *s, char *param)
+{
+    const char *p = skip_ws(s);
+    const char *open;
+    const char *close;
+
+    param[0] = '\0';
+    if (!starts_word(p, "generic")) {
+        return NULL;
+    }
+    p = skip_ws(p + 7);
+    if (*p != '<') {
+        return NULL;
+    }
+    open = p;
+    close = strchr(open + 1, '>');
+    if (close == NULL) {
+        return NULL;
+    }
+    copy_trimmed(param, NAME_MAX_LEN, open + 1, close);
+    if (param[0] == '\0') {
+        return NULL;
+    }
+    return skip_ws(close + 1);
+}
+
+static int parse_generic_struct_head(const char *s, char *param, char *name)
+{
+    const char *p = parse_generic_prefix(s, param);
+
+    name[0] = '\0';
+    if (p == NULL || !starts_word(p, "struct")) {
+        return 0;
+    }
+    p = skip_ws(p + 6);
+    if (!is_ident_start((unsigned char)*p)) {
+        return 0;
+    }
+    read_name(p, name);
+    return name[0] != '\0';
+}
+
+static int parse_generic_function_head(const char *s, char *param, char *name)
+{
+    const char *p = parse_generic_prefix(s, param);
+    const char *open = NULL;
+    const char *name_end;
+    const char *name_start;
+
+    name[0] = '\0';
+    if (p == NULL || starts_word(p, "struct") || starts_word(p, "union") || starts_word(p, "enum")) {
+        return 0;
+    }
+    while (*p != '\0') {
+        if (*p == '(') {
+            open = p;
+            break;
+        }
+        if (*p == ';' || *p == '=') {
+            return 0;
+        }
+        p++;
+    }
+    if (open == NULL) {
+        return 0;
+    }
+    name_end = open;
+    while (name_end > s && isspace((unsigned char)name_end[-1])) {
+        name_end--;
+    }
+    name_start = name_end;
+    while (name_start > s && is_ident((unsigned char)name_start[-1])) {
+        name_start--;
+    }
+    if (name_start == name_end || !is_ident_start((unsigned char)*name_start)) {
+        return 0;
+    }
+    if ((size_t)(name_end - name_start) >= NAME_MAX_LEN) {
+        return 0;
+    }
+    memcpy(name, name_start, (size_t)(name_end - name_start));
+    name[name_end - name_start] = '\0';
+    return 1;
+}
+
+static int is_generic_decl_head(const char *s)
+{
+    char param[NAME_MAX_LEN];
+
+    return parse_generic_prefix(s, param) != NULL;
+}
+
+static struct GenericTemplate *generic_find(struct GenericTemplates *templates, const char *name)
+{
+    int i;
+
+    for (i = 0; i < templates->count; i++) {
+        if (strcmp(templates->tmpl[i].name, name) == 0) {
+            return &templates->tmpl[i];
+        }
+    }
+    return NULL;
+}
+
+static struct GenericTemplate *generic_struct_find_by_concrete(const char *concrete,
+                                                               struct GenericInstance **inst_out)
+{
+    int i;
+    int j;
+
+    for (i = 0; i < g_generic_structs.count; i++) {
+        struct GenericTemplate *tmpl = &g_generic_structs.tmpl[i];
+        for (j = 0; j < tmpl->inst_count; j++) {
+            if (strcmp(tmpl->inst[j].concrete, concrete) == 0) {
+                if (inst_out != NULL) {
+                    *inst_out = &tmpl->inst[j];
+                }
+                return tmpl;
+            }
+        }
+    }
+    return NULL;
+}
+
+static struct GenericTemplate *generic_add(struct GenericTemplates *templates,
+                                           const char *param,
+                                           const char *name,
+                                           const char *head,
+                                           const char *body)
+{
+    struct GenericTemplate *tmpl;
+
+    if (templates->count >= MAX_GENERIC_TEMPLATES) {
+        die("too many generic templates");
+    }
+    tmpl = &templates->tmpl[templates->count++];
+    memset(tmpl, 0, sizeof(*tmpl));
+    strncpy(tmpl->param, param, NAME_MAX_LEN - 1);
+    strncpy(tmpl->name, name, NAME_MAX_LEN - 1);
+    strncpy(tmpl->head, head, sizeof(tmpl->head) - 1);
+    tmpl->body = xstrdup(body);
+    return tmpl;
+}
+
+static struct GenericInstance *generic_instance_get(struct GenericTemplate *tmpl, const char *arg)
+{
+    int i;
+    char clean_arg[NAME_MAX_LEN];
+
+    copy_trimmed(clean_arg, sizeof(clean_arg), arg, arg + strlen(arg));
+    for (i = 0; i < tmpl->inst_count; i++) {
+        if (strcmp(tmpl->inst[i].arg, clean_arg) == 0) {
+            return &tmpl->inst[i];
+        }
+    }
+    if (tmpl->inst_count >= MAX_GENERIC_INSTANCES) {
+        die("too many generic instantiations");
+    }
+    strncpy(tmpl->inst[tmpl->inst_count].arg, clean_arg, NAME_MAX_LEN - 1);
+    make_concrete_name(tmpl->inst[tmpl->inst_count].concrete,
+                       sizeof(tmpl->inst[tmpl->inst_count].concrete),
+                       tmpl->name, clean_arg);
+    return &tmpl->inst[tmpl->inst_count++];
+}
+
+static int generic_method_concrete_name(const char *struct_concrete,
+                                        const char *method,
+                                        char *out,
+                                        size_t out_size)
+{
+    struct GenericInstance *struct_inst = NULL;
+    struct GenericTemplate *struct_tmpl = generic_struct_find_by_concrete(struct_concrete, &struct_inst);
+    char func_name[NAME_MAX_LEN];
+    struct GenericTemplate *func_tmpl;
+    struct GenericInstance *func_inst;
+
+    if (struct_tmpl == NULL || struct_inst == NULL) {
+        return 0;
+    }
+    if (strlen(struct_tmpl->name) + strlen(method) + 2 > sizeof(func_name)) {
+        return 0;
+    }
+    strcpy(func_name, struct_tmpl->name);
+    strcat(func_name, "_");
+    strcat(func_name, method);
+    func_tmpl = generic_find(&g_generic_funcs, func_name);
+    if (func_tmpl == NULL) {
+        return 0;
+    }
+    func_inst = generic_instance_get(func_tmpl, struct_inst->arg);
+    strncpy(out, func_inst->concrete, out_size - 1);
+    out[out_size - 1] = '\0';
+    return 1;
+}
+
+static int parse_generic_angle_arg(const char *p, char *arg, const char **after)
+{
+    const char *start;
+    int depth = 1;
+
+    p = skip_ws(p);
+    if (*p != '<') {
+        return 0;
+    }
+    start = ++p;
+    while (*p != '\0') {
+        if (*p == '<') {
+            depth++;
+        } else if (*p == '>') {
+            depth--;
+            if (depth == 0) {
+                copy_trimmed(arg, NAME_MAX_LEN, start, p);
+                *after = p + 1;
+                return arg[0] != '\0';
+            }
+        }
+        p++;
+    }
+    return 0;
+}
+
+static struct Text *replace_param_and_generics(const char *s,
+                                               const char *param,
+                                               const char *arg,
+                                               const char *old_name,
+                                               const char *new_name)
+{
+    struct Text *out = text_new();
+    size_t param_len = strlen(param);
+    size_t old_len = strlen(old_name);
+    const char *p = s;
+
+    while (*p != '\0') {
+        if (old_len > 0 && strncmp(p, old_name, old_len) == 0 && !is_ident((unsigned char)p[old_len]) &&
+            (p == s || !is_ident((unsigned char)p[-1]))) {
+            text_add(out, new_name);
+            p += old_len;
+        } else if (param_len > 0 && strncmp(p, param, param_len) == 0 && !is_ident((unsigned char)p[param_len]) &&
+                   (p == s || !is_ident((unsigned char)p[-1]))) {
+            text_add(out, arg);
+            p += param_len;
+        } else {
+            text_add_ch(out, *p++);
+        }
+    }
+    out = rewrite_generics(out);
+    return out;
 }
 
 static struct Type type_make(enum TypeKind kind, int ptr, const char *tag)
@@ -835,7 +1201,7 @@ static void type_error(const char *what, struct Type lhs, struct Type rhs)
     char rbuf[128];
     type_to_string(lhs, lbuf, sizeof(lbuf));
     type_to_string(rhs, rbuf, sizeof(rbuf));
-    fprintf(stderr, "cauto: type error: cannot assign %s to %s in %s\n", rbuf, lbuf, what);
+    fprintf(stderr, "c-: type error: cannot assign %s to %s in %s\n", rbuf, lbuf, what);
     exit(1);
 }
 
@@ -1071,6 +1437,30 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
     *base_end = p;
     *type = type_make(kind, 0, tag);
     return 1;
+}
+
+static int parse_new_type_prefix(const char *s, const char **base_end, struct Type *type)
+{
+    char name[NAME_MAX_LEN];
+    const char *end;
+    int i;
+
+    if (parse_base_type_prefix(s, base_end, type)) {
+        return 1;
+    }
+    s = skip_ws(s);
+    if (!is_ident_start((unsigned char)*s)) {
+        return 0;
+    }
+    end = read_name(s, name);
+    for (i = 0; i < g_tags.count; i++) {
+        if (g_tags.tag[i].kind == TY_STRUCT && strcmp(g_tags.tag[i].name, name) == 0) {
+            *base_end = end;
+            *type = type_make(TY_STRUCT, 0, name);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int parse_function_signature(const char *s, char *name, struct Type *ret)
@@ -1437,6 +1827,10 @@ static void check_assignment_type(const char *what, struct Type lhs, struct Type
 static int looks_like_aggregate_head(const char *s)
 {
     const char *p = skip_ws(s);
+    if (is_generic_decl_head(p)) {
+        char param[NAME_MAX_LEN];
+        p = parse_generic_prefix(p, param);
+    }
     return starts_word(p, "struct") || starts_word(p, "union") || starts_word(p, "enum");
 }
 
@@ -1446,6 +1840,10 @@ static int parse_struct_head(const char *s, char *tag)
     char word[NAME_MAX_LEN];
 
     tag[0] = '\0';
+    if (is_generic_decl_head(p)) {
+        char param[NAME_MAX_LEN];
+        p = parse_generic_prefix(p, param);
+    }
     while (is_ident_start((unsigned char)*p)) {
         const char *next = read_name(p, word);
         if (!skip_decl_word(word)) {
@@ -1462,6 +1860,139 @@ static int parse_struct_head(const char *s, char *tag)
     }
     read_name(p, tag);
     return tag[0] != '\0';
+}
+
+static struct Text *rewrite_generics(struct Text *in)
+{
+    struct Text *out = text_new();
+    const char *p = in->text;
+
+    while (*p != '\0') {
+        if (starts_word(p, "struct")) {
+            const char *q = skip_ws(p + 6);
+            char name[NAME_MAX_LEN];
+            char arg[NAME_MAX_LEN];
+            const char *name_end;
+            const char *after;
+            struct GenericTemplate *tmpl;
+
+            if (is_ident_start((unsigned char)*q)) {
+                name_end = read_name(q, name);
+                tmpl = generic_find(&g_generic_structs, name);
+                if (tmpl != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
+                    struct GenericInstance *inst = generic_instance_get(tmpl, arg);
+                    text_add(out, "struct ");
+                    text_add(out, inst->concrete);
+                    p = after;
+                    continue;
+                }
+            }
+        }
+        if (is_ident_start((unsigned char)*p)) {
+            char name[NAME_MAX_LEN];
+            char arg[NAME_MAX_LEN];
+            const char *name_end = read_name(p, name);
+            const char *after;
+            const char *call;
+            struct GenericTemplate *tmpl = generic_find(&g_generic_funcs, name);
+
+            if (tmpl != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
+                call = skip_ws(after);
+                if (*call == '(') {
+                    struct GenericInstance *inst = generic_instance_get(tmpl, arg);
+                    text_add(out, inst->concrete);
+                    text_add_n(out, after, (size_t)(call - after));
+                    p = call;
+                    continue;
+                }
+            }
+        }
+        text_add_ch(out, *p++);
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_foreach_head(struct Text *head)
+{
+    const char *p = skip_ws(head->text);
+    const char *open;
+    const char *close;
+    const char *in_kw;
+    const char *var_end;
+    const char *var_start;
+    char type[NAME_MAX_LEN];
+    char var[NAME_MAX_LEN];
+    char collection[NAME_MAX_LEN];
+    char tmp[128];
+    int id;
+    struct Text *type_text;
+    struct Text *out;
+
+    if (!starts_word(p, "foreach")) {
+        return head;
+    }
+    open = strchr(p, '(');
+    if (open == NULL) {
+        return head;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return head;
+    }
+    in_kw = open + 1;
+    while ((in_kw = strstr(in_kw, " in ")) != NULL) {
+        break;
+    }
+    if (in_kw == NULL) {
+        return head;
+    }
+    var_end = in_kw;
+    while (var_end > open + 1 && isspace((unsigned char)var_end[-1])) {
+        var_end--;
+    }
+    var_start = var_end;
+    while (var_start > open + 1 && is_ident((unsigned char)var_start[-1])) {
+        var_start--;
+    }
+    if (var_start == var_end || !is_ident_start((unsigned char)*var_start)) {
+        return head;
+    }
+    copy_trimmed(type, sizeof(type), open + 1, var_start);
+    copy_trimmed(var, sizeof(var), var_start, var_end);
+    copy_trimmed(collection, sizeof(collection), in_kw + 4, close);
+    if (type[0] == '\0' || var[0] == '\0' || collection[0] == '\0') {
+        return head;
+    }
+
+    type_text = text_new();
+    text_add(type_text, type);
+    type_text = rewrite_generics(type_text);
+
+    id = g_foreach_id++;
+    out = text_new();
+    snprintf(tmp, sizeof(tmp), "for (int __foreach%d = 0, __foreach_once%d = 0; __foreach%d < ", id, id, id);
+    text_add(out, tmp);
+    text_add(out, collection);
+    snprintf(tmp, sizeof(tmp), ".len; __foreach%d++) for (__foreach_once%d = 1; __foreach_once%d; __foreach_once%d = 0) for (",
+             id, id, id, id);
+    text_add(out, tmp);
+    text_add(out, type_text->text);
+    text_add(out, " ");
+    text_add(out, var);
+    text_add(out, " = ");
+    text_add(out, collection);
+    snprintf(tmp, sizeof(tmp), ".data[__foreach%d]; __foreach_once%d; __foreach_once%d = 0)",
+             id, id, id);
+    text_add(out, tmp);
+    out->ast = head->ast;
+    head->ast = NULL;
+    text_free(type_text);
+    text_free(head);
+    return out;
 }
 
 static struct StructFinalizer *struct_finalizer_find(const char *tag)
@@ -1513,16 +2044,20 @@ static int struct_field_type(const char *tag, const char *field, struct Type *ty
     struct StructFinalizer *clone = struct_clone_find(tag);
     int i;
 
-    if (fin == NULL) {
-        fin = clone;
+    if (fin != NULL) {
+        for (i = 0; i < fin->count; i++) {
+            if (strcmp(fin->fields[i].name, field) == 0) {
+                *type = fin->fields[i].type;
+                return 1;
+            }
+        }
     }
-    if (fin == NULL) {
-        return 0;
-    }
-    for (i = 0; i < fin->count; i++) {
-        if (strcmp(fin->fields[i].name, field) == 0) {
-            *type = fin->fields[i].type;
-            return 1;
+    if (clone != NULL) {
+        for (i = 0; i < clone->count; i++) {
+            if (strcmp(clone->fields[i].name, field) == 0) {
+                *type = clone->fields[i].type;
+                return 1;
+            }
         }
     }
     return 0;
@@ -1628,12 +2163,24 @@ static void begin_function(void)
 static void begin_top_block(struct Text *head)
 {
     char name[NAME_MAX_LEN];
+    char param[NAME_MAX_LEN];
     struct Type ret;
     register_tags_in_text(head->text);
-    g_top_block_is_function = parse_function_signature(head->text, name, &ret) || !looks_like_aggregate_head(head->text);
+    g_current_generic_kind = 0;
+    if (parse_generic_struct_head(head->text, param, name)) {
+        g_current_generic_kind = 1;
+        g_top_block_is_function = 0;
+    } else if (parse_generic_function_head(head->text, param, name)) {
+        g_current_generic_kind = 2;
+        g_top_block_is_function = 1;
+    } else {
+        g_top_block_is_function = parse_function_signature(head->text, name, &ret) || !looks_like_aggregate_head(head->text);
+    }
     g_in_aggregate_struct = 0;
     g_current_struct_tag[0] = '\0';
-    if (g_top_block_is_function) {
+    if (g_current_generic_kind == 1) {
+        g_in_function = 0;
+    } else if (g_top_block_is_function) {
         begin_function();
     } else if (parse_struct_head(head->text, name)) {
         g_in_aggregate_struct = 1;
@@ -1642,6 +2189,76 @@ static void begin_top_block(struct Text *head)
         struct_finalizer_get(name);
         struct_clone_get(name);
     }
+}
+
+static int parse_cminus_include(const char *line, char *path, size_t path_size)
+{
+    const char *p = skip_ws(line);
+    const char *start;
+    const char *end;
+    size_t n;
+
+    if (strncmp(p, "#include", 8) != 0) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    if (strncmp(p, "<c-/", 4) != 0) {
+        return 0;
+    }
+    start = p + 1;
+    end = strchr(start, '>');
+    if (end == NULL) {
+        return 0;
+    }
+    n = (size_t)(end - start);
+    if (n >= path_size) {
+        n = path_size - 1;
+    }
+    memcpy(path, start, n);
+    path[n] = '\0';
+    return 1;
+}
+
+static FILE *open_cminus_include(const char *include_path)
+{
+    const char *lib = getenv("C_MINUS_LIB");
+    FILE *fp;
+    char path[512];
+
+    if (lib != NULL && lib[0] != '\0') {
+        snprintf(path, sizeof(path), "%s/%s", lib, include_path);
+        fp = fopen(path, "r");
+        if (fp != NULL) {
+            return fp;
+        }
+    }
+    snprintf(path, sizeof(path), "lib/%s", include_path);
+    fp = fopen(path, "r");
+    if (fp != NULL) {
+        return fp;
+    }
+    return NULL;
+}
+
+static struct Text *process_pp_line(struct Text *line)
+{
+    char include_path[256];
+    FILE *fp;
+    struct Text *out;
+
+    if (!parse_cminus_include(line->text, include_path, sizeof(include_path))) {
+        return line;
+    }
+    fp = open_cminus_include(include_path);
+    if (fp == NULL) {
+        fprintf(stderr, "c-: include not found: %s\n", include_path);
+        text_free(line);
+        exit(1);
+    }
+    cminus_push_include(fp);
+    out = text_new();
+    text_free(line);
+    return out;
 }
 
 static struct Text *process_standalone_semi(struct Text *semi)
@@ -1750,6 +2367,264 @@ static void register_owned_function_signature(const char *s)
     }
 }
 
+static const char *find_matching_paren(const char *open)
+{
+    const char *p = open;
+    int depth = 0;
+
+    while (*p != '\0') {
+        if (*p == '"') {
+            p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '"') {
+                    break;
+                }
+                p++;
+            }
+        } else if (*p == '\'') {
+            p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '\'') {
+                    break;
+                }
+                p++;
+            }
+        } else if (*p == '(') {
+            depth++;
+        } else if (*p == ')') {
+            depth--;
+            if (depth == 0) {
+                return p;
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static const char *find_top_level_char(const char *start, const char *end, char ch)
+{
+    const char *p = start;
+    int paren = 0;
+    int bracket = 0;
+    int brace = 0;
+
+    while (p < end) {
+        if (*p == '"') {
+            p++;
+            while (p < end) {
+                if (*p == '\\' && p + 1 < end) {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '"') {
+                    break;
+                }
+                p++;
+            }
+        } else if (*p == '\'') {
+            p++;
+            while (p < end) {
+                if (*p == '\\' && p + 1 < end) {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '\'') {
+                    break;
+                }
+                p++;
+            }
+        } else if (*p == '(') {
+            paren++;
+        } else if (*p == ')' && paren > 0) {
+            paren--;
+        } else if (*p == '[') {
+            bracket++;
+        } else if (*p == ']' && bracket > 0) {
+            bracket--;
+        } else if (*p == '{') {
+            brace++;
+        } else if (*p == '}' && brace > 0) {
+            brace--;
+        } else if (*p == ch && paren == 0 && bracket == 0 && brace == 0) {
+            return p;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static int param_name_from_text(const char *start, const char *end, char *name)
+{
+    struct DeclInfo decl;
+    char *tmp = xstrndup(start, (size_t)(end - start));
+    int ok;
+
+    name[0] = '\0';
+    ok = parse_decl(tmp, &decl) && decl.name[0] != '\0';
+    if (ok) {
+        strncpy(name, decl.name, NAME_MAX_LEN - 1);
+        name[NAME_MAX_LEN - 1] = '\0';
+    }
+    free(tmp);
+    return ok;
+}
+
+static struct FunctionParams *function_params_find(const char *name)
+{
+    int i;
+    for (i = 0; i < g_param_funcs.count; i++) {
+        if (strcmp(g_param_funcs.fn[i].name, name) == 0) {
+            return &g_param_funcs.fn[i];
+        }
+    }
+    return NULL;
+}
+
+static struct FunctionParams *function_params_get(const char *name)
+{
+    struct FunctionParams *fn = function_params_find(name);
+
+    if (fn != NULL) {
+        return fn;
+    }
+    if (g_param_funcs.count >= MAX_FUNCS) {
+        die("too many functions with parameter metadata");
+    }
+    fn = &g_param_funcs.fn[g_param_funcs.count++];
+    memset(fn, 0, sizeof(*fn));
+    strncpy(fn->name, name, NAME_MAX_LEN - 1);
+    fn->name[NAME_MAX_LEN - 1] = '\0';
+    return fn;
+}
+
+static void register_function_params(const char *s)
+{
+    char name[NAME_MAX_LEN];
+    struct Type ret;
+    const char *open;
+    const char *close;
+    const char *p;
+    struct FunctionParams *fn;
+
+    if (!parse_function_signature(s, name, &ret)) {
+        return;
+    }
+    open = strchr(s, '(');
+    if (open == NULL) {
+        return;
+    }
+    close = find_matching_paren(open);
+    if (close == NULL) {
+        return;
+    }
+    if (find_top_level_char(open + 1, close, '=') == NULL) {
+        return;
+    }
+    fn = function_params_get(name);
+    fn->count = 0;
+    p = open + 1;
+    while (p < close) {
+        const char *arg_end = find_top_level_char(p, close, ',');
+        const char *eq;
+        const char *param_end;
+        char param_name[NAME_MAX_LEN];
+
+        if (arg_end == NULL) {
+            arg_end = close;
+        }
+        while (p < arg_end && isspace((unsigned char)*p)) {
+            p++;
+        }
+        param_end = arg_end;
+        while (param_end > p && isspace((unsigned char)param_end[-1])) {
+            param_end--;
+        }
+        if (param_end > p && !(param_end - p == 4 && strncmp(p, "void", 4) == 0)) {
+            eq = find_top_level_char(p, param_end, '=');
+            if (eq == NULL) {
+                eq = param_end;
+            }
+            if (fn->count >= MAX_PARAMS) {
+                die("too many function parameters");
+            }
+            if (param_name_from_text(p, eq, param_name)) {
+                const char *def_start = eq < param_end ? skip_ws(eq + 1) : param_end;
+                size_t def_len = (size_t)(param_end - def_start);
+
+                strncpy(fn->param[fn->count].name, param_name, NAME_MAX_LEN - 1);
+                fn->param[fn->count].name[NAME_MAX_LEN - 1] = '\0';
+                if (def_len >= DEFAULT_EXPR_MAX) {
+                    def_len = DEFAULT_EXPR_MAX - 1;
+                }
+                memcpy(fn->param[fn->count].def, def_start, def_len);
+                fn->param[fn->count].def[def_len] = '\0';
+                fn->count++;
+            }
+        }
+        p = arg_end;
+        if (p < close && *p == ',') {
+            p++;
+        }
+    }
+}
+
+static struct Text *strip_default_parameters(struct Text *in)
+{
+    const char *open = strchr(in->text, '(');
+    const char *close;
+    const char *p;
+    struct Text *out;
+
+    if (open == NULL) {
+        return in;
+    }
+    close = find_matching_paren(open);
+    if (close == NULL) {
+        return in;
+    }
+    out = text_new();
+    text_add_n(out, in->text, (size_t)(open + 1 - in->text));
+    p = open + 1;
+    while (p < close) {
+        const char *param_end = find_top_level_char(p, close, ',');
+        const char *eq;
+
+        if (param_end == NULL) {
+            param_end = close;
+        }
+        eq = find_top_level_char(p, param_end, '=');
+        if (eq != NULL) {
+            while (eq > p && isspace((unsigned char)eq[-1])) {
+                eq--;
+            }
+            text_add_n(out, p, (size_t)(eq - p));
+        } else {
+            text_add_n(out, p, (size_t)(param_end - p));
+        }
+        if (param_end < close && *param_end == ',') {
+            text_add_ch(out, ',');
+        }
+        p = param_end;
+        if (p < close && *p == ',') {
+            p++;
+        }
+    }
+    text_add(out, close);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    text_free(in);
+    return out;
+}
+
 static struct Text *strip_attributes(struct Text *in)
 {
     struct Text *out = text_new();
@@ -1835,13 +2710,64 @@ static int rhs_has_malloc_call(const char *rhs, char *func_name)
     return 0;
 }
 
+static const char *scan_balanced_brace_end(const char *s)
+{
+    const char *p = s;
+    int depth = 0;
+
+    if (*p != '{') {
+        return NULL;
+    }
+    while (*p != '\0') {
+        if (*p == '"') {
+            p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '"') {
+                    break;
+                }
+                p++;
+            }
+        } else if (*p == '\'') {
+            p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '\'') {
+                    break;
+                }
+                p++;
+            }
+        } else if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+            if (depth == 0) {
+                return p + 1;
+            }
+        }
+        if (*p == '\0') {
+            break;
+        }
+        p++;
+    }
+    return NULL;
+}
+
 static int parse_new_expr(const char *rhs, const char **new_start, const char **new_end,
-                          struct Type *type, struct Text *sizeof_type)
+                          struct Type *type, struct Text *sizeof_type,
+                          const char **init_start, const char **init_end)
 {
     const char *p = skip_ws(rhs);
     const char *type_start;
     const char *base_end;
     const char *end;
+    const char *brace_end;
     struct Type base;
     int ptr = 0;
 
@@ -1849,7 +2775,7 @@ static int parse_new_expr(const char *rhs, const char **new_start, const char **
         return 0;
     }
     type_start = skip_ws(p + 3);
-    if (!parse_base_type_prefix(type_start, &base_end, &base)) {
+    if (!parse_new_type_prefix(type_start, &base_end, &base)) {
         return 0;
     }
     end = base_end;
@@ -1867,10 +2793,11 @@ static int parse_new_expr(const char *rhs, const char **new_start, const char **
     type->ptr += ptr + 1;
     type->owned = 1;
 
-    while (end > type_start && isspace((unsigned char)end[-1])) {
-        end--;
+    {
+        struct Type alloc_type = base;
+        alloc_type.ptr += ptr;
+        append_c_type(sizeof_type, alloc_type);
     }
-    text_add_n(sizeof_type, type_start, (size_t)(end - type_start));
 
     if (new_start != NULL) {
         *new_start = p;
@@ -1878,13 +2805,32 @@ static int parse_new_expr(const char *rhs, const char **new_start, const char **
     if (new_end != NULL) {
         *new_end = end;
     }
+    if (init_start != NULL) {
+        *init_start = NULL;
+    }
+    if (init_end != NULL) {
+        *init_end = NULL;
+    }
+
+    brace_end = scan_balanced_brace_end(skip_ws(end));
+    if (brace_end != NULL) {
+        if (new_end != NULL) {
+            *new_end = brace_end;
+        }
+        if (init_start != NULL) {
+            *init_start = skip_ws(end);
+        }
+        if (init_end != NULL) {
+            *init_end = brace_end;
+        }
+    }
     return 1;
 }
 
 static int rhs_has_new_expr(const char *rhs, struct Type *type)
 {
     struct Text *sizeof_type = text_new();
-    int ok = parse_new_expr(rhs, NULL, NULL, type, sizeof_type);
+    int ok = parse_new_expr(rhs, NULL, NULL, type, sizeof_type, NULL, NULL);
 
     text_free(sizeof_type);
     return ok;
@@ -2115,6 +3061,137 @@ static int rhs_has_clone_expr(const char *rhs, struct Type *type)
     return parse_clone_expr(rhs, NULL, NULL, type, NULL);
 }
 
+static const char *scan_object_init_value_end(const char *s, const char *limit)
+{
+    const char *p = s;
+    int paren = 0;
+    int bracket = 0;
+    int brace = 0;
+
+    while (p < limit) {
+        if (*p == '"') {
+            p++;
+            while (p < limit) {
+                if (*p == '\\' && p + 1 < limit) {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '"') {
+                    p++;
+                    break;
+                }
+                p++;
+            }
+            continue;
+        }
+        if (*p == '\'') {
+            p++;
+            while (p < limit) {
+                if (*p == '\\' && p + 1 < limit) {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '\'') {
+                    p++;
+                    break;
+                }
+                p++;
+            }
+            continue;
+        }
+        if (*p == '(') {
+            paren++;
+        } else if (*p == ')' && paren > 0) {
+            paren--;
+        } else if (*p == '[') {
+            bracket++;
+        } else if (*p == ']' && bracket > 0) {
+            bracket--;
+        } else if (*p == '{') {
+            brace++;
+        } else if (*p == '}' && brace > 0) {
+            brace--;
+        } else if (*p == ',' && paren == 0 && bracket == 0 && brace == 0) {
+            break;
+        }
+        p++;
+    }
+    while (p > s && isspace((unsigned char)p[-1])) {
+        p--;
+    }
+    return p;
+}
+
+static void append_object_initializer_assignments(struct Text *out, const char *tmp,
+                                                  struct Type type,
+                                                  const char *init_start,
+                                                  const char *init_end)
+{
+    const char *p = skip_ws(init_start + 1);
+    const char *limit = init_end - 1;
+    struct Type base = type;
+
+    if (base.ptr > 0) {
+        base.ptr--;
+    }
+    if (base.kind != TY_STRUCT) {
+        fprintf(stderr, "c-: type error: object initializer requires a struct new expression\n");
+        exit(1);
+    }
+    while (p < limit) {
+        char field[NAME_MAX_LEN];
+        const char *field_end;
+        const char *colon;
+        const char *value_start;
+        const char *value_end;
+        struct Type field_type;
+        struct Type value_type;
+        char *value;
+
+        p = skip_ws(p);
+        if (p >= limit) {
+            break;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            fprintf(stderr, "c-: parse error: expected field name in object initializer\n");
+            exit(1);
+        }
+        field_end = read_name(p, field);
+        colon = skip_ws(field_end);
+        if (*colon != ':') {
+            fprintf(stderr, "c-: parse error: expected ':' in object initializer\n");
+            exit(1);
+        }
+        if (!struct_field_type(base.tag, field, &field_type)) {
+            fprintf(stderr, "c-: type error: unknown field '%s' in struct %s initializer\n", field, base.tag);
+            exit(1);
+        }
+        value_start = skip_ws(colon + 1);
+        value_end = scan_object_init_value_end(value_start, limit);
+        if (value_end <= value_start) {
+            fprintf(stderr, "c-: parse error: expected field value in object initializer\n");
+            exit(1);
+        }
+        value = xstrndup(value_start, (size_t)(value_end - value_start));
+        value_type = expr_type(value);
+        check_assignment_type(field, field_type, value_type);
+        text_add(out, tmp);
+        text_add(out, "->");
+        text_add(out, field);
+        text_add(out, " = ");
+        text_add_n(out, value_start, (size_t)(value_end - value_start));
+        text_add(out, "; ");
+        free(value);
+        p = skip_ws(value_end);
+        if (*p == ',') {
+            p++;
+        } else if (p < limit) {
+            fprintf(stderr, "c-: parse error: expected ',' in object initializer\n");
+            exit(1);
+        }
+    }
+}
+
 static struct Text *rewrite_clone_expressions(struct Text *in)
 {
     const char *p = in->text;
@@ -2162,6 +3239,8 @@ static struct Text *rewrite_new_expressions(struct Text *in)
 {
     const char *new_start;
     const char *new_end;
+    const char *init_start;
+    const char *init_end;
     const char *p;
     struct Type type;
     struct Text *sizeof_type = text_new();
@@ -2169,9 +3248,11 @@ static struct Text *rewrite_new_expressions(struct Text *in)
 
     new_start = NULL;
     new_end = NULL;
+    init_start = NULL;
+    init_end = NULL;
     for (p = in->text; *p != '\0'; p++) {
         if ((p == in->text || !is_ident((unsigned char)p[-1])) && starts_word(p, "new") &&
-            parse_new_expr(p, &new_start, &new_end, &type, sizeof_type)) {
+            parse_new_expr(p, &new_start, &new_end, &type, sizeof_type, &init_start, &init_end)) {
             break;
         }
     }
@@ -2182,9 +3263,29 @@ static struct Text *rewrite_new_expressions(struct Text *in)
 
     out = text_new();
     text_add_n(out, in->text, (size_t)(new_start - in->text));
-    text_add(out, "calloc(1, sizeof(");
-    text_add(out, sizeof_type->text);
-    text_add(out, "))");
+    if (init_start != NULL && init_end != NULL) {
+        char tmp[NAME_MAX_LEN];
+
+        snprintf(tmp, sizeof(tmp), "__right_value%d", g_right_value_id++);
+        text_add(out, "({ ");
+        append_c_type(out, type);
+        text_add(out, " ");
+        text_add(out, tmp);
+        text_add(out, " = calloc(1, sizeof(");
+        text_add(out, sizeof_type->text);
+        text_add(out, ")); ");
+        text_add(out, "if (");
+        text_add(out, tmp);
+        text_add(out, " != NULL) { ");
+        append_object_initializer_assignments(out, tmp, type, init_start, init_end);
+        text_add(out, "} ");
+        text_add(out, tmp);
+        text_add(out, "; })");
+    } else {
+        text_add(out, "calloc(1, sizeof(");
+        text_add(out, sizeof_type->text);
+        text_add(out, "))");
+    }
     text_add(out, new_end);
     out->tail_return = in->tail_return;
     out->ast = in->ast;
@@ -2359,7 +3460,7 @@ static struct Text *build_asprintf_statement(const char *lhs_name, const char *r
     struct Text *indent = text_new();
 
     if (quote == NULL || !build_s_format(quote, fmt, args)) {
-        fprintf(stderr, "cauto: invalid s string literal\n");
+        fprintf(stderr, "c-: invalid s string literal\n");
         exit(1);
     }
 
@@ -2385,7 +3486,7 @@ static void append_asprintf_for_quote(struct Text *out, const char *name, const 
     struct Text *args = text_new();
 
     if (!build_s_format(quote, fmt, args)) {
-        fprintf(stderr, "cauto: invalid s string literal\n");
+        fprintf(stderr, "c-: invalid s string literal\n");
         exit(1);
     }
     text_add(out, indent);
@@ -2641,6 +3742,7 @@ static int try_rewrite_struct_method(const char *s, const char **end, struct Tex
     const char *close;
     char obj[NAME_MAX_LEN];
     char method[NAME_MAX_LEN];
+    char generic_func[NAME_MAX_LEN];
     struct Symbol *sym;
 
     if (!is_ident_start((unsigned char)*s)) {
@@ -2652,10 +3754,10 @@ static int try_rewrite_struct_method(const char *s, const char **end, struct Tex
         return 0;
     }
     dot = skip_ws(name_end);
-    if (*dot != '.') {
+    if (*dot != '.' && !(dot[0] == '-' && dot[1] == '>')) {
         return 0;
     }
-    method_start = skip_ws(dot + 1);
+    method_start = skip_ws(*dot == '.' ? dot + 1 : dot + 2);
     if (!is_ident_start((unsigned char)*method_start)) {
         return 0;
     }
@@ -2669,11 +3771,15 @@ static int try_rewrite_struct_method(const char *s, const char **end, struct Tex
         return 0;
     }
 
-    text_add(replacement, sym->type.tag);
-    text_add_ch(replacement, '_');
-    text_add(replacement, method);
+    if (generic_method_concrete_name(sym->type.tag, method, generic_func, sizeof(generic_func))) {
+        text_add(replacement, generic_func);
+    } else {
+        text_add(replacement, sym->type.tag);
+        text_add_ch(replacement, '_');
+        text_add(replacement, method);
+    }
     text_add_ch(replacement, '(');
-    if (sym->type.ptr > 0) {
+    if (*dot == '-' || sym->type.ptr > 0) {
         text_add(replacement, obj);
     } else {
         text_add_ch(replacement, '&');
@@ -2711,6 +3817,163 @@ static struct Text *rewrite_method_calls(struct Text *in)
         p++;
     }
 
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    text_free(in);
+    return out;
+}
+
+static int parse_labeled_arg(const char *start, const char *end, char *label,
+                             const char **value_start, const char **value_end)
+{
+    const char *p = skip_ws(start);
+    const char *name_end;
+    const char *colon;
+
+    label[0] = '\0';
+    if (!is_ident_start((unsigned char)*p)) {
+        return 0;
+    }
+    name_end = read_name(p, label);
+    colon = skip_ws(name_end);
+    if (colon >= end || *colon != ':') {
+        label[0] = '\0';
+        return 0;
+    }
+    *value_start = skip_ws(colon + 1);
+    *value_end = end;
+    while (*value_end > *value_start && isspace((unsigned char)(*value_end)[-1])) {
+        (*value_end)--;
+    }
+    return 1;
+}
+
+static int param_index(struct FunctionParams *fn, const char *name)
+{
+    int i;
+    for (i = 0; i < fn->count; i++) {
+        if (strcmp(fn->param[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static struct Text *build_parameter_call(struct FunctionParams *fn, const char *args_start, const char *args_end)
+{
+    struct Text *values[MAX_PARAMS];
+    struct Text *out = text_new();
+    const char *p = args_start;
+    int positional = 0;
+    int i;
+
+    for (i = 0; i < MAX_PARAMS; i++) {
+        values[i] = NULL;
+    }
+    while (p < args_end) {
+        const char *arg_end = find_top_level_char(p, args_end, ',');
+        const char *value_start;
+        const char *value_end;
+        char label[NAME_MAX_LEN];
+        int index;
+
+        if (arg_end == NULL) {
+            arg_end = args_end;
+        }
+        while (p < arg_end && isspace((unsigned char)*p)) {
+            p++;
+        }
+        value_end = arg_end;
+        while (value_end > p && isspace((unsigned char)value_end[-1])) {
+            value_end--;
+        }
+        if (value_end > p) {
+            if (parse_labeled_arg(p, value_end, label, &value_start, &value_end)) {
+                index = param_index(fn, label);
+                if (index < 0) {
+                    fprintf(stderr, "c-: unknown parameter label '%s' for function '%s'\n", label, fn->name);
+                    exit(1);
+                }
+            } else {
+                while (positional < fn->count && values[positional] != NULL) {
+                    positional++;
+                }
+                index = positional++;
+                value_start = p;
+            }
+            if (index >= fn->count) {
+                fprintf(stderr, "c-: too many arguments for function '%s'\n", fn->name);
+                exit(1);
+            }
+            if (values[index] != NULL) {
+                fprintf(stderr, "c-: duplicate argument for parameter '%s'\n", fn->param[index].name);
+                exit(1);
+            }
+            values[index] = text_new();
+            text_add_n(values[index], value_start, (size_t)(value_end - value_start));
+        }
+        p = arg_end;
+        if (p < args_end && *p == ',') {
+            p++;
+        }
+    }
+    for (i = 0; i < fn->count; i++) {
+        if (i > 0) {
+            text_add(out, ", ");
+        }
+        if (values[i] != NULL) {
+            text_add(out, values[i]->text);
+        } else if (fn->param[i].def[0] != '\0') {
+            text_add(out, fn->param[i].def);
+        } else {
+            fprintf(stderr, "c-: missing argument for parameter '%s' in function '%s'\n",
+                    fn->param[i].name, fn->name);
+            exit(1);
+        }
+    }
+    for (i = 0; i < fn->count; i++) {
+        if (values[i] != NULL) {
+            text_free(values[i]);
+        }
+    }
+    return out;
+}
+
+static struct Text *rewrite_parameter_calls(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        if (is_ident_start((unsigned char)*p) && (p == in->text || !is_ident((unsigned char)p[-1]))) {
+            char name[NAME_MAX_LEN];
+            const char *name_end = read_name(p, name);
+            const char *open = skip_ws(name_end);
+            struct FunctionParams *fn = function_params_find(name);
+
+            if (fn != NULL && *open == '(') {
+                const char *close = find_matching_paren(open);
+                if (close != NULL) {
+                    struct Text *args = build_parameter_call(fn, open + 1, close);
+                    text_add(out, name);
+                    text_add_ch(out, '(');
+                    text_add(out, args->text);
+                    text_add_ch(out, ')');
+                    text_free(args);
+                    p = close + 1;
+                    changed = 1;
+                    continue;
+                }
+            }
+        }
+        text_add_ch(out, *p);
+        p++;
+    }
     if (!changed) {
         text_free(out);
         return in;
@@ -2819,8 +4082,10 @@ static struct Text *rewrite_control_condition(struct Text *head)
 static struct Text *process_control_head(struct Text *head)
 {
     enum NodeKind kind = ND_RAW;
-    const char *p = skip_ws(head->text);
+    const char *p;
 
+    head = rewrite_foreach_head(head);
+    p = skip_ws(head->text);
     if (starts_word(p, "if") || starts_word(p, "else")) {
         kind = ND_IF;
     } else if (starts_word(p, "while")) {
@@ -2829,7 +4094,9 @@ static struct Text *process_control_head(struct Text *head)
         kind = ND_DO;
     }
     check_owned_pointer_arithmetic(head->text);
+    head = rewrite_generics(head);
     head = rewrite_method_calls(head);
+    head = rewrite_parameter_calls(head);
     head = rewrite_control_condition(head);
     head->ast = ast_raw(kind, head->text);
     return head;
@@ -3226,7 +4493,7 @@ static void check_owned_pointer_arithmetic(const char *stmt)
         while ((p = strstr(p, name)) != NULL) {
             if ((p == stmt || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[n])) {
                 if (prev_nonspace_is_plus_or_minus(stmt, p) || next_is_owned_arith(p + n)) {
-                    fprintf(stderr, "cauto: type error: pointer arithmetic is forbidden for owned pointer '%s'\n", name);
+                    fprintf(stderr, "c-: type error: pointer arithmetic is forbidden for owned pointer '%s'\n", name);
                     exit(1);
                 }
             }
@@ -3297,8 +4564,14 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     int is_func_sig;
 
     register_tags_in_text(all->text);
+    if (!is_generic_decl_head(all->text)) {
+        all = rewrite_generics(all);
+    }
     is_func_sig = parse_function_signature(all->text, func_name, &ret);
-    register_owned_function_signature(all->text);
+    if (is_func_sig) {
+        register_function_params(all->text);
+        register_owned_function_signature(all->text);
+    }
     if (is_string_typedef_decl(all->text)) {
         struct Text *out = text_new();
         g_need_string_typedef = 1;
@@ -3309,6 +4582,9 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
         symbol_add_to(&g_globals, info.name, info.type);
     }
     all->ast = ast_raw(ND_DECL, all->text);
+    if (is_func_sig) {
+        all = strip_default_parameters(all);
+    }
     return remove_percent(strip_attributes(all));
 }
 
@@ -3339,6 +4615,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     owned_assign_type = type_unknown();
     new_type = type_unknown();
     register_tags_in_text(all->text);
+    all = rewrite_generics(all);
     if (!g_in_function) {
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0' &&
             parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' &&
@@ -3361,7 +4638,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 struct Text *out;
                 struct Text *call;
                 if (decl.type.ptr <= 0 || decl.type.kind != TY_CHAR) {
-                    fprintf(stderr, "cauto: type error: s string requires a char pointer declaration for '%s'\n", decl.name);
+                    fprintf(stderr, "c-: type error: s string requires a char pointer declaration for '%s'\n", decl.name);
                     text_free(all);
                     exit(1);
                 }
@@ -3388,24 +4665,24 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 rhs_type = new_type;
                 if (new_type.ptr > 0) {
                     if (decl.type.ptr <= 0) {
-                        fprintf(stderr, "cauto: type error: clone result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", decl.name);
                         text_free(all);
                         exit(1);
                     }
                     if (decl.type.owned) {
                         owned_add(decl.name, decl.type);
                     } else {
-                        post_free = 1;
-                        strcpy(post_free_name, decl.name);
-                        post_free_type = decl.type;
+                        fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", decl.name);
+                        text_free(all);
+                        exit(1);
                     }
                 }
             } else if (rhs_has_malloc_call(decl.init, func_name) || rhs_has_new_expr(decl.init, &new_type)) {
                 if (decl.type.ptr <= 0) {
                     if (func_name[0] != '\0') {
-                        fprintf(stderr, "cauto: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
                     } else {
-                        fprintf(stderr, "cauto: type error: new result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: new result requires a pointer %% declaration for '%s'\n", decl.name);
                     }
                     text_free(all);
                     exit(1);
@@ -3413,9 +4690,13 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 if (decl.type.owned) {
                     owned_add(decl.name, decl.type);
                 } else {
-                    post_free = 1;
-                    strcpy(post_free_name, decl.name);
-                    post_free_type = decl.type;
+                    if (func_name[0] != '\0') {
+                        fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
+                    } else {
+                        fprintf(stderr, "c-: type error: new result requires a pointer %% declaration for '%s'\n", decl.name);
+                    }
+                    text_free(all);
+                    exit(1);
                 }
             }
             check_assignment_type(decl.name, decl.type, rhs_type);
@@ -3428,6 +4709,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all->ast = ast_raw(ND_DECL, all->text);
         all = remove_percent(strip_attributes(all));
         all = rewrite_method_calls(all);
+        all = rewrite_parameter_calls(all);
         all = rewrite_control_condition(all);
         all = rewrite_s_string_temporaries(all);
         all = rewrite_clone_expressions(all);
@@ -3444,7 +4726,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
 
     if (eq >= 0 && rhs_has_s_string(all->text + eq + 1)) {
         if (!extract_lhs_name(all->text, eq, lhs_name) || !lhs_is_plain_name(all->text, eq, lhs_name)) {
-            fprintf(stderr, "cauto: type error: s string requires a plain char pointer lvalue\n");
+            fprintf(stderr, "c-: type error: s string requires a plain char pointer lvalue\n");
             text_free(all);
             exit(1);
         }
@@ -3452,7 +4734,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
         rhs_type = expr_type(all->text + eq + 1);
         if (lhs == NULL || lhs_type.ptr <= 0 || lhs_type.kind != TY_CHAR) {
-            fprintf(stderr, "cauto: type error: s string requires a char pointer lvalue for '%s'\n", lhs_name);
+            fprintf(stderr, "c-: type error: s string requires a char pointer lvalue for '%s'\n", lhs_name);
             text_free(all);
             exit(1);
         }
@@ -3482,7 +4764,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (extract_owned_decl_name(all->text, owned_name)) {
             lhs = symbol_find(owned_name);
             if (lhs != NULL && lhs->type.ptr <= 0) {
-                fprintf(stderr, "cauto: type error: clone result requires a pointer %% declaration for '%s'\n", owned_name);
+                fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", owned_name);
                 text_free(all);
                 exit(1);
             }
@@ -3491,7 +4773,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             lhs = symbol_find(lhs_name);
             lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
             if (new_type.ptr > 0 && (!type_is_known(lhs_type) || lhs_type.ptr <= 0)) {
-                fprintf(stderr, "cauto: type error: clone result requires a pointer lvalue for '%s'\n", lhs_name);
+                fprintf(stderr, "c-: type error: clone result requires a pointer lvalue for '%s'\n", lhs_name);
                 text_free(all);
                 exit(1);
             }
@@ -3507,14 +4789,13 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                     owned_assign_type = lhs_type;
                     owned_assign_lhs = slice_lhs_expr(all->text, eq);
                 } else {
-                    post_free = 1;
-                    strcpy(post_free_name, lhs_name);
-                    post_free_type = lhs_type;
-                    owned_name[0] = '\0';
+                    fprintf(stderr, "c-: type error: clone result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                    text_free(all);
+                    exit(1);
                 }
             }
         } else {
-            fprintf(stderr, "cauto: result of clone must be assigned to a matching declaration\n");
+            fprintf(stderr, "c-: result of clone must be assigned to a matching declaration\n");
             text_free(all);
             exit(1);
         }
@@ -3526,7 +4807,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (extract_owned_decl_name(all->text, owned_name)) {
             lhs = symbol_find(owned_name);
             if (lhs != NULL && lhs->type.ptr <= 0) {
-                fprintf(stderr, "cauto: type error: malloc result requires a pointer %% declaration for '%s'\n", owned_name);
+                fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", owned_name);
                 text_free(all);
                 exit(1);
             }
@@ -3536,7 +4817,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
             rhs_type = expr_type(all->text + eq + 1);
             if (!type_is_known(lhs_type) || lhs_type.ptr <= 0) {
-                fprintf(stderr, "cauto: type error: malloc result requires a pointer lvalue for '%s'\n", lhs_name);
+                fprintf(stderr, "c-: type error: malloc result requires a pointer lvalue for '%s'\n", lhs_name);
                 text_free(all);
                 exit(1);
             }
@@ -3551,16 +4832,19 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 owned_assign_type = lhs_type;
                 owned_assign_lhs = slice_lhs_expr(all->text, eq);
             } else {
-                post_free = 1;
-                strcpy(post_free_name, lhs_name);
-                post_free_type = lhs_type;
-                owned_name[0] = '\0';
+                if (func_name[0] != '\0') {
+                    fprintf(stderr, "c-: type error: malloc result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                } else {
+                    fprintf(stderr, "c-: type error: new result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                }
+                text_free(all);
+                exit(1);
             }
         } else {
             if (func_name[0] != '\0') {
-                fprintf(stderr, "cauto: result of owned function '%s' must be assigned to a %% pointer declaration\n", func_name);
+                fprintf(stderr, "c-: result of owned function '%s' must be assigned to a %% pointer declaration\n", func_name);
             } else {
-                fprintf(stderr, "cauto: result of new must be assigned to a %% pointer declaration\n");
+                fprintf(stderr, "c-: result of new must be assigned to a %% pointer declaration\n");
             }
             text_free(all);
             exit(1);
@@ -3580,6 +4864,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all->ast = ast_raw(eq >= 0 ? ND_ASSIGN : ND_EXPR_STMT, all->text);
     all = remove_percent(strip_attributes(all));
     all = rewrite_method_calls(all);
+    all = rewrite_parameter_calls(all);
     all = rewrite_clone_expressions(all);
     all = rewrite_control_condition(all);
     all = rewrite_s_string_temporaries(all);
@@ -3611,7 +4896,9 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     struct Text *all = text_join3(ret, expr, semi);
     all->ast = ast_raw(ND_RETURN, all->text);
     check_owned_pointer_arithmetic(all->text);
+    all = rewrite_generics(all);
     all = rewrite_method_calls(all);
+    all = rewrite_parameter_calls(all);
     if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
         struct Text *out = text_new();
         struct Text *indent = text_new();
@@ -3635,6 +4922,39 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     struct Text *out;
     struct Node *body_ast = body->ast;
     char name[NAME_MAX_LEN];
+    char param[NAME_MAX_LEN];
+
+    if (g_current_generic_kind == 1) {
+        if (!parse_generic_struct_head(head->text, param, name)) {
+            die("invalid generic struct");
+        }
+        generic_add(&g_generic_structs, param, name, head->text, body->text);
+        out = text_new();
+        g_current_generic_kind = 0;
+        g_top_block_is_function = 0;
+        g_in_aggregate_struct = 0;
+        g_current_struct_tag[0] = '\0';
+        g_skip_next_semi = 1;
+        text_free(head);
+        text_free(lb);
+        text_free(body);
+        text_free(rb);
+        return out;
+    }
+    if (g_current_generic_kind == 2) {
+        if (!parse_generic_function_head(head->text, param, name)) {
+            die("invalid generic function");
+        }
+        generic_add(&g_generic_funcs, param, name, head->text, body->text);
+        out = text_new();
+        g_current_generic_kind = 0;
+        g_in_function = 0;
+        text_free(head);
+        text_free(lb);
+        text_free(body);
+        text_free(rb);
+        return out;
+    }
 
     if (!g_top_block_is_function) {
         struct StructFinalizer *fin = struct_finalizer_find(g_current_struct_tag);
@@ -3658,7 +4978,9 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     }
 
     (void)name;
+    register_function_params(head->text);
     register_owned_function_signature(head->text);
+    head = strip_default_parameters(head);
     head = remove_percent(strip_attributes(head));
     {
         int body_tail_return = body->tail_return;
@@ -3680,12 +5002,85 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     return out;
 }
 
+static const char *generic_template_body_start(const char *head, char *param)
+{
+    const char *p = parse_generic_prefix(head, param);
+
+    return p == NULL ? head : p;
+}
+
+static void emit_generic_struct_instances(FILE *out)
+{
+    int i;
+    int j;
+
+    for (i = 0; i < g_generic_structs.count; i++) {
+        struct GenericTemplate *tmpl = &g_generic_structs.tmpl[i];
+        for (j = 0; j < tmpl->inst_count; j++) {
+            char param[NAME_MAX_LEN];
+            const char *head = generic_template_body_start(tmpl->head, param);
+            struct Text *concrete_head = replace_param_and_generics(head,
+                                                                    tmpl->param,
+                                                                    tmpl->inst[j].arg,
+                                                                    tmpl->name,
+                                                                    tmpl->inst[j].concrete);
+            struct Text *concrete_body = replace_param_and_generics(tmpl->body,
+                                                                    tmpl->param,
+                                                                    tmpl->inst[j].arg,
+                                                                    tmpl->name,
+                                                                    tmpl->inst[j].concrete);
+            fputs(concrete_head->text, out);
+            fputs("{", out);
+            fputs(concrete_body->text, out);
+            fputs("};\n", out);
+            text_free(concrete_head);
+            text_free(concrete_body);
+        }
+    }
+}
+
+static void emit_generic_function_instances(FILE *out)
+{
+    int i;
+
+    for (i = 0; i < g_generic_funcs.count; i++) {
+        struct GenericTemplate *tmpl = &g_generic_funcs.tmpl[i];
+        int j;
+        for (j = 0; j < tmpl->inst_count; j++) {
+            char param[NAME_MAX_LEN];
+            const char *head = generic_template_body_start(tmpl->head, param);
+            struct Text *concrete_head = replace_param_and_generics(head,
+                                                                    tmpl->param,
+                                                                    tmpl->inst[j].arg,
+                                                                    tmpl->name,
+                                                                    tmpl->inst[j].concrete);
+            struct Text *concrete_body = replace_param_and_generics(tmpl->body,
+                                                                    tmpl->param,
+                                                                    tmpl->inst[j].arg,
+                                                                    tmpl->name,
+                                                                    tmpl->inst[j].concrete);
+            fputs(concrete_head->text, out);
+            fputs("{", out);
+            fputs(concrete_body->text, out);
+            fputs("}\n", out);
+            text_free(concrete_head);
+            text_free(concrete_body);
+        }
+    }
+}
+
+static void emit_generic_instances(FILE *out)
+{
+    emit_generic_struct_instances(out);
+    emit_generic_function_instances(out);
+}
+
 int main(int argc, char **argv)
 {
     int rc;
 
     if (argc != 2) {
-        fputs("usage: cauto input.c > output.c\n", stderr);
+        fputs("usage: c- input.c- > output.c\n", stderr);
         return 2;
     }
 
@@ -3700,6 +5095,10 @@ int main(int argc, char **argv)
     g_right_value_id = 0;
     g_need_string_h = 0;
     g_need_string_typedef = 0;
+    g_generic_structs.count = 0;
+    g_generic_funcs.count = 0;
+    g_current_generic_kind = 0;
+    g_foreach_id = 0;
 
     rc = yyparse();
     if (rc != 0) {
@@ -3725,6 +5124,7 @@ int main(int argc, char **argv)
         if (g_need_string_typedef) {
             fputs("typedef char* string;\n", stdout);
         }
+        emit_generic_instances(stdout);
         fputs(p, stdout);
     }
     text_free(g_output);

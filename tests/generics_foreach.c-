@@ -1,0 +1,41 @@
+#include <stdlib.h>
+#include <c-/vec.c->
+
+struct Item {
+    int value;
+};
+
+int main(void)
+{
+    int values[3];
+    struct Item items[2];
+    int sum = 0;
+    int item_sum = 0;
+    struct Vec<int> nums;
+    struct Vec<int>* nums_ptr;
+    struct Vec<struct Item> item_vec;
+
+    values[0] = 1;
+    values[1] = 2;
+    values[2] = 3;
+    items[0].value = 4;
+    items[1].value = 5;
+    nums.data = values;
+    nums.len = 3;
+    nums_ptr = &nums;
+    item_vec.data = items;
+    item_vec.len = 2;
+    foreach (int value in nums) {
+        sum += value;
+    }
+    foreach (struct Item item in item_vec) {
+        item_sum += item.value;
+    }
+    if (nums.first() != 1) {
+        return 1;
+    }
+    if (nums_ptr->first() != 1) {
+        return 1;
+    }
+    return sum == 6 && item_sum == 9 ? 0 : 1;
+}
