@@ -55,7 +55,7 @@ rm -rf /tmp/cpm-smoke
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" run > run.out)
 grep 'value 123' /tmp/cpm-smoke/run.out >/dev/null
 test -x /tmp/cpm-smoke/target/debug/cpm-smoke
-test -f /tmp/cpm-smoke/lib/c-/vec.c-
+test -f /tmp/cpm-smoke/lib/c-.h
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" leak > leak.out 2> leak.err)
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" val > val.out 2> val.err)
 

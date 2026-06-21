@@ -263,7 +263,7 @@ static void write_main_source(void)
     write_file("src/main.c-",
                "#include <stdio.h>\n"
                "#include <stdlib.h>\n"
-               "#include <c-/vec.c->\n"
+               "#include <c-.h>\n"
                "\n"
                "int main(void)\n"
                "{\n"
@@ -278,9 +278,9 @@ static void write_main_source(void)
 
 static void write_stdlib_source(void)
 {
-    mkdir_p("lib/c-");
-    if (!file_exists("lib/c-/vec.c-")) {
-        write_file("lib/c-/vec.c-",
+    mkdir_p("lib");
+    if (!file_exists("lib/c-.h")) {
+        write_file("lib/c-.h",
                    "generic<T>\n"
                    "struct Vec {\n"
                    "    T* data;\n"

@@ -2202,7 +2202,7 @@ static int parse_cminus_include(const char *line, char *path, size_t path_size)
         return 0;
     }
     p = skip_ws(p + 8);
-    if (strncmp(p, "<c-/", 4) != 0) {
+    if (strncmp(p, "<c-.h>", 6) != 0) {
         return 0;
     }
     start = p + 1;

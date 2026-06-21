@@ -60,7 +60,7 @@ cpm clean
 hello/
   C-.toml
   src/main.c-
-  lib/c-/vec.c-
+  lib/c-.h
   .gitignore
 ```
 
@@ -108,7 +108,7 @@ the Valgrind executable. `cpm clean` removes `target`.
 
 By default `cpm` runs `c-` from `PATH`. For development or tests, set
 `CPM_C_MINUS=/path/to/c-`. Standard library includes are project-local:
-`cpm new` and `cpm init` write them under `lib/c-/`, and `#include <c-/...>`
+`cpm new` and `cpm init` write them as `lib/c-.h`, and `#include <c-.h>`
 resolves through `./lib`. Set `C_MINUS_LIB=/path/to/lib` only when invoking
 `c-` directly with a non-project library root.
 
@@ -254,7 +254,7 @@ The standard `Vec` template lives in the source library and can be included
 with:
 
 ```c
-#include <c-/vec.c->
+#include <c-.h>
 ```
 
 ```c
