@@ -26,6 +26,7 @@ static size_t pending_cap;
 static int new_type_scan;
 static int object_init_depth;
 static FILE *include_files[16];
+static int include_lines[16];
 static int include_depth;
 
 void cminus_push_include(FILE *fp)
@@ -34,8 +35,11 @@ void cminus_push_include(FILE *fp)
         fputs("c-: include depth exceeded\n", stderr);
         exit(1);
     }
-    include_files[include_depth++] = fp;
+    include_files[include_depth] = fp;
+    include_lines[include_depth] = yylineno;
+    include_depth++;
     yypush_buffer_state(yy_create_buffer(fp, YY_BUF_SIZE));
+    yylineno = 1;
 }
 
 static void *lex_xmalloc(size_t size)
@@ -167,8 +171,10 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
 
 <<EOF>>     {
                 if (include_depth > 0) {
-                    fclose(include_files[--include_depth]);
+                    include_depth--;
+                    fclose(include_files[include_depth]);
                     yypop_buffer_state();
+                    yylineno = include_lines[include_depth];
                     if (YY_CURRENT_BUFFER != NULL) {
                         return yylex();
                     }

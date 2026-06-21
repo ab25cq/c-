@@ -11,9 +11,11 @@ int main(void)
     struct Item items[2];
     int sum = 0;
     int item_sum = 0;
+    int list_sum = 0;
     struct Vec<int> nums;
     struct Vec<int>* nums_ptr;
     struct Vec<struct Item> item_vec;
+    List<int>*% list = List<int>.new();
 
     values[0] = 1;
     values[1] = 2;
@@ -31,11 +33,25 @@ int main(void)
     foreach (struct Item item in item_vec) {
         item_sum += item.value;
     }
+    list.push(6);
+    list.push(7);
+    foreach (int value in list) {
+        list_sum += value;
+    }
     if (nums.first() != 1) {
+        return 1;
+    }
+    if (nums[1] != 2) {
         return 1;
     }
     if (nums_ptr->first() != 1) {
         return 1;
     }
-    return sum == 6 && item_sum == 9 ? 0 : 1;
+    if (list.first() != 6) {
+        return 1;
+    }
+    if (list[1] != 7) {
+        return 1;
+    }
+    return sum == 6 && item_sum == 9 && list_sum == 13 ? 0 : 1;
 }

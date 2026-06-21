@@ -1,0 +1,26 @@
+#include <c-.h>
+#include <stdio.h>
+
+int main() {
+    Vec<int>*% xs = Vec<int>.new();
+    List<int>*% ys = List<int>.new();
+  
+    xs.push(10);
+    xs.push(20);
+    xs.push(30);
+    ys.push(4);
+    ys.push(5);
+  
+    int sum = 0;
+    int list_sum = 0;
+    foreach (int x in xs) {
+        sum += x;
+    }
+    foreach (int y in ys) {
+        list_sum += y;
+    }
+    printf("[value]\n%d\n[list]\n%d\n[index]\n%d %d\n", sum, list_sum, xs[1], ys[1]); // 60, 9, 20 5
+    
+    printf("panic %d\n", ys[2]);
+    return 0;
+}

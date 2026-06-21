@@ -99,9 +99,29 @@ cc -std=c99 -Wall -Wextra -pedantic tests/default_params.out.c -o tests/default_
 grep 'struct Vec_int' tests/generics_foreach.out.c >/dev/null
 grep 'struct Vec_Item' tests/generics_foreach.out.c >/dev/null
 grep 'Vec_first_int' tests/generics_foreach.out.c >/dev/null
+grep 'Vec_get_opt_int' tests/generics_foreach.out.c >/dev/null
+grep 'List_get_opt_int' tests/generics_foreach.out.c >/dev/null
+grep '__CMinusIndex_int_TAG_None' tests/generics_foreach.out.c >/dev/null
 grep '__foreach' tests/generics_foreach.out.c >/dev/null
-cc -std=c99 -Wall -Wextra -pedantic tests/generics_foreach.out.c -o tests/generics_foreach.out
+cc -std=gnu99 -Wall -Wextra tests/generics_foreach.out.c -o tests/generics_foreach.out
 ./tests/generics_foreach.out
+
+./c- tests/index_panic.c- > tests/index_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/index_panic.out.c -o tests/index_panic.out
+if ./tests/index_panic.out > tests/index_panic.out.log 2> tests/index_panic.err; then
+    echo "out-of-range index unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: index out of range at tests/index_panic.c-:' tests/index_panic.err >/dev/null
+
+./c- tests/payload_enum.c- > tests/payload_enum.out.c
+grep 'struct Option_int' tests/payload_enum.out.c >/dev/null
+grep 'Option_int_Some(123)' tests/payload_enum.out.c >/dev/null
+grep 'Option_int_None()' tests/payload_enum.out.c >/dev/null
+grep 'Option_int_is_Some(&some)' tests/payload_enum.out.c >/dev/null
+grep 'Option_int_get_Some(&some)' tests/payload_enum.out.c >/dev/null
+cc -std=c99 -Wall -Wextra -pedantic tests/payload_enum.out.c -o tests/payload_enum.out
+./tests/payload_enum.out
 
 ./c- tests/clone.c- > tests/clone.out.c
 grep 'Pair_clone(struct Pair\* self)' tests/clone.out.c >/dev/null

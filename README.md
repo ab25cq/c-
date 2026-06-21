@@ -17,6 +17,9 @@ Runtime/debugging dependencies:
 - AddressSanitizer runtime for `cpm leak`
   - Fedora/RHEL: `libasan`
   - macOS: Apple Clang or LLVM Clang with AddressSanitizer support
+- `execinfo.h` / `backtrace(3)` support for panic stack-frame output
+  - glibc systems usually provide this with the C library
+  - Alpine/musl may require `libexecinfo-dev`
 
 Example installs:
 
@@ -28,7 +31,7 @@ sudo dnf install gcc make bison flex valgrind libasan
 sudo apt install build-essential bison flex valgrind libasan8
 
 # Alpine
-sudo apk add build-base bison flex valgrind
+sudo apk add build-base bison flex valgrind libexecinfo-dev
 
 # Arch Linux
 sudo pacman -S base-devel bison flex valgrind
@@ -247,8 +250,9 @@ A function is registered for this rewriting only when at least one parameter
 has a default expression. Unknown labels, duplicate labels, too many arguments,
 or omitted parameters without defaults are compile-time `c-` errors.
 
-Generic structs and functions use explicit type arguments and are lowered by
-monomorphization. Type inference is not performed.
+Generic structs, functions, and payload enums use explicit type arguments and
+are lowered by monomorphization. Type inference is not performed except for
+`auto` declarations initialized from payload enum constructors.
 
 The standard `Vec` template lives in the source library and can be included
 with:
@@ -288,7 +292,12 @@ int first = ptr->first();
 
 Generic method blocks are intentionally not part of this feature.
 
-`foreach` iterates over collection-like values that expose `.data` and `.len`:
+The standard library currently provides `Vec<T>` and `List<T>`. Both support
+`new`, `push`, `first`, indexed access, automatic deletion for `%` variables,
+and `foreach`.
+
+`foreach` iterates over `Vec<T>` values through `.data` and `.len`, and over
+`List<T>` values through linked-list nodes:
 
 ```c
 foreach (int value in nums) {
@@ -298,6 +307,37 @@ foreach (int value in nums) {
 
 This lowers to ordinary `for` loops. The element type must be written
 explicitly; it may itself be a concrete generic type.
+
+`Vec<T>` and `List<T>` also support checked indexed access:
+
+```c
+int a = nums[1];
+int b = list[1];
+```
+
+The generated code calls a payload-enum checked access helper. If the index is
+out of range, it calls `cminus_panic` with the original `.c-` source file name
+and line number, prints stack frames with `backtrace(3)`, and aborts.
+
+Rust-like payload enum syntax is available for generic enums:
+
+```c
+enum Option<T> {
+    Some(T),
+    None,
+};
+
+auto some = new Option<int>.Some(123);
+auto none = new Option<int>.None();
+
+if (some.is_Some() && none.is_None()) {
+    return some.get_Some();
+}
+```
+
+`new Type<T>.Variant(...)` creates a value of that variant. `is_Variant()` is
+generated for every variant. `get_Variant()` is generated for variants with
+one payload value.
 
 Local variable declarations without initializers receive a zero initializer and
 are then zero-cleared immediately after the declaration with `memset`,
