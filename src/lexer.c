@@ -580,6 +580,9 @@ void cminus_push_include(FILE *fp)
         fputs("c-: include depth exceeded\n", stderr);
         exit(1);
     }
+    if (YY_CURRENT_BUFFER == NULL && yyin != NULL) {
+        yy_switch_to_buffer(yy_create_buffer(yyin, YY_BUF_SIZE));
+    }
     include_files[include_depth] = fp;
     include_lines[include_depth] = yylineno;
     include_depth++;
@@ -698,8 +701,8 @@ static int emit_token(int token)
     yylval.node = token_node(yytext, (size_t)yyleng);
     return token;
 }
-#line 701 "src/lexer.c"
-#line 702 "src/lexer.c"
+#line 704 "src/lexer.c"
+#line 705 "src/lexer.c"
 
 #define INITIAL 0
 
@@ -917,10 +920,10 @@ YY_DECL
 		}
 
 	{
-#line 170 "src/lexer.l"
+#line 173 "src/lexer.l"
 
 
-#line 923 "src/lexer.c"
+#line 926 "src/lexer.c"
 
 	while ( /*CONSTCOND*/1 )		/* loops until end-of-file is reached */
 		{
@@ -989,7 +992,7 @@ do_action:	/* This label is used only to access EOF actions. */
 			goto yy_find_action;
 
 case YY_STATE_EOF(INITIAL):
-#line 172 "src/lexer.l"
+#line 175 "src/lexer.l"
 {
                 if (include_depth > 0) {
                     include_depth--;
@@ -1008,34 +1011,34 @@ case YY_STATE_EOF(INITIAL):
 case 1:
 /* rule 1 can match eol */
 YY_RULE_SETUP
-#line 187 "src/lexer.l"
+#line 190 "src/lexer.l"
 { return emit_token(PP_LINE); }
 	YY_BREAK
 case 2:
 /* rule 2 can match eol */
 YY_RULE_SETUP
-#line 188 "src/lexer.l"
+#line 191 "src/lexer.l"
 { pending_add(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 3:
 YY_RULE_SETUP
-#line 189 "src/lexer.l"
+#line 192 "src/lexer.l"
 { pending_add(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 4:
 /* rule 4 can match eol */
 YY_RULE_SETUP
-#line 190 "src/lexer.l"
+#line 193 "src/lexer.l"
 { pending_add(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 5:
 YY_RULE_SETUP
-#line 192 "src/lexer.l"
+#line 195 "src/lexer.l"
 { return emit_token(RETURN); }
 	YY_BREAK
 case 6:
 YY_RULE_SETUP
-#line 193 "src/lexer.l"
+#line 196 "src/lexer.l"
 {
                 if (strcmp(yytext, "new") == 0) {
                     new_type_scan = 1;
@@ -1048,34 +1051,34 @@ YY_RULE_SETUP
 	YY_BREAK
 case 7:
 YY_RULE_SETUP
-#line 203 "src/lexer.l"
+#line 206 "src/lexer.l"
 { return emit_token(NUMBER); }
 	YY_BREAK
 case 8:
 YY_RULE_SETUP
-#line 204 "src/lexer.l"
+#line 207 "src/lexer.l"
 { return emit_token(NUMBER); }
 	YY_BREAK
 case 9:
 YY_RULE_SETUP
-#line 205 "src/lexer.l"
+#line 208 "src/lexer.l"
 { return emit_token(STRING_LITERAL); }
 	YY_BREAK
 case 10:
 YY_RULE_SETUP
-#line 206 "src/lexer.l"
+#line 209 "src/lexer.l"
 { return emit_token(CHAR_LITERAL); }
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 208 "src/lexer.l"
+#line 211 "src/lexer.l"
 {
                 return emit_token(OP);
             }
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 212 "src/lexer.l"
+#line 215 "src/lexer.l"
 {
                 if (new_type_scan || object_init_depth > 0) {
                     new_type_scan = 0;
@@ -1087,7 +1090,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 13:
 YY_RULE_SETUP
-#line 220 "src/lexer.l"
+#line 223 "src/lexer.l"
 {
                 if (object_init_depth > 0) {
                     object_init_depth--;
@@ -1098,32 +1101,32 @@ YY_RULE_SETUP
 	YY_BREAK
 case 14:
 YY_RULE_SETUP
-#line 227 "src/lexer.l"
+#line 230 "src/lexer.l"
 { return emit_token(LPAREN); }
 	YY_BREAK
 case 15:
 YY_RULE_SETUP
-#line 228 "src/lexer.l"
+#line 231 "src/lexer.l"
 { new_type_scan = 0; return emit_token(RPAREN); }
 	YY_BREAK
 case 16:
 YY_RULE_SETUP
-#line 229 "src/lexer.l"
+#line 232 "src/lexer.l"
 { return emit_token(LBRACKET); }
 	YY_BREAK
 case 17:
 YY_RULE_SETUP
-#line 230 "src/lexer.l"
+#line 233 "src/lexer.l"
 { return emit_token(RBRACKET); }
 	YY_BREAK
 case 18:
 YY_RULE_SETUP
-#line 231 "src/lexer.l"
+#line 234 "src/lexer.l"
 { new_type_scan = 0; return emit_token(SEMI); }
 	YY_BREAK
 case 19:
 YY_RULE_SETUP
-#line 232 "src/lexer.l"
+#line 235 "src/lexer.l"
 {
                 if (object_init_depth > 0) {
                     return emit_token(OTHER);
@@ -1134,32 +1137,32 @@ YY_RULE_SETUP
 	YY_BREAK
 case 20:
 YY_RULE_SETUP
-#line 239 "src/lexer.l"
+#line 242 "src/lexer.l"
 { return emit_token(EQUAL); }
 	YY_BREAK
 case 21:
 YY_RULE_SETUP
-#line 240 "src/lexer.l"
+#line 243 "src/lexer.l"
 { return emit_token(PERCENT); }
 	YY_BREAK
 case 22:
 YY_RULE_SETUP
-#line 242 "src/lexer.l"
+#line 245 "src/lexer.l"
 {
                 return emit_token(OP);
             }
 	YY_BREAK
 case 23:
 YY_RULE_SETUP
-#line 246 "src/lexer.l"
+#line 249 "src/lexer.l"
 { return emit_token(OTHER); }
 	YY_BREAK
 case 24:
 YY_RULE_SETUP
-#line 248 "src/lexer.l"
+#line 251 "src/lexer.l"
 ECHO;
 	YY_BREAK
-#line 1162 "src/lexer.c"
+#line 1165 "src/lexer.c"
 
 	case YY_END_OF_BUFFER:
 		{
@@ -2135,6 +2138,6 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 248 "src/lexer.l"
+#line 251 "src/lexer.l"
 
 

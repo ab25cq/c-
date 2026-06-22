@@ -212,6 +212,7 @@ struct PayloadEnums {
 };
 
 static struct Text *g_output;
+static struct Text *g_defines;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
 static struct Funcs g_malloc_funcs;
@@ -242,6 +243,7 @@ static int g_foreach_id;
 static int g_index_id;
 static int g_need_stdio_h;
 static int g_need_execinfo_h;
+static int g_emit_uniq;
 static const char *g_input_path;
 
 int yylex(void);
@@ -269,6 +271,7 @@ static void tag_add(enum TypeKind kind, const char *name);
 static void symbol_add(const char *name, struct Type type);
 static void begin_function(void);
 static void begin_top_block(struct Text *head);
+static int source_has_cminus_include(FILE *fp);
 static struct Text *process_pp_line(struct Text *line);
 static struct Text *process_standalone_semi(struct Text *semi);
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
@@ -309,6 +312,9 @@ static int parse_payload_enum_head(const char *s, char *param, char *name);
 static void emit_payload_enum_instances(FILE *out);
 static struct Text *rewrite_payload_enum_constructors(struct Text *in);
 static struct Text *try_rewrite_auto_payload_enum_decl(struct Text *in);
+static int is_uniq_decl(const char *s);
+static struct Text *strip_uniq(struct Text *in);
+static struct Text *uniq_extern_decl(struct Text *in);
 static const char *generic_template_body_start(const char *head, char *param);
 static void append_struct_clone_name(struct Text *out, const char *tag);
 static void append_struct_clone_definition(struct Text *out, struct StructFinalizer *clone);
@@ -1662,7 +1668,7 @@ static int skip_decl_word(const char *word)
 {
     static const char *words[] = {
         "auto", "extern", "register", "static", "typedef", "const", "volatile",
-        "restrict", "inline", "signed", "unsigned", "_Atomic", NULL
+        "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", NULL
     };
     int i;
     for (i = 0; words[i] != NULL; i++) {
@@ -2712,6 +2718,17 @@ static int is_stdlib_include(const char *line)
     return strncmp(p, "<stdlib.h>", 10) == 0;
 }
 
+static int is_string_include(const char *line)
+{
+    const char *p = skip_ws(line);
+
+    if (strncmp(p, "#include", 8) != 0) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    return strncmp(p, "<string.h>", 10) == 0;
+}
+
 static int is_stdio_include(const char *line)
 {
     const char *p = skip_ws(line);
@@ -2755,14 +2772,47 @@ static FILE *open_cminus_include(const char *include_path)
     return NULL;
 }
 
+static int source_has_cminus_include(FILE *fp)
+{
+    char line[1024];
+    char include_path[256];
+    int found = 0;
+
+    rewind(fp);
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (parse_cminus_include(line, include_path, sizeof(include_path))) {
+            found = 1;
+            break;
+        }
+    }
+    rewind(fp);
+    return found;
+}
+
 static struct Text *process_pp_line(struct Text *line)
 {
     char include_path[256];
     FILE *fp;
     struct Text *out;
+    const char *p = skip_ws(line->text);
 
+    if (strncmp(p, "#define", 7) == 0) {
+        text_add(g_defines, line->text);
+        if (line->len == 0 || line->text[line->len - 1] != '\n') {
+            text_add_ch(g_defines, '\n');
+        }
+        out = text_new();
+        text_free(line);
+        return out;
+    }
     if (is_stdlib_include(line->text)) {
         g_need_stdlib_h = 1;
+        out = text_new();
+        text_free(line);
+        return out;
+    }
+    if (is_string_include(line->text)) {
+        g_need_string_h = 1;
         out = text_new();
         text_free(line);
         return out;
@@ -5258,6 +5308,12 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     struct Text *all = text_join(decl, semi);
     int is_func_sig;
 
+    if (is_uniq_decl(all->text)) {
+        if (!g_emit_uniq) {
+            return uniq_extern_decl(all);
+        }
+        all = strip_uniq(all);
+    }
     register_tags_in_text(all->text);
     if (!is_generic_decl_head(all->text)) {
         all = rewrite_generics(all);
@@ -5682,6 +5738,22 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         return out;
     }
 
+    if (is_uniq_decl(head->text)) {
+        if (!g_emit_uniq) {
+            out = uniq_extern_decl(head);
+            g_top_block_is_function = 0;
+            g_in_function = 0;
+            g_owned.count = 0;
+            g_finalized_locals.count = 0;
+            g_locals.count = 0;
+            text_free(lb);
+            text_free(body);
+            text_free(rb);
+            return out;
+        }
+        head = strip_uniq(head);
+    }
+
     if (!g_top_block_is_function) {
         struct StructFinalizer *fin = struct_finalizer_find(g_current_struct_tag);
         struct StructFinalizer *clone = struct_clone_find(g_current_struct_tag);
@@ -5936,6 +6008,62 @@ static void emit_payload_enum_instances(FILE *out)
     }
 }
 
+static int is_uniq_decl(const char *s)
+{
+    const char *p = skip_leading_space(s);
+
+    return strncmp(p, "uniq", 4) == 0 && !is_ident((unsigned char)p[4]);
+}
+
+static struct Text *strip_uniq(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+
+    while (isspace((unsigned char)*p)) {
+        text_add_ch(out, *p++);
+    }
+    if (strncmp(p, "uniq", 4) == 0 && !is_ident((unsigned char)p[4])) {
+        p += 4;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_add(out, p);
+    text_free(in);
+    return out;
+}
+
+static struct Text *uniq_extern_decl(struct Text *in)
+{
+    struct Text *stripped = strip_uniq(in);
+    const char *s = skip_leading_space(stripped->text);
+    const char *end = strchr(s, ';');
+    const char *eq = strchr(s, '=');
+    struct Text *out = text_new();
+
+    append_leading_newlines(stripped->text, out);
+    if (!starts_word(s, "extern")) {
+        text_add(out, "extern ");
+    }
+    if (eq != NULL && (end == NULL || eq < end)) {
+        text_add_n(out, s, (size_t)(eq - s));
+    } else if (end != NULL) {
+        text_add_n(out, s, (size_t)(end - s));
+    } else {
+        text_add(out, s);
+    }
+    while (out->len > 0 && isspace((unsigned char)out->text[out->len - 1])) {
+        out->text[--out->len] = '\0';
+    }
+    text_add(out, ";\n");
+    text_free(stripped);
+    return out;
+}
+
 int main(int argc, char **argv)
 {
     int rc;
@@ -5953,6 +6081,7 @@ int main(int argc, char **argv)
     g_input_path = argv[1];
     yylineno = 1;
     g_output = text_new();
+    g_defines = text_new();
     g_malloc_funcs.count = 0;
     g_right_value_id = 0;
     g_need_string_h = 0;
@@ -5960,6 +6089,10 @@ int main(int argc, char **argv)
     g_need_stdio_h = 0;
     g_need_execinfo_h = 0;
     g_need_string_typedef = 0;
+    {
+        const char *emit_uniq = getenv("C_MINUS_EMIT_UNIQ");
+        g_emit_uniq = emit_uniq == NULL || strcmp(emit_uniq, "0") != 0;
+    }
     g_generic_structs.count = 0;
     g_generic_funcs.count = 0;
     g_payload_enums.count = 0;
@@ -5967,15 +6100,24 @@ int main(int argc, char **argv)
     g_current_payload_enum = 0;
     g_foreach_id = 0;
     g_index_id = 0;
+    if (!source_has_cminus_include(yyin)) {
+        FILE *stdlib_fp = open_cminus_include("c-.h");
+        if (stdlib_fp == NULL) {
+            fputs("c-: include not found: c-.h\n", stderr);
+            fclose(yyin);
+            return 1;
+        }
+        cminus_push_include(stdlib_fp);
+    }
 
     rc = yyparse();
     if (rc != 0) {
         fclose(yyin);
         return 1;
     }
-
     {
         const char *p = g_output->text;
+        fputs(g_defines->text, stdout);
         while (strncmp(p, "#define", 7) == 0) {
             const char *nl = strchr(p, '\n');
             if (nl == NULL) {

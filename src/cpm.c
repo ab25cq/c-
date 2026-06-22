@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <errno.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,7 @@
 
 #define PATH_MAX_LEN 1024
 #define VALUE_MAX_LEN 512
+#define MAX_SOURCES 128
 
 #if defined(__APPLE__)
 #define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address"
@@ -29,6 +31,14 @@ struct Manifest {
     char cflags[VALUE_MAX_LEN];
 };
 
+struct SourceList {
+    char path[MAX_SOURCES][PATH_MAX_LEN];
+    int count;
+};
+
+static void shell_quote(char *out, size_t out_size, const char *s);
+static int starts_word_text(const char *s, const char *word);
+
 static void die(const char *msg)
 {
     fputs(msg, stderr);
@@ -46,6 +56,20 @@ static int file_exists(const char *path)
 {
     struct stat st;
     return stat(path, &st) == 0;
+}
+
+static int dir_exists(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int has_suffix(const char *s, const char *suffix)
+{
+    size_t len = strlen(s);
+    size_t suffix_len = strlen(suffix);
+
+    return len >= suffix_len && strcmp(s + len - suffix_len, suffix) == 0;
 }
 
 static void mkdir_one(const char *path)
@@ -83,6 +107,96 @@ static void write_file(const char *path, const char *text)
     fputs(text, fp);
     if (fclose(fp) != 0) {
         die_errno(path);
+    }
+}
+
+static void source_list_add(struct SourceList *sources, const char *path)
+{
+    int i;
+
+    for (i = 0; i < sources->count; i++) {
+        if (strcmp(sources->path[i], path) == 0) {
+            return;
+        }
+    }
+    if (sources->count >= MAX_SOURCES) {
+        die("cpm: too many source files");
+    }
+    strncpy(sources->path[sources->count], path, PATH_MAX_LEN - 1);
+    sources->path[sources->count][PATH_MAX_LEN - 1] = '\0';
+    sources->count++;
+}
+
+static void collect_sources_dir(struct SourceList *sources, const char *dir)
+{
+    DIR *dp;
+    struct dirent *ent;
+
+    dp = opendir(dir);
+    if (dp == NULL) {
+        return;
+    }
+    while ((ent = readdir(dp)) != NULL) {
+        char path[PATH_MAX_LEN];
+
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+        if (dir_exists(path)) {
+            collect_sources_dir(sources, path);
+        } else if (has_suffix(path, ".c-")) {
+            source_list_add(sources, path);
+        }
+    }
+    closedir(dp);
+}
+
+static void collect_sources(struct SourceList *sources, const char *main_src)
+{
+    memset(sources, 0, sizeof(*sources));
+    source_list_add(sources, main_src);
+    collect_sources_dir(sources, "src");
+}
+
+static void generated_c_path(char *out, size_t out_size, const char *src, const struct Manifest *m)
+{
+    size_t i;
+    size_t n;
+
+    if (strcmp(src, m->src) == 0) {
+        snprintf(out, out_size, "target/debug/%s.c", m->name);
+        return;
+    }
+    snprintf(out, out_size, "target/debug/%s", src);
+    n = strlen(out);
+    if (n >= 3 && strcmp(out + n - 3, ".c-") == 0) {
+        out[n - 1] = '\0';
+    } else if (n + 3 < out_size) {
+        strcat(out, ".c");
+    }
+    for (i = strlen("target/debug/"); out[i] != '\0'; i++) {
+        if (out[i] == '/') {
+            out[i] = '_';
+        }
+    }
+}
+
+static void append_generated_c_paths(char *cmd, size_t cmd_size, struct SourceList *sources, const struct Manifest *m)
+{
+    int i;
+
+    for (i = 0; i < sources->count; i++) {
+        char c_path[PATH_MAX_LEN];
+        char q_c[PATH_MAX_LEN * 2];
+
+        generated_c_path(c_path, sizeof(c_path), sources->path[i], m);
+        shell_quote(q_c, sizeof(q_c), c_path);
+        if (strlen(cmd) + strlen(q_c) + 2 >= cmd_size) {
+            die("cpm: command too long");
+        }
+        strcat(cmd, " ");
+        strcat(cmd, q_c);
     }
 }
 
@@ -150,6 +264,201 @@ static char *trim(char *s)
     }
     *end = '\0';
     return s;
+}
+
+static int starts_word_text(const char *s, const char *word)
+{
+    size_t n = strlen(word);
+    return strncmp(s, word, n) == 0 &&
+           !isalnum((unsigned char)s[n]) && s[n] != '_';
+}
+
+static void strip_owned_marker(char *s)
+{
+    char *w = s;
+
+    while (*s != '\0') {
+        if (*s != '%') {
+            *w++ = *s;
+        }
+        s++;
+    }
+    *w = '\0';
+}
+
+static void strip_uniq_marker(char *s)
+{
+    char *p = trim(s);
+
+    if (starts_word_text(p, "uniq")) {
+        memmove(p, p + 4, strlen(p + 4) + 1);
+        p = trim(p);
+        memmove(s, p, strlen(p) + 1);
+    }
+}
+
+static void strip_default_parameter_values(char *s)
+{
+    char *out = s;
+    int paren = 0;
+    int skipping = 0;
+
+    while (*s != '\0') {
+        if (*s == '(') {
+            paren++;
+            skipping = 0;
+            *out++ = *s++;
+        } else if (*s == ')') {
+            if (paren > 0) {
+                paren--;
+            }
+            skipping = 0;
+            *out++ = *s++;
+        } else if (paren > 0 && *s == '=') {
+            skipping = 1;
+            s++;
+        } else if (skipping && (*s == ',' || *s == ')')) {
+            skipping = 0;
+            if (*s == ')') {
+                if (paren > 0) {
+                    paren--;
+                }
+            }
+            *out++ = *s++;
+        } else if (!skipping) {
+            *out++ = *s++;
+        } else {
+            s++;
+        }
+    }
+    *out = '\0';
+}
+
+static int looks_like_function_signature(const char *s)
+{
+    const char *open = strchr(s, '(');
+    const char *close = strrchr(s, ')');
+
+    if (open == NULL || close == NULL || close < open) {
+        return 0;
+    }
+    if (starts_word_text(s, "if") || starts_word_text(s, "for") ||
+        starts_word_text(s, "while") || starts_word_text(s, "switch")) {
+        return 0;
+    }
+    if (starts_word_text(s, "struct") || starts_word_text(s, "union") ||
+        starts_word_text(s, "enum")) {
+        return 0;
+    }
+    if (starts_word_text(s, "static")) {
+        return 0;
+    }
+    return 1;
+}
+
+static void emit_common_decl(FILE *out, const char *text)
+{
+    char buf[4096];
+    char *s;
+    size_t len;
+
+    if (strlen(text) >= sizeof(buf)) {
+        return;
+    }
+    strcpy(buf, text);
+    s = trim(buf);
+    if (*s == '\0' || *s == '#') {
+        return;
+    }
+    if (starts_word_text(s, "generic")) {
+        return;
+    }
+    strip_owned_marker(s);
+    strip_uniq_marker(s);
+    strip_default_parameter_values(s);
+    len = strlen(s);
+    while (len > 0 && isspace((unsigned char)s[len - 1])) {
+        s[--len] = '\0';
+    }
+    if (len == 0) {
+        return;
+    }
+    if (s[len - 1] == ';') {
+        if (strchr(s, '=') != NULL && !starts_word_text(s, "typedef")) {
+            return;
+        }
+        if (looks_like_function_signature(s) || starts_word_text(s, "extern") ||
+            starts_word_text(s, "typedef")) {
+            fprintf(out, "%s\n", s);
+        }
+    } else if (looks_like_function_signature(s)) {
+        fprintf(out, "%s;\n", s);
+    }
+}
+
+static void generate_common_header(struct SourceList *sources)
+{
+    FILE *out;
+    int i;
+
+    out = fopen("target/debug/common.h", "w");
+    if (out == NULL) {
+        die_errno("target/debug/common.h");
+    }
+    fputs("#ifndef C_MINUS_COMMON_H\n#define C_MINUS_COMMON_H\n\n", out);
+    for (i = 0; i < sources->count; i++) {
+        FILE *fp = fopen(sources->path[i], "r");
+        char line[1024];
+        char stmt[4096];
+        size_t stmt_len = 0;
+        int depth = 0;
+
+        if (fp == NULL) {
+            continue;
+        }
+        stmt[0] = '\0';
+        while (fgets(line, sizeof(line), fp) != NULL) {
+            char *s = trim(line);
+            char *p;
+
+            if (*s == '\0' || *s == '#') {
+                continue;
+            }
+            if (depth == 0 && stmt_len + strlen(s) + 2 < sizeof(stmt)) {
+                memcpy(stmt + stmt_len, s, strlen(s));
+                stmt_len += strlen(s);
+                stmt[stmt_len++] = ' ';
+                stmt[stmt_len] = '\0';
+            }
+            for (p = s; *p != '\0'; p++) {
+                if (*p == '{') {
+                    if (depth == 0) {
+                        char *brace = strchr(stmt, '{');
+                        if (brace != NULL) {
+                            *brace = '\0';
+                        }
+                        emit_common_decl(out, stmt);
+                        stmt_len = 0;
+                        stmt[0] = '\0';
+                    }
+                    depth++;
+                } else if (*p == '}') {
+                    if (depth > 0) {
+                        depth--;
+                    }
+                } else if (*p == ';' && depth == 0) {
+                    emit_common_decl(out, stmt);
+                    stmt_len = 0;
+                    stmt[0] = '\0';
+                }
+            }
+        }
+        fclose(fp);
+    }
+    fputs("\n#endif\n", out);
+    if (fclose(out) != 0) {
+        die_errno("target/debug/common.h");
+    }
 }
 
 static void unquote_value(char *dst, size_t dst_size, const char *src)
@@ -285,7 +594,7 @@ static void write_stdlib_source(void)
                    "#include <stdio.h>\n"
                    "#include <execinfo.h>\n"
                    "\n"
-                   "void cminus_panic(const char* message, const char* file, int line)\n"
+                   "uniq void cminus_panic(const char* message, const char* file, int line)\n"
                    "{\n"
                    "    void* frames[64];\n"
                    "    int count;\n"
@@ -464,33 +773,139 @@ static int cmd_new(const char *name)
     return cmd_init(base_name(name));
 }
 
+static int file_has_main_function(const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    char line[1024];
+
+    if (fp == NULL) {
+        return 0;
+    }
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char *p = line;
+
+        while ((p = strstr(p, "main")) != NULL) {
+            char before = p == line ? '\0' : p[-1];
+            char *after = p + 4;
+
+            if ((before == '\0' || !(isalnum((unsigned char)before) || before == '_')) &&
+                !(isalnum((unsigned char)*after) || *after == '_')) {
+                while (isspace((unsigned char)*after)) {
+                    after++;
+                }
+                if (*after == '(') {
+                    fclose(fp);
+                    return 1;
+                }
+            }
+            p += 4;
+        }
+    }
+    fclose(fp);
+    return 0;
+}
+
+static void write_c_with_common_include(const char *dst, const char *src)
+{
+    FILE *in = fopen(src, "r");
+    FILE *out;
+    char line[4096];
+    int inserted = 0;
+    int saw_common = 0;
+
+    if (in == NULL) {
+        die_errno(src);
+    }
+    out = fopen(dst, "w");
+    if (out == NULL) {
+        fclose(in);
+        die_errno(dst);
+    }
+    while (fgets(line, sizeof(line), in) != NULL) {
+        char tmp[4096];
+        char *s;
+
+        strncpy(tmp, line, sizeof(tmp) - 1);
+        tmp[sizeof(tmp) - 1] = '\0';
+        s = trim(tmp);
+        if (!inserted) {
+            if (strncmp(s, "#include", 8) == 0) {
+                if (strstr(s, "\"common.h\"") != NULL || strstr(s, "<common.h>") != NULL) {
+                    saw_common = 1;
+                }
+                fputs(line, out);
+                continue;
+            }
+            if (*s == '\0' || strncmp(s, "#define", 7) == 0) {
+                fputs(line, out);
+                continue;
+            }
+            if (!saw_common) {
+                fputs("#include \"common.h\"\n", out);
+            }
+            inserted = 1;
+        }
+        fputs(line, out);
+    }
+    if (ferror(in)) {
+        fclose(in);
+        fclose(out);
+        die_errno(src);
+    }
+    if (!inserted) {
+        if (!saw_common) {
+            fputs("#include \"common.h\"\n", out);
+        }
+    }
+    if (fclose(in) != 0) {
+        fclose(out);
+        die_errno(src);
+    }
+    if (fclose(out) != 0) {
+        die_errno(dst);
+    }
+}
+
 static int cmd_build_with_flags(const char *extra_cflags)
 {
     struct Manifest m;
-    char c_path[PATH_MAX_LEN];
     char q_translator[PATH_MAX_LEN * 2];
-    char q_src[PATH_MAX_LEN * 2];
-    char q_c[PATH_MAX_LEN * 2];
     char q_out[PATH_MAX_LEN * 2];
     char cmd[PATH_MAX_LEN * 12];
     char *slash;
     const char *translator = getenv("CPM_C_MINUS");
+    struct SourceList sources;
+    int i;
 
     if (translator == NULL || translator[0] == '\0') {
         translator = "c-";
     }
     read_manifest(&m);
-    snprintf(c_path, sizeof(c_path), "target/debug/%s.c", m.name);
     mkdir_p("target/debug");
+    collect_sources(&sources, m.src);
+    generate_common_header(&sources);
 
     shell_quote(q_translator, sizeof(q_translator), translator);
-    shell_quote(q_src, sizeof(q_src), m.src);
-    shell_quote(q_c, sizeof(q_c), c_path);
     shell_quote(q_out, sizeof(q_out), m.out);
 
-    snprintf(cmd, sizeof(cmd), "%s %s > %s", q_translator, q_src, q_c);
-    if (run_cmd(cmd) != 0) {
-        return 1;
+    for (i = 0; i < sources.count; i++) {
+        char c_path[PATH_MAX_LEN];
+        char tmp_path[PATH_MAX_LEN + 5];
+        char q_src[PATH_MAX_LEN * 2];
+        char q_c[PATH_MAX_LEN * 2];
+        int emit_uniq = file_has_main_function(sources.path[i]);
+
+        generated_c_path(c_path, sizeof(c_path), sources.path[i], &m);
+        snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", c_path);
+        shell_quote(q_src, sizeof(q_src), sources.path[i]);
+        shell_quote(q_c, sizeof(q_c), tmp_path);
+        snprintf(cmd, sizeof(cmd), "C_MINUS_EMIT_UNIQ=%d %s %s > %s",
+                 emit_uniq, q_translator, q_src, q_c);
+        if (run_cmd(cmd) != 0) {
+            return 1;
+        }
+        write_c_with_common_include(c_path, tmp_path);
+        unlink(tmp_path);
     }
     slash = strrchr(m.out, '/');
     if (slash != NULL) {
@@ -504,10 +919,16 @@ static int cmd_build_with_flags(const char *extra_cflags)
         mkdir_p(dir);
     }
     if (extra_cflags != NULL && extra_cflags[0] != '\0') {
-        snprintf(cmd, sizeof(cmd), "%s %s %s %s -o %s", m.compiler, m.cflags, extra_cflags, q_c, q_out);
+        snprintf(cmd, sizeof(cmd), "%s %s %s -Itarget/debug", m.compiler, m.cflags, extra_cflags);
     } else {
-        snprintf(cmd, sizeof(cmd), "%s %s %s -o %s", m.compiler, m.cflags, q_c, q_out);
+        snprintf(cmd, sizeof(cmd), "%s %s -Itarget/debug", m.compiler, m.cflags);
     }
+    append_generated_c_paths(cmd, sizeof(cmd), &sources, &m);
+    if (strlen(cmd) + strlen(q_out) + 5 >= sizeof(cmd)) {
+        die("cpm: command too long");
+    }
+    strcat(cmd, " -o ");
+    strcat(cmd, q_out);
     if (run_cmd(cmd) != 0) {
         return 1;
     }

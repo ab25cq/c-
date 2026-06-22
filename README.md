@@ -81,11 +81,32 @@ compiler = "cc"
 cflags = "-std=gnu99 -Wall -Wextra"
 ```
 
-`cpm build` lowers the source with `c-`, writes generated C under
-`target/debug`, and compiles the executable to `target/debug/<package-name>`.
+`cpm build` lowers every `.c-` file under `src` with `c-`, writes generated C
+under `target/debug`, and compiles the executable to
+`target/debug/<package-name>`.
 `cpm run` builds first and then runs the executable. `cpm test` currently
 uses the same build-and-run path as `run`; dedicated test targets can be added
 later without changing the manifest format.
+
+`c-` automatically reads the project standard library header `<c-.h>` when a
+source file does not include it explicitly. During build, `cpm` also writes
+`target/debug/common.h` from top-level function declarations and definitions
+found under `src`, and includes that generated header in every generated C
+file. `.c-` source files do not need to write either include explicitly.
+
+`uniq` marks a top-level function or global variable definition whose body must
+be emitted only once in a multi-source `cpm` build. The source file containing
+`main` receives the definition; other source files receive an `extern`
+declaration.
+
+```c
+uniq int gGlobalVar = 777;
+
+uniq void fun(void)
+{
+    printf("%d\n", gGlobalVar);
+}
+```
 
 `cpm leak` rebuilds with compiler sanitizer instrumentation, then runs the
 executable with leak detection enabled. This is the preferred project leak

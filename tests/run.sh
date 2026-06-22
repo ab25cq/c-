@@ -59,6 +59,51 @@ test -f /tmp/cpm-smoke/lib/c-.h
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" leak > leak.out 2> leak.err)
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" val > val.out 2> val.err)
 
+rm -rf /tmp/cpm-common-smoke
+./cpm new /tmp/cpm-common-smoke
+cat > /tmp/cpm-common-smoke/src/main.c- <<'SRC'
+#include <stdio.h>
+
+int main(void)
+{
+    printf("%d\n", square(7));
+    return 0;
+}
+SRC
+cat > /tmp/cpm-common-smoke/src/math.c- <<'SRC'
+int square(int value)
+{
+    return value * value;
+}
+SRC
+(cd /tmp/cpm-common-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" run > run.out)
+grep '^49$' /tmp/cpm-common-smoke/run.out >/dev/null
+grep 'int square(int value);' /tmp/cpm-common-smoke/target/debug/common.h >/dev/null
+test -f /tmp/cpm-common-smoke/target/debug/src_math.c
+
+rm -rf /tmp/cpm-uniq-smoke
+./cpm new /tmp/cpm-uniq-smoke
+cat > /tmp/cpm-uniq-smoke/src/main.c- <<'SRC'
+#include <stdio.h>
+
+int main(void)
+{
+    printf("%d\n", sub(1, 2));
+    return 0;
+}
+SRC
+cat > /tmp/cpm-uniq-smoke/src/sub.c- <<'SRC'
+int sub(int x, int y)
+{
+    return x + y;
+}
+SRC
+(cd /tmp/cpm-uniq-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" run > run.out)
+grep '^3$' /tmp/cpm-uniq-smoke/run.out >/dev/null
+grep 'void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/cpm-uniq-smoke.c >/dev/null
+grep 'extern void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/src_sub.c >/dev/null
+test "$(grep -h '^void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/*.c | wc -l)" = "1"
+
 rm -rf /tmp/cpm-leak-smoke
 ./cpm new /tmp/cpm-leak-smoke
 cat > /tmp/cpm-leak-smoke/src/main.c- <<'SRC'

@@ -35,6 +35,9 @@ void cminus_push_include(FILE *fp)
         fputs("c-: include depth exceeded\n", stderr);
         exit(1);
     }
+    if (YY_CURRENT_BUFFER == NULL && yyin != NULL) {
+        yy_switch_to_buffer(yy_create_buffer(yyin, YY_BUF_SIZE));
+    }
     include_files[include_depth] = fp;
     include_lines[include_depth] = yylineno;
     include_depth++;

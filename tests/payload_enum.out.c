@@ -1,4 +1,9 @@
+
+#define xassert(name, cond) do { if (!(cond)) { puts(name); return 1; } } while (0)
+#include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
+#include <execinfo.h>
 struct Option_int{
     int tag;
     union {
@@ -35,8 +40,20 @@ static __attribute__((unused)) int Option_int_is_None(struct Option_int* self)
     return self->tag == Option_int_TAG_None;
 }
 
-#define xassert(name, cond) do { if (!(cond)) { puts(name); return 1; } } while (0)
+void cminus_panic(const char* message, const char* file, int line)
+{
+    void* frames[64] = {0};
+    memset(&frames, 0, sizeof(frames));
 
+    int count = {0};
+    memset(&count, 0, sizeof(count));
+
+
+    fprintf(stderr, "panic: %s at %s:%d\n", message, file, line);
+    count = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, count, 2);
+    abort();
+}
 
 int main(void)
 {

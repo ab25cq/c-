@@ -282,6 +282,7 @@ struct PayloadEnums {
 };
 
 static struct Text *g_output;
+static struct Text *g_defines;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
 static struct Funcs g_malloc_funcs;
@@ -312,6 +313,7 @@ static int g_foreach_id;
 static int g_index_id;
 static int g_need_stdio_h;
 static int g_need_execinfo_h;
+static int g_emit_uniq;
 static const char *g_input_path;
 
 int yylex(void);
@@ -339,6 +341,7 @@ static void tag_add(enum TypeKind kind, const char *name);
 static void symbol_add(const char *name, struct Type type);
 static void begin_function(void);
 static void begin_top_block(struct Text *head);
+static int source_has_cminus_include(FILE *fp);
 static struct Text *process_pp_line(struct Text *line);
 static struct Text *process_standalone_semi(struct Text *semi);
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
@@ -379,6 +382,9 @@ static int parse_payload_enum_head(const char *s, char *param, char *name);
 static void emit_payload_enum_instances(FILE *out);
 static struct Text *rewrite_payload_enum_constructors(struct Text *in);
 static struct Text *try_rewrite_auto_payload_enum_decl(struct Text *in);
+static int is_uniq_decl(const char *s);
+static struct Text *strip_uniq(struct Text *in);
+static struct Text *uniq_extern_decl(struct Text *in);
 static const char *generic_template_body_start(const char *head, char *param);
 static void append_struct_clone_name(struct Text *out, const char *tag);
 static void append_struct_clone_definition(struct Text *out, struct StructFinalizer *clone);
@@ -386,7 +392,7 @@ static void append_finalize_for_type(struct Text *out, const char *indent, const
 static struct Text *prepend_owned_assignment_release(struct Text *stmt, const char *original, const char *lhs_expr, struct Type type);
 static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name);
 
-#line 390 "src/parser.c"
+#line 396 "src/parser.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -842,13 +848,13 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   341,   341,   342,   347,   349,   351,   354,   353,   360,
-     362,   367,   369,   371,   377,   378,   383,   385,   387,   389,
-     391,   393,   395,   400,   402,   407,   409,   414,   416,   418,
-     423,   429,   430,   435,   437,   439,   444,   450,   451,   456,
-     458,   460,   465,   467,   469,   471,   473,   475,   477,   479,
-     481,   483,   488,   490,   492,   494,   496,   498,   500,   502,
-     504
+       0,   347,   347,   348,   353,   355,   357,   360,   359,   366,
+     368,   373,   375,   377,   383,   384,   389,   391,   393,   395,
+     397,   399,   401,   406,   408,   413,   415,   420,   422,   424,
+     429,   435,   436,   441,   443,   445,   450,   456,   457,   462,
+     464,   466,   471,   473,   475,   477,   479,   481,   483,   485,
+     487,   489,   494,   496,   498,   500,   502,   504,   506,   508,
+     510
 };
 #endif
 
@@ -1488,361 +1494,361 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* translation_unit: %empty  */
-#line 341 "src/parser.y"
+#line 347 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1494 "src/parser.c"
-    break;
-
-  case 3: /* translation_unit: translation_unit external_item  */
-#line 343 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); g_output = (yyval.node); }
 #line 1500 "src/parser.c"
     break;
 
-  case 4: /* external_item: PP_LINE  */
-#line 348 "src/parser.y"
-        { (yyval.node) = process_pp_line((yyvsp[0].node)); }
+  case 3: /* translation_unit: translation_unit external_item  */
+#line 349 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); g_output = (yyval.node); }
 #line 1506 "src/parser.c"
     break;
 
-  case 5: /* external_item: SEMI  */
-#line 350 "src/parser.y"
-        { (yyval.node) = process_standalone_semi((yyvsp[0].node)); }
+  case 4: /* external_item: PP_LINE  */
+#line 354 "src/parser.y"
+        { (yyval.node) = process_pp_line((yyvsp[0].node)); }
 #line 1512 "src/parser.c"
     break;
 
-  case 6: /* external_item: top_seq SEMI  */
-#line 352 "src/parser.y"
-        { (yyval.node) = process_external_decl((yyvsp[-1].node), (yyvsp[0].node)); }
+  case 5: /* external_item: SEMI  */
+#line 356 "src/parser.y"
+        { (yyval.node) = process_standalone_semi((yyvsp[0].node)); }
 #line 1518 "src/parser.c"
     break;
 
-  case 7: /* $@1: %empty  */
-#line 354 "src/parser.y"
-        { begin_top_block((yyvsp[-1].node)); }
+  case 6: /* external_item: top_seq SEMI  */
+#line 358 "src/parser.y"
+        { (yyval.node) = process_external_decl((yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1524 "src/parser.c"
     break;
 
-  case 8: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
-#line 356 "src/parser.y"
-        { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+  case 7: /* $@1: %empty  */
+#line 360 "src/parser.y"
+        { begin_top_block((yyvsp[-1].node)); }
 #line 1530 "src/parser.c"
     break;
 
-  case 9: /* top_seq: top_part  */
-#line 361 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
+  case 8: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
+#line 362 "src/parser.y"
+        { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1536 "src/parser.c"
     break;
 
-  case 10: /* top_seq: top_seq top_part  */
-#line 363 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+  case 9: /* top_seq: top_part  */
+#line 367 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
 #line 1542 "src/parser.c"
     break;
 
-  case 11: /* top_part: token_no_comma  */
-#line 368 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
+  case 10: /* top_seq: top_seq top_part  */
+#line 369 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1548 "src/parser.c"
     break;
 
-  case 12: /* top_part: paren_group  */
-#line 370 "src/parser.y"
+  case 11: /* top_part: token_no_comma  */
+#line 374 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1554 "src/parser.c"
     break;
 
-  case 13: /* top_part: bracket_group  */
-#line 372 "src/parser.y"
+  case 12: /* top_part: paren_group  */
+#line 376 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1560 "src/parser.c"
     break;
 
-  case 14: /* compound_items: %empty  */
-#line 377 "src/parser.y"
-        { (yyval.node) = text_new(); }
+  case 13: /* top_part: bracket_group  */
+#line 378 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
 #line 1566 "src/parser.c"
     break;
 
-  case 15: /* compound_items: compound_items compound_item  */
-#line 379 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+  case 14: /* compound_items: %empty  */
+#line 383 "src/parser.y"
+        { (yyval.node) = text_new(); }
 #line 1572 "src/parser.c"
     break;
 
-  case 16: /* compound_item: PP_LINE  */
-#line 384 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
+  case 15: /* compound_items: compound_items compound_item  */
+#line 385 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1578 "src/parser.c"
     break;
 
-  case 17: /* compound_item: SEMI  */
-#line 386 "src/parser.y"
+  case 16: /* compound_item: PP_LINE  */
+#line 390 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1584 "src/parser.c"
     break;
 
-  case 18: /* compound_item: return_statement  */
-#line 388 "src/parser.y"
+  case 17: /* compound_item: SEMI  */
+#line 392 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1590 "src/parser.c"
     break;
 
-  case 19: /* compound_item: stmt_seq SEMI  */
-#line 390 "src/parser.y"
-        { (yyval.node) = process_statement((yyvsp[-1].node), (yyvsp[0].node)); }
+  case 18: /* compound_item: return_statement  */
+#line 394 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
 #line 1596 "src/parser.c"
     break;
 
-  case 20: /* compound_item: stmt_seq COMMA  */
-#line 392 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+  case 19: /* compound_item: stmt_seq SEMI  */
+#line 396 "src/parser.y"
+        { (yyval.node) = process_statement((yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1602 "src/parser.c"
     break;
 
-  case 21: /* compound_item: LBRACE compound_items RBRACE  */
-#line 394 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+  case 20: /* compound_item: stmt_seq COMMA  */
+#line 398 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
 #line 1608 "src/parser.c"
     break;
 
-  case 22: /* compound_item: stmt_seq LBRACE compound_items RBRACE  */
-#line 396 "src/parser.y"
-        { (yyval.node) = text_join4(process_control_head((yyvsp[-3].node)), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+  case 21: /* compound_item: LBRACE compound_items RBRACE  */
+#line 400 "src/parser.y"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
 #line 1614 "src/parser.c"
     break;
 
-  case 23: /* return_statement: RETURN SEMI  */
-#line 401 "src/parser.y"
-        { (yyval.node) = process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)); }
+  case 22: /* compound_item: stmt_seq LBRACE compound_items RBRACE  */
+#line 402 "src/parser.y"
+        { (yyval.node) = text_join4(process_control_head((yyvsp[-3].node)), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
 #line 1620 "src/parser.c"
     break;
 
-  case 24: /* return_statement: RETURN stmt_seq SEMI  */
-#line 403 "src/parser.y"
-        { (yyval.node) = process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+  case 23: /* return_statement: RETURN SEMI  */
+#line 407 "src/parser.y"
+        { (yyval.node) = process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)); }
 #line 1626 "src/parser.c"
     break;
 
-  case 25: /* stmt_seq: stmt_part  */
-#line 408 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
+  case 24: /* return_statement: RETURN stmt_seq SEMI  */
+#line 409 "src/parser.y"
+        { (yyval.node) = process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1632 "src/parser.c"
     break;
 
-  case 26: /* stmt_seq: stmt_seq stmt_part  */
-#line 410 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+  case 25: /* stmt_seq: stmt_part  */
+#line 414 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
 #line 1638 "src/parser.c"
     break;
 
-  case 27: /* stmt_part: token_no_comma  */
-#line 415 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
+  case 26: /* stmt_seq: stmt_seq stmt_part  */
+#line 416 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1644 "src/parser.c"
     break;
 
-  case 28: /* stmt_part: paren_group  */
-#line 417 "src/parser.y"
+  case 27: /* stmt_part: token_no_comma  */
+#line 421 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1650 "src/parser.c"
     break;
 
-  case 29: /* stmt_part: bracket_group  */
-#line 419 "src/parser.y"
+  case 28: /* stmt_part: paren_group  */
+#line 423 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1656 "src/parser.c"
     break;
 
-  case 30: /* paren_group: LPAREN paren_items RPAREN  */
-#line 424 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+  case 29: /* stmt_part: bracket_group  */
+#line 425 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
 #line 1662 "src/parser.c"
     break;
 
-  case 31: /* paren_items: %empty  */
-#line 429 "src/parser.y"
-        { (yyval.node) = text_new(); }
+  case 30: /* paren_group: LPAREN paren_items RPAREN  */
+#line 430 "src/parser.y"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1668 "src/parser.c"
     break;
 
-  case 32: /* paren_items: paren_items paren_part  */
-#line 431 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+  case 31: /* paren_items: %empty  */
+#line 435 "src/parser.y"
+        { (yyval.node) = text_new(); }
 #line 1674 "src/parser.c"
     break;
 
-  case 33: /* paren_part: token  */
-#line 436 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
+  case 32: /* paren_items: paren_items paren_part  */
+#line 437 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1680 "src/parser.c"
     break;
 
-  case 34: /* paren_part: paren_group  */
-#line 438 "src/parser.y"
+  case 33: /* paren_part: token  */
+#line 442 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1686 "src/parser.c"
     break;
 
-  case 35: /* paren_part: bracket_group  */
-#line 440 "src/parser.y"
+  case 34: /* paren_part: paren_group  */
+#line 444 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1692 "src/parser.c"
     break;
 
-  case 36: /* bracket_group: LBRACKET bracket_items RBRACKET  */
-#line 445 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+  case 35: /* paren_part: bracket_group  */
+#line 446 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
 #line 1698 "src/parser.c"
     break;
 
-  case 37: /* bracket_items: %empty  */
-#line 450 "src/parser.y"
-        { (yyval.node) = text_new(); }
+  case 36: /* bracket_group: LBRACKET bracket_items RBRACKET  */
+#line 451 "src/parser.y"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1704 "src/parser.c"
     break;
 
-  case 38: /* bracket_items: bracket_items bracket_part  */
-#line 452 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+  case 37: /* bracket_items: %empty  */
+#line 456 "src/parser.y"
+        { (yyval.node) = text_new(); }
 #line 1710 "src/parser.c"
     break;
 
-  case 39: /* bracket_part: token  */
-#line 457 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
+  case 38: /* bracket_items: bracket_items bracket_part  */
+#line 458 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
 #line 1716 "src/parser.c"
     break;
 
-  case 40: /* bracket_part: paren_group  */
-#line 459 "src/parser.y"
+  case 39: /* bracket_part: token  */
+#line 463 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1722 "src/parser.c"
     break;
 
-  case 41: /* bracket_part: bracket_group  */
-#line 461 "src/parser.y"
+  case 40: /* bracket_part: paren_group  */
+#line 465 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1728 "src/parser.c"
     break;
 
-  case 42: /* token: IDENT  */
-#line 466 "src/parser.y"
+  case 41: /* bracket_part: bracket_group  */
+#line 467 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1734 "src/parser.c"
     break;
 
-  case 43: /* token: NUMBER  */
-#line 468 "src/parser.y"
+  case 42: /* token: IDENT  */
+#line 472 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1740 "src/parser.c"
     break;
 
-  case 44: /* token: STRING_LITERAL  */
-#line 470 "src/parser.y"
+  case 43: /* token: NUMBER  */
+#line 474 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1746 "src/parser.c"
     break;
 
-  case 45: /* token: CHAR_LITERAL  */
-#line 472 "src/parser.y"
+  case 44: /* token: STRING_LITERAL  */
+#line 476 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1752 "src/parser.c"
     break;
 
-  case 46: /* token: KEYWORD  */
-#line 474 "src/parser.y"
+  case 45: /* token: CHAR_LITERAL  */
+#line 478 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1758 "src/parser.c"
     break;
 
-  case 47: /* token: OP  */
-#line 476 "src/parser.y"
+  case 46: /* token: KEYWORD  */
+#line 480 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1764 "src/parser.c"
     break;
 
-  case 48: /* token: COMMA  */
-#line 478 "src/parser.y"
+  case 47: /* token: OP  */
+#line 482 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1770 "src/parser.c"
     break;
 
-  case 49: /* token: EQUAL  */
-#line 480 "src/parser.y"
+  case 48: /* token: COMMA  */
+#line 484 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1776 "src/parser.c"
     break;
 
-  case 50: /* token: PERCENT  */
-#line 482 "src/parser.y"
+  case 49: /* token: EQUAL  */
+#line 486 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1782 "src/parser.c"
     break;
 
-  case 51: /* token: OTHER  */
-#line 484 "src/parser.y"
+  case 50: /* token: PERCENT  */
+#line 488 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1788 "src/parser.c"
     break;
 
-  case 52: /* token_no_comma: IDENT  */
-#line 489 "src/parser.y"
+  case 51: /* token: OTHER  */
+#line 490 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1794 "src/parser.c"
     break;
 
-  case 53: /* token_no_comma: NUMBER  */
-#line 491 "src/parser.y"
+  case 52: /* token_no_comma: IDENT  */
+#line 495 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1800 "src/parser.c"
     break;
 
-  case 54: /* token_no_comma: STRING_LITERAL  */
-#line 493 "src/parser.y"
+  case 53: /* token_no_comma: NUMBER  */
+#line 497 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1806 "src/parser.c"
     break;
 
-  case 55: /* token_no_comma: CHAR_LITERAL  */
-#line 495 "src/parser.y"
+  case 54: /* token_no_comma: STRING_LITERAL  */
+#line 499 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1812 "src/parser.c"
     break;
 
-  case 56: /* token_no_comma: KEYWORD  */
-#line 497 "src/parser.y"
+  case 55: /* token_no_comma: CHAR_LITERAL  */
+#line 501 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1818 "src/parser.c"
     break;
 
-  case 57: /* token_no_comma: OP  */
-#line 499 "src/parser.y"
+  case 56: /* token_no_comma: KEYWORD  */
+#line 503 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1824 "src/parser.c"
     break;
 
-  case 58: /* token_no_comma: EQUAL  */
-#line 501 "src/parser.y"
+  case 57: /* token_no_comma: OP  */
+#line 505 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1830 "src/parser.c"
     break;
 
-  case 59: /* token_no_comma: PERCENT  */
-#line 503 "src/parser.y"
+  case 58: /* token_no_comma: EQUAL  */
+#line 507 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1836 "src/parser.c"
     break;
 
-  case 60: /* token_no_comma: OTHER  */
-#line 505 "src/parser.y"
+  case 59: /* token_no_comma: PERCENT  */
+#line 509 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
 #line 1842 "src/parser.c"
     break;
 
+  case 60: /* token_no_comma: OTHER  */
+#line 511 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1848 "src/parser.c"
+    break;
 
-#line 1846 "src/parser.c"
+
+#line 1852 "src/parser.c"
 
       default: break;
     }
@@ -2035,7 +2041,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 508 "src/parser.y"
+#line 514 "src/parser.y"
 
 
 static void die(const char *msg)
@@ -3193,7 +3199,7 @@ static int skip_decl_word(const char *word)
 {
     static const char *words[] = {
         "auto", "extern", "register", "static", "typedef", "const", "volatile",
-        "restrict", "inline", "signed", "unsigned", "_Atomic", NULL
+        "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", NULL
     };
     int i;
     for (i = 0; words[i] != NULL; i++) {
@@ -4243,6 +4249,17 @@ static int is_stdlib_include(const char *line)
     return strncmp(p, "<stdlib.h>", 10) == 0;
 }
 
+static int is_string_include(const char *line)
+{
+    const char *p = skip_ws(line);
+
+    if (strncmp(p, "#include", 8) != 0) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    return strncmp(p, "<string.h>", 10) == 0;
+}
+
 static int is_stdio_include(const char *line)
 {
     const char *p = skip_ws(line);
@@ -4286,14 +4303,47 @@ static FILE *open_cminus_include(const char *include_path)
     return NULL;
 }
 
+static int source_has_cminus_include(FILE *fp)
+{
+    char line[1024];
+    char include_path[256];
+    int found = 0;
+
+    rewind(fp);
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (parse_cminus_include(line, include_path, sizeof(include_path))) {
+            found = 1;
+            break;
+        }
+    }
+    rewind(fp);
+    return found;
+}
+
 static struct Text *process_pp_line(struct Text *line)
 {
     char include_path[256];
     FILE *fp;
     struct Text *out;
+    const char *p = skip_ws(line->text);
 
+    if (strncmp(p, "#define", 7) == 0) {
+        text_add(g_defines, line->text);
+        if (line->len == 0 || line->text[line->len - 1] != '\n') {
+            text_add_ch(g_defines, '\n');
+        }
+        out = text_new();
+        text_free(line);
+        return out;
+    }
     if (is_stdlib_include(line->text)) {
         g_need_stdlib_h = 1;
+        out = text_new();
+        text_free(line);
+        return out;
+    }
+    if (is_string_include(line->text)) {
+        g_need_string_h = 1;
         out = text_new();
         text_free(line);
         return out;
@@ -6789,6 +6839,12 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     struct Text *all = text_join(decl, semi);
     int is_func_sig;
 
+    if (is_uniq_decl(all->text)) {
+        if (!g_emit_uniq) {
+            return uniq_extern_decl(all);
+        }
+        all = strip_uniq(all);
+    }
     register_tags_in_text(all->text);
     if (!is_generic_decl_head(all->text)) {
         all = rewrite_generics(all);
@@ -7213,6 +7269,22 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         return out;
     }
 
+    if (is_uniq_decl(head->text)) {
+        if (!g_emit_uniq) {
+            out = uniq_extern_decl(head);
+            g_top_block_is_function = 0;
+            g_in_function = 0;
+            g_owned.count = 0;
+            g_finalized_locals.count = 0;
+            g_locals.count = 0;
+            text_free(lb);
+            text_free(body);
+            text_free(rb);
+            return out;
+        }
+        head = strip_uniq(head);
+    }
+
     if (!g_top_block_is_function) {
         struct StructFinalizer *fin = struct_finalizer_find(g_current_struct_tag);
         struct StructFinalizer *clone = struct_clone_find(g_current_struct_tag);
@@ -7467,6 +7539,62 @@ static void emit_payload_enum_instances(FILE *out)
     }
 }
 
+static int is_uniq_decl(const char *s)
+{
+    const char *p = skip_leading_space(s);
+
+    return strncmp(p, "uniq", 4) == 0 && !is_ident((unsigned char)p[4]);
+}
+
+static struct Text *strip_uniq(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+
+    while (isspace((unsigned char)*p)) {
+        text_add_ch(out, *p++);
+    }
+    if (strncmp(p, "uniq", 4) == 0 && !is_ident((unsigned char)p[4])) {
+        p += 4;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_add(out, p);
+    text_free(in);
+    return out;
+}
+
+static struct Text *uniq_extern_decl(struct Text *in)
+{
+    struct Text *stripped = strip_uniq(in);
+    const char *s = skip_leading_space(stripped->text);
+    const char *end = strchr(s, ';');
+    const char *eq = strchr(s, '=');
+    struct Text *out = text_new();
+
+    append_leading_newlines(stripped->text, out);
+    if (!starts_word(s, "extern")) {
+        text_add(out, "extern ");
+    }
+    if (eq != NULL && (end == NULL || eq < end)) {
+        text_add_n(out, s, (size_t)(eq - s));
+    } else if (end != NULL) {
+        text_add_n(out, s, (size_t)(end - s));
+    } else {
+        text_add(out, s);
+    }
+    while (out->len > 0 && isspace((unsigned char)out->text[out->len - 1])) {
+        out->text[--out->len] = '\0';
+    }
+    text_add(out, ";\n");
+    text_free(stripped);
+    return out;
+}
+
 int main(int argc, char **argv)
 {
     int rc;
@@ -7484,6 +7612,7 @@ int main(int argc, char **argv)
     g_input_path = argv[1];
     yylineno = 1;
     g_output = text_new();
+    g_defines = text_new();
     g_malloc_funcs.count = 0;
     g_right_value_id = 0;
     g_need_string_h = 0;
@@ -7491,6 +7620,10 @@ int main(int argc, char **argv)
     g_need_stdio_h = 0;
     g_need_execinfo_h = 0;
     g_need_string_typedef = 0;
+    {
+        const char *emit_uniq = getenv("C_MINUS_EMIT_UNIQ");
+        g_emit_uniq = emit_uniq == NULL || strcmp(emit_uniq, "0") != 0;
+    }
     g_generic_structs.count = 0;
     g_generic_funcs.count = 0;
     g_payload_enums.count = 0;
@@ -7498,15 +7631,24 @@ int main(int argc, char **argv)
     g_current_payload_enum = 0;
     g_foreach_id = 0;
     g_index_id = 0;
+    if (!source_has_cminus_include(yyin)) {
+        FILE *stdlib_fp = open_cminus_include("c-.h");
+        if (stdlib_fp == NULL) {
+            fputs("c-: include not found: c-.h\n", stderr);
+            fclose(yyin);
+            return 1;
+        }
+        cminus_push_include(stdlib_fp);
+    }
 
     rc = yyparse();
     if (rc != 0) {
         fclose(yyin);
         return 1;
     }
-
     {
         const char *p = g_output->text;
+        fputs(g_defines->text, stdout);
         while (strncmp(p, "#define", 7) == 0) {
             const char *nl = strchr(p, '\n');
             if (nl == NULL) {
