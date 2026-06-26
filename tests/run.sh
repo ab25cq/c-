@@ -170,6 +170,16 @@ grep 'Vec_get_opt_int(&nums, 1)' tests/index_string_literal.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra -Werror tests/index_string_literal.out.c -o tests/index_string_literal.out
 test "$(./tests/index_string_literal.out)" = "$(printf 'a[0] x[1] = 20\na')"
 
+C_MINUS_LIB="$ROOT/lib" ./c- -bare tests/bare_metal.c- > tests/bare_metal.out.c
+# -bare output must not pull in any libc header.
+if grep -E '#include[[:space:]]*<' tests/bare_metal.out.c >/dev/null; then
+    echo "bare output still includes a system header" >&2
+    exit 1
+fi
+grep 'cminus_panic("index out of range", "tests/bare_metal.c-", 13)' tests/bare_metal.out.c >/dev/null
+# The runtime must compile freestanding with no libc and no builtins.
+cc -std=gnu99 -ffreestanding -fno-builtin -Wall -Wextra -c tests/bare_metal.out.c -o tests/bare_metal.out.o
+
 ./c- tests/index_panic.c- > tests/index_panic.out.c
 cc -std=gnu99 -Wall -Wextra tests/index_panic.out.c -o tests/index_panic.out
 if ./tests/index_panic.out > tests/index_panic.out.log 2> tests/index_panic.err; then

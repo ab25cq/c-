@@ -984,6 +984,27 @@ static void write_stdlib_source(void)
     }
 }
 
+/*
+ * Ship the bare-metal runtime alongside the project library so `c- -bare`
+ * (resolving c-bare.h through ./lib) works without a separate install. The
+ * file is large, so copy it from the source tree instead of embedding it; if
+ * it cannot be found, bare builds simply remain unavailable.
+ */
+static void write_bare_runtime(void)
+{
+    const char *bare_path;
+
+    mkdir_p("lib");
+    if (file_exists("lib/c-bare.h")) {
+        return;
+    }
+    bare_path = getenv("CPM_BARE");
+    if (copy_file_if_exists(bare_path, "lib/c-bare.h") ||
+        copy_file_if_exists("/home/ab25cq/c-/lib/c-bare.h", "lib/c-bare.h")) {
+        return;
+    }
+}
+
 static int cmd_init(const char *name)
 {
     if (file_exists("C-.toml")) {
@@ -995,6 +1016,7 @@ static int cmd_init(const char *name)
         write_main_source();
     }
     write_stdlib_source();
+    write_bare_runtime();
     if (!file_exists(".gitignore")) {
         write_file(".gitignore", "target/\n");
     }

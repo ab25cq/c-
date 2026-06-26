@@ -45,7 +45,7 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 333 "src/parser.y"
+#line 334 "src/parser.y"
 
 struct Text;
 
@@ -89,7 +89,7 @@ struct Text;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 337 "src/parser.y"
+#line 338 "src/parser.y"
 
     struct Text *node;
 

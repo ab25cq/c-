@@ -1,0 +1,16 @@
+#include <c-.h>
+
+int main(void)
+{
+    struct Vec<int> nums;
+
+    nums.push(11);
+    nums.push(22);
+
+    printf("first = %d\n", nums[0]);
+
+    /* Out-of-range index still panics with source file and line. */
+    printf("bad = %d\n", nums[9]);
+
+    return 0;
+}

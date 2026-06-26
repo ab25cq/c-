@@ -130,6 +130,43 @@ By default `cpm` runs `c-` from `PATH`. For development or tests, set
 resolves through `./lib`. Set `C_MINUS_LIB=/path/to/lib` only when invoking
 `c-` directly with a non-project library root.
 
+## Bare-metal / freestanding (`-bare`)
+
+`c- -bare input.c- > output.c` lowers without any libc dependency, for
+microcontrollers and other freestanding targets. Instead of emitting
+`#include <stdlib.h>` and friends, it inlines `lib/c-bare.h` at the top of the
+output, a tiny freestanding runtime that implements exactly the libc surface
+the generated code uses (`malloc`/`calloc`/`realloc`/`free`, `memset`/`memcpy`,
+`strlen`/`strcmp`/`strncpy`/`strdup`, `printf`/`fprintf`/`puts`/`asprintf`, and
+`abort`). Every function is `weak`, so the definitions also satisfy the `mem*`
+calls the C compiler itself may emit.
+
+The runtime is built on a single primitive you provide for your board:
+
+```c
+int putchar(int c);   /* send one byte to your UART/console */
+```
+
+`cpm new` and `cpm init` also write `lib/c-bare.h`, so `c- -bare` from inside a
+project resolves it through `./lib`. Compile the generated file freestanding,
+linking your `putchar` (and startup) code:
+
+```sh
+c- -bare program.c- > program.c
+cc -ffreestanding -nostdlib -fno-builtin program.c putchar.c -o program
+```
+
+Heap is a fixed static buffer; override its size with
+`-DCMINUS_BARE_HEAP_SIZE=<bytes>`. `free` is a no-op (bump allocator).
+
+Panics still work. Out-of-range index access calls `cminus_panic`, which prints
+the original `.c-` source file and line number (`panic: index out of range at
+program.c-:15`) through `putchar`, then `abort()`s. There is no stack-frame
+backtrace in bare mode: `backtrace`/`backtrace_symbols_fd` are linked as no-ops,
+so the source file and line are still reported but the frame dump is omitted.
+
+`s"..."` heap strings still rely on `asprintf`, which the bare runtime provides.
+
 Local pointer ownership is automatic for owning expressions:
 
 ```c

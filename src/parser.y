@@ -243,6 +243,7 @@ static int g_foreach_id;
 static int g_index_id;
 static int g_need_stdio_h;
 static int g_need_execinfo_h;
+static int g_bare_metal;
 static int g_emit_uniq;
 static int g_function_returns_move;
 static char g_current_function_name[NAME_MAX_LEN];
@@ -6510,21 +6511,55 @@ static struct Text *uniq_extern_decl(struct Text *in)
     return out;
 }
 
+/*
+ * In -bare mode the generated file must not pull in libc. Inline the bare
+ * runtime (lib/c-bare.h) at the top of the output so the result is a single,
+ * self-contained source the user can drop onto a board next to their putchar.
+ */
+static void emit_bare_prelude(FILE *out)
+{
+    FILE *fp = open_cminus_include("c-bare.h");
+    char buf[4096];
+    size_t n;
+
+    if (fp == NULL) {
+        fputs("c-: bare runtime not found: c-bare.h\n", stderr);
+        exit(1);
+    }
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        fwrite(buf, 1, n, out);
+    }
+    fclose(fp);
+}
+
 int main(int argc, char **argv)
 {
     int rc;
+    int i;
+    const char *input_path = NULL;
 
-    if (argc != 2) {
-        fputs("usage: c- input.c- > output.c\n", stderr);
+    g_bare_metal = 0;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-bare") == 0) {
+            g_bare_metal = 1;
+        } else if (input_path == NULL) {
+            input_path = argv[i];
+        } else {
+            fputs("usage: c- [-bare] input.c- > output.c\n", stderr);
+            return 2;
+        }
+    }
+    if (input_path == NULL) {
+        fputs("usage: c- [-bare] input.c- > output.c\n", stderr);
         return 2;
     }
 
-    yyin = fopen(argv[1], "r");
+    yyin = fopen(input_path, "r");
     if (yyin == NULL) {
-        perror(argv[1]);
+        perror(input_path);
         return 1;
     }
-    g_input_path = argv[1];
+    g_input_path = input_path;
     yylineno = 1;
     g_output = text_new();
     g_defines = text_new();
@@ -6574,17 +6609,21 @@ int main(int argc, char **argv)
             fwrite(p, 1, (size_t)(nl + 1 - p), stdout);
             p = nl + 1;
         }
-        if (g_need_string_h) {
-            fputs("#include <string.h>\n", stdout);
-        }
-        if (g_need_stdlib_h) {
-            fputs("#include <stdlib.h>\n", stdout);
-        }
-        if (g_need_stdio_h) {
-            fputs("#include <stdio.h>\n", stdout);
-        }
-        if (g_need_execinfo_h) {
-            fputs("#include <execinfo.h>\n", stdout);
+        if (g_bare_metal) {
+            emit_bare_prelude(stdout);
+        } else {
+            if (g_need_string_h) {
+                fputs("#include <string.h>\n", stdout);
+            }
+            if (g_need_stdlib_h) {
+                fputs("#include <stdlib.h>\n", stdout);
+            }
+            if (g_need_stdio_h) {
+                fputs("#include <stdio.h>\n", stdout);
+            }
+            if (g_need_execinfo_h) {
+                fputs("#include <execinfo.h>\n", stdout);
+            }
         }
         if (g_need_string_typedef) {
             fputs("typedef char* string;\n", stdout);
