@@ -151,19 +151,30 @@ the generated code uses (`malloc`/`calloc`/`realloc`/`free`, `memset`/`memcpy`,
 `abort`). Every function is `weak`, so the definitions also satisfy the `mem*`
 calls the C compiler itself may emit.
 
-The runtime is built on a single primitive you provide for your board:
+The runtime is built on a single primitive for your board:
 
 ```c
 int putchar(int c);   /* send one byte to your UART/console */
 ```
 
+On a hosted Linux target (`__linux__`, on x86-64/aarch64/riscv64/arm) the
+runtime already provides a `putchar` and a `_start` through raw syscalls, both
+`weak`, so a `-bare` program builds and runs with no board code at all. Real
+freestanding targets (for example `arm-none-eabi-gcc`, which does not define
+`__linux__`) get nothing here and supply their own `putchar` and startup.
+
+To replace the Linux defaults with your own, compile with
+`-DCMINUS_BARE_NO_DEFAULT_PUTCHAR` and/or `-DCMINUS_BARE_NO_DEFAULT_START` (the
+runtime is inlined into every translation unit, so a strong override in the
+same file would otherwise collide) and provide the function yourself.
+
 `cpm new` and `cpm init` also write `lib/c-bare.h`, so `c- -bare` from inside a
-project resolves it through `./lib`. Compile the generated file freestanding,
-linking your `putchar` (and startup) code:
+project resolves it through `./lib`. Compile the generated file freestanding;
+on Linux no extra startup is needed:
 
 ```sh
 c- -bare program.c- > program.c
-cc -ffreestanding -nostdlib -fno-builtin program.c putchar.c -o program
+cc -ffreestanding -nostdlib -fno-builtin program.c -o program   # Linux: runs as-is
 ```
 
 For the smallest image, add size optimization and let the linker drop every
@@ -191,11 +202,12 @@ bare = true
 
 With `bare = true`, `cpm build` passes `-bare` to `c-` for every source and
 links with `-ffreestanding -nostdlib -fno-builtin` (on top of the default
-`-Os` and section garbage collection). Provide your board's `putchar` and
-startup code as ordinary source files under `src/` — for example a
-`src/board.c-` that defines `putchar` and `_start`. Set `compiler`, extra
-`cflags` (MCU flags), and `ldflags` (linker script, startup object) in the
-manifest for your target. The `cminus_panic` definition is still emitted once
+`-Os` and section garbage collection). On Linux this is all you need — the
+runtime's default `putchar`/`_start` make the project build and run as-is. For
+a real microcontroller, set `compiler`, extra `cflags` (MCU flags), and
+`ldflags` (linker script, startup object) for your target, and provide the
+board's `putchar` (and startup) as ordinary source files under `src/` — for
+example a `src/board.c-`. The `cminus_panic` definition is still emitted once
 across all translation units.
 
 Heap is a fixed static buffer; override its size with

@@ -104,8 +104,8 @@ grep 'void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/cpm-uniq-smoke.c >/dev
 grep 'extern void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/src_sub.c >/dev/null
 test "$(grep -h '^void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/*.c | wc -l)" = "1"
 
-# Project-level bare build: no libc, one cminus_panic across TUs, runs on the
-# host through a syscall putchar/_start. Runnable check is x86_64-only.
+# Project-level bare build on Linux needs no board code: the runtime supplies a
+# weak putchar/_start through syscalls. Single source, no putchar/_start written.
 rm -rf /tmp/cpm-bare-smoke
 CPM_BARE="$ROOT/lib/c-bare.h" ./cpm new /tmp/cpm-bare-smoke
 printf '\nbare = true\n' >> /tmp/cpm-bare-smoke/C-.toml
@@ -119,7 +119,40 @@ int main(void)
     return 0;
 }
 SRC
-cat > /tmp/cpm-bare-smoke/src/board.c- <<'SRC'
+if [ "$(uname -m)" = "x86_64" ]; then
+    (cd /tmp/cpm-bare-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" build > build.out 2>&1)
+    # No system header (including the project-local <c-bare.h>) leaks through.
+    if grep -E '#include[[:space:]]*<' /tmp/cpm-bare-smoke/target/debug/*.c >/dev/null; then
+        echo "bare project still includes a system header" >&2
+        exit 1
+    fi
+    # Built executable must not depend on libc (no dynamic NEEDED entries).
+    if readelf -d /tmp/cpm-bare-smoke/target/debug/cpm-bare-smoke 2>/dev/null | grep -q NEEDED; then
+        echo "bare executable unexpectedly links a shared library" >&2
+        exit 1
+    fi
+    test "$(/tmp/cpm-bare-smoke/target/debug/cpm-bare-smoke)" = "bare 42"
+fi
+
+# Overriding the defaults: opt out with the macros and supply your own
+# putchar/_start. This also exercises one cminus_panic across two TUs.
+rm -rf /tmp/cpm-bare-override
+CPM_BARE="$ROOT/lib/c-bare.h" ./cpm new /tmp/cpm-bare-override
+cat >> /tmp/cpm-bare-override/C-.toml <<'TOML'
+
+bare = true
+cflags = "-std=gnu99 -Wall -Wextra -DCMINUS_BARE_NO_DEFAULT_PUTCHAR -DCMINUS_BARE_NO_DEFAULT_START"
+TOML
+cat > /tmp/cpm-bare-override/src/main.c- <<'SRC'
+#include <c-.h>
+
+int main(void)
+{
+    printf("override %d\n", 21 + 21);
+    return 0;
+}
+SRC
+cat > /tmp/cpm-bare-override/src/board.c- <<'SRC'
 int putchar(int c)
 {
     unsigned char ch = (unsigned char)c;
@@ -134,20 +167,9 @@ void _start(void)
 }
 SRC
 if [ "$(uname -m)" = "x86_64" ]; then
-    (cd /tmp/cpm-bare-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" build > build.out 2>&1)
-    # No system headers leaked into either generated source.
-    if grep -E '#include[[:space:]]*<' /tmp/cpm-bare-smoke/target/debug/*.c >/dev/null; then
-        echo "bare project still includes a system header" >&2
-        exit 1
-    fi
-    # Exactly one cminus_panic definition across all translation units.
-    test "$(grep -h '^void cminus_panic' /tmp/cpm-bare-smoke/target/debug/*.c | wc -l)" = "1"
-    # Built executable must not depend on libc (no dynamic NEEDED entries).
-    if readelf -d /tmp/cpm-bare-smoke/target/debug/cpm-bare-smoke 2>/dev/null | grep -q NEEDED; then
-        echo "bare executable unexpectedly links a shared library" >&2
-        exit 1
-    fi
-    test "$(/tmp/cpm-bare-smoke/target/debug/cpm-bare-smoke)" = "bare 42"
+    (cd /tmp/cpm-bare-override && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" build > build.out 2>&1)
+    test "$(grep -h '^void cminus_panic' /tmp/cpm-bare-override/target/debug/*.c | wc -l)" = "1"
+    test "$(/tmp/cpm-bare-override/target/debug/cpm-bare-override)" = "override 42"
 fi
 
 rm -rf /tmp/cpm-leak-smoke
