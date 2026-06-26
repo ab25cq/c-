@@ -85,6 +85,13 @@ under `target/debug`, and compiles the executable to
 uses the same build-and-run path as `run`; dedicated test targets can be added
 later without changing the manifest format.
 
+`cpm build` compiles with `-ffunction-sections -fdata-sections` and links with
+`-Wl,--gc-sections`, so each function and global lives in its own section and
+the linker drops everything the program never references. The unused (and
+weak/duplicate) helpers carried by the standard library and the bare runtime
+are removed automatically, shrinking the executable. Add `-Os` to the manifest
+`cflags` for further size reduction.
+
 `c-` automatically reads the project standard library header `<c-.h>` when a
 source file does not include it explicitly. During build, `cpm` also writes
 `target/debug/common.h` from top-level function declarations and definitions
@@ -154,6 +161,15 @@ linking your `putchar` (and startup) code:
 ```sh
 c- -bare program.c- > program.c
 cc -ffreestanding -nostdlib -fno-builtin program.c putchar.c -o program
+```
+
+For the smallest image, add size optimization and let the linker drop every
+runtime helper the program does not use (the runtime functions are `weak` and
+each lands in its own section):
+
+```sh
+cc -Os -ffunction-sections -fdata-sections -Wl,--gc-sections \
+   -ffreestanding -nostdlib -fno-builtin program.c putchar.c -o program
 ```
 
 Heap is a fixed static buffer; override its size with

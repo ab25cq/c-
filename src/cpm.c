@@ -16,6 +16,7 @@
 #define VALUE_MAX_LEN 512
 #define MAX_SOURCES 128
 
+#define CPM_GC_SECTIONS_FLAGS "-ffunction-sections -fdata-sections -Wl,--gc-sections"
 #define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address,leak"
 #define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
 #define LEAK_FALLBACK_TO_VALGRIND 1
@@ -1181,10 +1182,18 @@ static int cmd_build_with_flags(const char *extra_cflags)
         dir[n] = '\0';
         mkdir_p(dir);
     }
+    /*
+     * Put every function and global in its own section and let the linker
+     * garbage-collect the ones the program never references. This drops the
+     * unused (and weak/duplicate) helpers the standard library and bare runtime
+     * carry, shrinking the executable without changing behaviour.
+     */
     if (extra_cflags != NULL && extra_cflags[0] != '\0') {
-        snprintf(cmd, sizeof(cmd), "%s %s %s -Itarget/debug", m.compiler, m.cflags, extra_cflags);
+        snprintf(cmd, sizeof(cmd), "%s %s %s %s -Itarget/debug",
+                 m.compiler, m.cflags, extra_cflags, CPM_GC_SECTIONS_FLAGS);
     } else {
-        snprintf(cmd, sizeof(cmd), "%s %s -Itarget/debug", m.compiler, m.cflags);
+        snprintf(cmd, sizeof(cmd), "%s %s %s -Itarget/debug",
+                 m.compiler, m.cflags, CPM_GC_SECTIONS_FLAGS);
     }
     append_generated_c_paths(cmd, sizeof(cmd), &sources, &m);
     if (strlen(cmd) + strlen(q_out) + 5 >= sizeof(cmd)) {
