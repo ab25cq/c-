@@ -6229,6 +6229,88 @@ static void emit_generic_function_instances(FILE *out)
     }
 }
 
+static int total_generic_instance_count(void)
+{
+    int total = 0;
+    int i;
+
+    for (i = 0; i < g_generic_structs.count; i++) {
+        total += g_generic_structs.tmpl[i].inst_count;
+    }
+    for (i = 0; i < g_generic_funcs.count; i++) {
+        total += g_generic_funcs.tmpl[i].inst_count;
+    }
+    for (i = 0; i < g_payload_enums.count; i++) {
+        total += g_payload_enums.en[i].inst_count;
+    }
+    return total;
+}
+
+/*
+ * Materialize a generic template instance the same way the emit functions do,
+ * discarding the generated text. The point is the side effect: expanding the
+ * body runs it through rewrite_generics (and the payload-enum constructor
+ * rewrite), which registers any further generic instances the body needs.
+ */
+static void materialize_generic_instance(struct GenericTemplate *tmpl, int j, int is_func)
+{
+    char param[NAME_MAX_LEN];
+    const char *head = generic_template_body_start(tmpl->head, param);
+    struct Text *concrete_head = replace_param_and_generics(head,
+                                                            tmpl->param,
+                                                            tmpl->inst[j].arg,
+                                                            tmpl->name,
+                                                            tmpl->inst[j].concrete);
+    struct Text *concrete_body = replace_param_and_generics(tmpl->body,
+                                                            tmpl->param,
+                                                            tmpl->inst[j].arg,
+                                                            tmpl->name,
+                                                            tmpl->inst[j].concrete);
+
+    concrete_head = remove_percent(strip_attributes(concrete_head));
+    concrete_body = remove_percent(strip_attributes(concrete_body));
+    if (is_func) {
+        concrete_body = rewrite_payload_enum_constructors(concrete_body);
+    }
+    text_free(concrete_head);
+    text_free(concrete_body);
+}
+
+/*
+ * A generic body may reference other generic instances (for example
+ * OwnedVec_delete<T> calls OwnedVec_clear<T>). Those nested instances are only
+ * discovered while the body is expanded, so expand every known instance
+ * repeatedly until no new instance appears. After this, emission sees the full
+ * set regardless of template ordering.
+ */
+static void close_generic_instances(void)
+{
+    int prev = -1;
+    int guard;
+
+    for (guard = 0; guard < 1000 && total_generic_instance_count() != prev; guard++) {
+        int i;
+        int j;
+
+        prev = total_generic_instance_count();
+        for (i = 0; i < g_generic_funcs.count; i++) {
+            struct GenericTemplate *tmpl = &g_generic_funcs.tmpl[i];
+            for (j = 0; j < tmpl->inst_count; j++) {
+                materialize_generic_instance(tmpl, j, 1);
+            }
+        }
+        for (i = 0; i < g_generic_structs.count; i++) {
+            struct GenericTemplate *tmpl = &g_generic_structs.tmpl[i];
+            for (j = 0; j < tmpl->inst_count; j++) {
+                if (strcmp(tmpl->inst[j].arg, tmpl->param) == 0) {
+                    continue;
+                }
+                materialize_generic_instance(tmpl, j, 0);
+            }
+        }
+    }
+}
+
 static void emit_generic_instances(FILE *out)
 {
     emit_generic_struct_instances(out);
@@ -6487,6 +6569,7 @@ int main(int argc, char **argv)
         if (g_need_string_typedef) {
             fputs("typedef char* string;\n", stdout);
         }
+        close_generic_instances();
         emit_payload_enum_instances(stdout);
         emit_generic_instances(stdout);
         fputs(p, stdout);

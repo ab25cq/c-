@@ -91,6 +91,10 @@ struct ListNode_int{
     int value;
     struct ListNode_int* next;
 };
+struct ListNode_int_ptr{
+    int* value;
+    struct ListNode_int_ptr* next;
+};
 struct List_int_ptr{
     struct ListNode_int_ptr* head;
     struct ListNode_int_ptr* tail;

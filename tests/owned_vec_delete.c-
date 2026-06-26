@@ -1,0 +1,15 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <c-.h>
+
+int main(void)
+{
+    struct OwnedVec<int*>* a = OwnedVec<int*>.new();
+    int* value = new int;
+
+    *value = 42;
+    a.push(move value);
+    printf("%d\n", a.len());
+
+    return 0;
+}

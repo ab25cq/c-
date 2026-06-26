@@ -157,6 +157,13 @@ grep '__foreach' tests/generics_foreach.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/generics_foreach.out.c -o tests/generics_foreach.out
 ./tests/generics_foreach.out
 
+./c- tests/owned_vec_delete.c- > tests/owned_vec_delete.out.c
+grep 'void OwnedVec_clear_int_ptr(struct OwnedVec_int_ptr\* self)' tests/owned_vec_delete.out.c >/dev/null
+grep 'OwnedVec_clear_int_ptr(self);' tests/owned_vec_delete.out.c >/dev/null
+grep 'OwnedVec_delete_int_ptr(a);' tests/owned_vec_delete.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra -Werror tests/owned_vec_delete.out.c -o tests/owned_vec_delete.out
+test "$(./tests/owned_vec_delete.out)" = "1"
+
 ./c- tests/index_panic.c- > tests/index_panic.out.c
 cc -std=gnu99 -Wall -Wextra tests/index_panic.out.c -o tests/index_panic.out
 if ./tests/index_panic.out > tests/index_panic.out.log 2> tests/index_panic.err; then
