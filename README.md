@@ -175,6 +175,29 @@ cc -Os -ffunction-sections -fdata-sections -Wl,--gc-sections \
    -ffreestanding -nostdlib -fno-builtin program.c putchar.c -o program
 ```
 
+### Making a whole project bare
+
+To build an entire `cpm` project freestanding, set `bare = true` in the
+`[build]` section of `C-.toml`:
+
+```toml
+[build]
+src = "src/main.c-"
+compiler = "cc"
+cflags = "-std=gnu99 -Wall -Wextra"
+ldflags = ""
+bare = true
+```
+
+With `bare = true`, `cpm build` passes `-bare` to `c-` for every source and
+links with `-ffreestanding -nostdlib -fno-builtin` (on top of the default
+`-Os` and section garbage collection). Provide your board's `putchar` and
+startup code as ordinary source files under `src/` — for example a
+`src/board.c-` that defines `putchar` and `_start`. Set `compiler`, extra
+`cflags` (MCU flags), and `ldflags` (linker script, startup object) in the
+manifest for your target. The `cminus_panic` definition is still emitted once
+across all translation units.
+
 Heap is a fixed static buffer; override its size with
 `-DCMINUS_BARE_HEAP_SIZE=<bytes>`. `free` is a no-op (bump allocator).
 

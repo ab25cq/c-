@@ -104,6 +104,51 @@ grep 'void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/cpm-uniq-smoke.c >/dev
 grep 'extern void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/src_sub.c >/dev/null
 test "$(grep -h '^void cminus_panic' /tmp/cpm-uniq-smoke/target/debug/*.c | wc -l)" = "1"
 
+# Project-level bare build: no libc, one cminus_panic across TUs, runs on the
+# host through a syscall putchar/_start. Runnable check is x86_64-only.
+rm -rf /tmp/cpm-bare-smoke
+CPM_BARE="$ROOT/lib/c-bare.h" ./cpm new /tmp/cpm-bare-smoke
+printf '\nbare = true\n' >> /tmp/cpm-bare-smoke/C-.toml
+cat > /tmp/cpm-bare-smoke/src/main.c- <<'SRC'
+#include <c-.h>
+
+int main(void)
+{
+    printf("bare %d\n", 6 * 7);
+    return 0;
+}
+SRC
+cat > /tmp/cpm-bare-smoke/src/board.c- <<'SRC'
+int putchar(int c)
+{
+    unsigned char ch = (unsigned char)c;
+    __asm__ volatile("syscall" : : "a"(1L), "D"(1L), "S"(&ch), "d"(1L) : "rcx", "r11", "memory");
+    return c;
+}
+
+void _start(void)
+{
+    int code = main();
+    __asm__ volatile("syscall" : : "a"(60L), "D"((long)code) : "memory");
+}
+SRC
+if [ "$(uname -m)" = "x86_64" ]; then
+    (cd /tmp/cpm-bare-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" build > build.out 2>&1)
+    # No system headers leaked into either generated source.
+    if grep -E '#include[[:space:]]*<' /tmp/cpm-bare-smoke/target/debug/*.c >/dev/null; then
+        echo "bare project still includes a system header" >&2
+        exit 1
+    fi
+    # Exactly one cminus_panic definition across all translation units.
+    test "$(grep -h '^void cminus_panic' /tmp/cpm-bare-smoke/target/debug/*.c | wc -l)" = "1"
+    # Built executable must not depend on libc (no dynamic NEEDED entries).
+    if readelf -d /tmp/cpm-bare-smoke/target/debug/cpm-bare-smoke 2>/dev/null | grep -q NEEDED; then
+        echo "bare executable unexpectedly links a shared library" >&2
+        exit 1
+    fi
+    test "$(/tmp/cpm-bare-smoke/target/debug/cpm-bare-smoke)" = "bare 42"
+fi
+
 rm -rf /tmp/cpm-leak-smoke
 ./cpm new /tmp/cpm-leak-smoke
 cat > /tmp/cpm-leak-smoke/src/main.c- <<'SRC'

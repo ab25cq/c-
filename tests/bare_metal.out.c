@@ -42,10 +42,10 @@ extern int putchar(int c);
  * end up at putchar on a board with a single console.
  */
 typedef struct cminus_bare_file { int fd; } FILE;
-extern FILE __cminus_bare_stdout;
-extern FILE __cminus_bare_stderr;
-FILE __cminus_bare_stdout = { 1 };
-FILE __cminus_bare_stderr = { 2 };
+/* weak: the runtime is inlined into every -bare translation unit, so these
+   definitions must merge instead of colliding at link time. */
+__attribute__((weak)) FILE __cminus_bare_stdout = { 1 };
+__attribute__((weak)) FILE __cminus_bare_stderr = { 2 };
 #define stdout (&__cminus_bare_stdout)
 #define stderr (&__cminus_bare_stderr)
 

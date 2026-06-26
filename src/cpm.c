@@ -18,6 +18,7 @@
 
 #define CPM_GC_SECTIONS_FLAGS "-ffunction-sections -fdata-sections -Wl,--gc-sections"
 #define CPM_SIZE_OPT_FLAGS "-Os"
+#define CPM_BARE_FLAGS "-ffreestanding -nostdlib -fno-builtin"
 #define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address,leak"
 #define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
 #define LEAK_FALLBACK_TO_VALGRIND 1
@@ -30,6 +31,7 @@ struct Manifest {
     char compiler[VALUE_MAX_LEN];
     char cflags[VALUE_MAX_LEN];
     char ldflags[VALUE_MAX_LEN];
+    int bare;
 };
 
 struct SourceList {
@@ -593,6 +595,10 @@ static void read_manifest(struct Manifest *m)
                 unquote_value(m->cflags, sizeof(m->cflags), value);
             } else if (strcmp(section, "build") == 0 && strcmp(key, "ldflags") == 0) {
                 unquote_value(m->ldflags, sizeof(m->ldflags), value);
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "bare") == 0) {
+                char unquoted[VALUE_MAX_LEN];
+                unquote_value(unquoted, sizeof(unquoted), value);
+                m->bare = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
             }
         }
     }
@@ -1038,36 +1044,74 @@ static int cmd_new(const char *name)
     return cmd_init(base_name(name));
 }
 
+/*
+ * True only when the file *defines* main, i.e. `main(...)` is followed by `{`.
+ * Reading the whole file lets the brace land on a later line, and rules out a
+ * mere call such as `main()` inside a startup routine, which would otherwise
+ * make a second translation unit emit the uniq cminus_panic and collide.
+ */
 static int file_has_main_function(const char *path)
 {
     FILE *fp = fopen(path, "r");
-    char line[1024];
+    long size;
+    char *buf;
+    const char *p;
+    int found = 0;
 
     if (fp == NULL) {
         return 0;
     }
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        char *p = line;
+    if (fseek(fp, 0, SEEK_END) != 0 || (size = ftell(fp)) < 0) {
+        fclose(fp);
+        return 0;
+    }
+    rewind(fp);
+    buf = malloc((size_t)size + 1);
+    if (buf == NULL) {
+        fclose(fp);
+        return 0;
+    }
+    size = (long)fread(buf, 1, (size_t)size, fp);
+    buf[size] = '\0';
+    fclose(fp);
 
-        while ((p = strstr(p, "main")) != NULL) {
-            char before = p == line ? '\0' : p[-1];
-            char *after = p + 4;
+    p = buf;
+    while ((p = strstr(p, "main")) != NULL) {
+        char before = p == buf ? '\0' : p[-1];
+        const char *q = p + 4;
 
-            if ((before == '\0' || !(isalnum((unsigned char)before) || before == '_')) &&
-                !(isalnum((unsigned char)*after) || *after == '_')) {
-                while (isspace((unsigned char)*after)) {
-                    after++;
+        if ((before == '\0' || !(isalnum((unsigned char)before) || before == '_')) &&
+            !(isalnum((unsigned char)*q) || *q == '_')) {
+            while (isspace((unsigned char)*q)) {
+                q++;
+            }
+            if (*q == '(') {
+                int depth = 0;
+                while (*q != '\0') {
+                    if (*q == '(') {
+                        depth++;
+                    } else if (*q == ')') {
+                        depth--;
+                        if (depth == 0) {
+                            q++;
+                            break;
+                        }
+                    }
+                    q++;
                 }
-                if (*after == '(') {
-                    fclose(fp);
-                    return 1;
+                while (isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q == '{') {
+                    found = 1;
+                    break;
                 }
             }
-            p += 4;
         }
+        p += 4;
     }
-    fclose(fp);
-    return 0;
+    free(buf);
+    return found;
 }
 
 static void write_c_with_common_include(const char *dst, const char *src, int include_common)
@@ -1164,8 +1208,8 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
         snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", c_path);
         shell_quote(q_src, sizeof(q_src), sources.path[i]);
         shell_quote(q_c, sizeof(q_c), tmp_path);
-        snprintf(cmd, sizeof(cmd), "C_MINUS_EMIT_UNIQ=%d %s %s > %s",
-                 emit_uniq, q_translator, q_src, q_c);
+        snprintf(cmd, sizeof(cmd), "C_MINUS_EMIT_UNIQ=%d %s%s %s > %s",
+                 emit_uniq, q_translator, m.bare ? " -bare" : "", q_src, q_c);
         if (run_cmd(cmd) != 0) {
             return 1;
         }
@@ -1194,8 +1238,9 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
     {
         const char *opt = optimize ? CPM_SIZE_OPT_FLAGS : "";
         const char *extra = (extra_cflags != NULL) ? extra_cflags : "";
-        snprintf(cmd, sizeof(cmd), "%s %s %s %s %s -Itarget/debug",
-                 m.compiler, m.cflags, extra, opt, CPM_GC_SECTIONS_FLAGS);
+        const char *bare = m.bare ? CPM_BARE_FLAGS : "";
+        snprintf(cmd, sizeof(cmd), "%s %s %s %s %s %s -Itarget/debug",
+                 m.compiler, m.cflags, extra, opt, bare, CPM_GC_SECTIONS_FLAGS);
     }
     append_generated_c_paths(cmd, sizeof(cmd), &sources, &m);
     if (strlen(cmd) + strlen(q_out) + 5 >= sizeof(cmd)) {
