@@ -85,12 +85,15 @@ under `target/debug`, and compiles the executable to
 uses the same build-and-run path as `run`; dedicated test targets can be added
 later without changing the manifest format.
 
-`cpm build` compiles with `-ffunction-sections -fdata-sections` and links with
-`-Wl,--gc-sections`, so each function and global lives in its own section and
-the linker drops everything the program never references. The unused (and
-weak/duplicate) helpers carried by the standard library and the bare runtime
-are removed automatically, shrinking the executable. Add `-Os` to the manifest
-`cflags` for further size reduction.
+`cpm build` optimizes for size by default: it compiles with
+`-Os -ffunction-sections -fdata-sections` and links with `-Wl,--gc-sections`,
+so each function and global lives in its own section and the linker drops
+everything the program never references. The unused (and weak/duplicate)
+helpers carried by the standard library and the bare runtime are removed
+automatically, shrinking the executable. `cpm run` builds the same way.
+
+`cpm val` and `cpm leak` keep the section garbage collection but build without
+`-Os`, so the allocations they are meant to inspect are not optimized away.
 
 `c-` automatically reads the project standard library header `<c-.h>` when a
 source file does not include it explicitly. During build, `cpm` also writes

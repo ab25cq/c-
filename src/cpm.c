@@ -17,6 +17,7 @@
 #define MAX_SOURCES 128
 
 #define CPM_GC_SECTIONS_FLAGS "-ffunction-sections -fdata-sections -Wl,--gc-sections"
+#define CPM_SIZE_OPT_FLAGS "-Os"
 #define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address,leak"
 #define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
 #define LEAK_FALLBACK_TO_VALGRIND 1
@@ -1130,7 +1131,7 @@ static void write_c_with_common_include(const char *dst, const char *src, int in
     }
 }
 
-static int cmd_build_with_flags(const char *extra_cflags)
+static int cmd_build_with_flags(const char *extra_cflags, int optimize)
 {
     struct Manifest m;
     char q_translator[PATH_MAX_LEN * 2];
@@ -1186,14 +1187,15 @@ static int cmd_build_with_flags(const char *extra_cflags)
      * Put every function and global in its own section and let the linker
      * garbage-collect the ones the program never references. This drops the
      * unused (and weak/duplicate) helpers the standard library and bare runtime
-     * carry, shrinking the executable without changing behaviour.
+     * carry, shrinking the executable without changing behaviour. Size
+     * optimization (-Os) is added for normal builds but skipped for val/leak,
+     * where it could optimize away the very allocations they check for.
      */
-    if (extra_cflags != NULL && extra_cflags[0] != '\0') {
-        snprintf(cmd, sizeof(cmd), "%s %s %s %s -Itarget/debug",
-                 m.compiler, m.cflags, extra_cflags, CPM_GC_SECTIONS_FLAGS);
-    } else {
-        snprintf(cmd, sizeof(cmd), "%s %s %s -Itarget/debug",
-                 m.compiler, m.cflags, CPM_GC_SECTIONS_FLAGS);
+    {
+        const char *opt = optimize ? CPM_SIZE_OPT_FLAGS : "";
+        const char *extra = (extra_cflags != NULL) ? extra_cflags : "";
+        snprintf(cmd, sizeof(cmd), "%s %s %s %s %s -Itarget/debug",
+                 m.compiler, m.cflags, extra, opt, CPM_GC_SECTIONS_FLAGS);
     }
     append_generated_c_paths(cmd, sizeof(cmd), &sources, &m);
     if (strlen(cmd) + strlen(q_out) + 5 >= sizeof(cmd)) {
@@ -1217,7 +1219,7 @@ static int cmd_build_with_flags(const char *extra_cflags)
 
 static int cmd_build(void)
 {
-    return cmd_build_with_flags(NULL);
+    return cmd_build_with_flags(NULL, 1);
 }
 
 static int run_manifest_output(int argc, char **argv, const char *prefix)
@@ -1260,7 +1262,8 @@ static int cmd_val(int argc, char **argv)
     char q_valgrind[PATH_MAX_LEN * 2];
     char prefix[PATH_MAX_LEN * 4];
 
-    if (cmd_build() != 0) {
+    /* No -Os here: it could elide the unused allocations valgrind looks for. */
+    if (cmd_build_with_flags(NULL, 0) != 0) {
         return 1;
     }
     if (valgrind == NULL || valgrind[0] == '\0') {
@@ -1277,7 +1280,7 @@ static int cmd_leak(int argc, char **argv)
 {
     int rc;
 
-    if (cmd_build_with_flags(LEAK_CFLAGS) != 0) {
+    if (cmd_build_with_flags(LEAK_CFLAGS, 0) != 0) {
         fputs("cpm: compiler leak sanitizer build failed\n", stderr);
         if (LEAK_FALLBACK_TO_VALGRIND) {
             fputs("cpm: falling back to valgrind\n", stderr);
