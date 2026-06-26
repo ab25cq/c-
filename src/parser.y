@@ -61,6 +61,7 @@ struct Owned {
 struct OwnedField {
     char name[NAME_MAX_LEN];
     struct Type type;
+    int is_array;
 };
 
 struct StructFinalizer {
@@ -329,6 +330,8 @@ static void append_struct_clone_definition(struct Text *out, struct StructFinali
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type);
 static struct Text *prepend_owned_assignment_release(struct Text *stmt, const char *original, const char *lhs_expr, struct Type type);
 static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name);
+static int starts_word(const char *s, const char *word);
+static const char *skip_ws(const char *s);
 %}
 
 %code requires {
@@ -339,8 +342,8 @@ struct Text;
     struct Text *node;
 }
 
-%token <node> IDENT NUMBER STRING_LITERAL CHAR_LITERAL PP_LINE RETURN KEYWORD OP
-%token <node> LBRACE RBRACE LPAREN RPAREN LBRACKET RBRACKET LT GT SEMI COMMA EQUAL PERCENT OTHER
+%token <node> IDENT NUMBER STRING_LITERAL CHAR_LITERAL PP_LINE RETURN CASE DEFAULT KEYWORD OP
+%token <node> LBRACE RBRACE LPAREN RPAREN LBRACKET RBRACKET LT GT SEMI COMMA COLON EQUAL PERCENT OTHER
 
 %type <node> translation_unit external_item top_seq top_part token token_no_comma
 %type <node> paren_group paren_items paren_part bracket_group bracket_items bracket_part
@@ -407,6 +410,12 @@ compound_item
         { $$ = process_statement($1, $2); }
     | stmt_seq COMMA
         { $$ = text_join($1, $2); $$->tail_return = 0; }
+    | IDENT COLON
+        { $$ = text_join($1, $2); $$->tail_return = 0; }
+    | DEFAULT COLON
+        { $$ = text_join($1, $2); $$->tail_return = 0; }
+    | CASE stmt_seq COLON
+        { $$ = text_join3($1, $2, $3); $$->tail_return = 0; }
     | LBRACE compound_items RBRACE
         { $$ = text_join3($1, $2, $3); $$->tail_return = 0; }
     | stmt_seq LBRACE compound_items RBRACE
@@ -453,6 +462,8 @@ paren_items
 paren_part
     : token
         { $$ = $1; }
+    | SEMI
+        { $$ = $1; }
     | paren_group
         { $$ = $1; }
     | bracket_group
@@ -476,6 +487,8 @@ bracket_items
 bracket_part
     : token
         { $$ = $1; }
+    | SEMI
+        { $$ = $1; }
     | paren_group
         { $$ = $1; }
     | bracket_group
@@ -498,6 +511,8 @@ angle_items
 
 angle_part
     : token
+        { $$ = $1; }
+    | SEMI
         { $$ = $1; }
     | paren_group
         { $$ = $1; }
@@ -526,6 +541,8 @@ token
         { $$ = $1; }
     | COMMA
         { $$ = $1; }
+    | COLON
+        { $$ = $1; }
     | EQUAL
         { $$ = $1; }
     | PERCENT
@@ -550,6 +567,8 @@ token_no_comma
     | LT
         { $$ = $1; }
     | GT
+        { $$ = $1; }
+    | COLON
         { $$ = $1; }
     | EQUAL
         { $$ = $1; }
@@ -1824,6 +1843,7 @@ struct DeclInfo {
     int is_decl;
     int is_function;
     int has_init;
+    int is_array;
     const char *init;
     char name[NAME_MAX_LEN];
     struct Type type;
@@ -2025,6 +2045,13 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
         decl->init = s + eq + 1;
     }
     for (scan = base_end; scan < limit; scan++) {
+        if (*scan == '[') {
+            decl->is_array = 1;
+            while (scan < limit && *scan != ']') {
+                scan++;
+            }
+            continue;
+        }
         if (*scan == '*') {
             ptr++;
         }
@@ -2718,7 +2745,7 @@ static struct StructFinalizer *struct_clone_get(const char *tag)
     return clone;
 }
 
-static void struct_clone_add_field(const char *tag, const char *field, struct Type type)
+static void struct_clone_add_field(const char *tag, const char *field, struct Type type, int is_array)
 {
     struct StructFinalizer *clone = struct_clone_get(tag);
     int i;
@@ -2729,6 +2756,7 @@ static void struct_clone_add_field(const char *tag, const char *field, struct Ty
     for (i = 0; i < clone->count; i++) {
         if (strcmp(clone->fields[i].name, field) == 0) {
             clone->fields[i].type = type;
+            clone->fields[i].is_array = is_array;
             return;
         }
     }
@@ -2738,6 +2766,7 @@ static void struct_clone_add_field(const char *tag, const char *field, struct Ty
     strncpy(clone->fields[clone->count].name, field, NAME_MAX_LEN - 1);
     clone->fields[clone->count].name[NAME_MAX_LEN - 1] = '\0';
     clone->fields[clone->count].type = type;
+    clone->fields[clone->count].is_array = is_array;
     clone->count++;
 }
 
@@ -5215,9 +5244,7 @@ static struct Text *remove_percent(struct Text *in)
             }
             continue;
         }
-        if (in->text[i] != '%') {
-            text_add_ch(out, in->text[i]);
-        }
+        text_add_ch(out, in->text[i]);
     }
     text_free(in);
     return out;
@@ -5338,13 +5365,21 @@ static void append_struct_finalizer_definition(struct Text *out, struct StructFi
     text_add(out, "}\n");
 }
 
-static void append_struct_clone_field(struct Text *out, struct Type type, const char *field_name, int index)
+static void append_struct_clone_field(struct Text *out, struct Type type, const char *field_name, int index, int is_array)
 {
     struct Text *expr = text_new();
 
     text_add(expr, "self->");
     text_add(expr, field_name);
-    if (type.kind == TY_STRUCT && type.ptr == 0) {
+    if (is_array) {
+        text_add(out, "    memcpy(copy->");
+        text_add(out, field_name);
+        text_add(out, ", ");
+        text_add(out, expr->text);
+        text_add(out, ", sizeof(copy->");
+        text_add(out, field_name);
+        text_add(out, "));\n");
+    } else if (type.kind == TY_STRUCT && type.ptr == 0) {
         char tmp[NAME_MAX_LEN];
 
         snprintf(tmp, sizeof(tmp), "__clone_field%d", index);
@@ -5459,7 +5494,7 @@ static void append_struct_clone_definition(struct Text *out, struct StructFinali
     text_add(out, "        return copy;\n");
     text_add(out, "    }\n");
     for (i = 0; i < clone->count; i++) {
-        append_struct_clone_field(out, clone->fields[i].type, clone->fields[i].name, i);
+        append_struct_clone_field(out, clone->fields[i].type, clone->fields[i].name, i, clone->fields[i].is_array);
     }
     text_add(out, "    return copy;\n");
     text_add(out, "}\n");
@@ -5698,7 +5733,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0' &&
             parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' &&
             decl.type.ptr >= 0) {
-            struct_clone_add_field(g_current_struct_tag, decl.name, decl.type);
+            struct_clone_add_field(g_current_struct_tag, decl.name, decl.type, decl.is_array);
             if (decl.type.owned || type_has_finalizer(decl.type)) {
             struct_finalizer_add_field(g_current_struct_tag, decl.name, decl.type);
             }

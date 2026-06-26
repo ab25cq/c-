@@ -2,6 +2,8 @@
 
 Small C-to-C translator experiment.
 
+Current language/package format version: `0.2.0`.
+
 ## Dependencies
 
 Build dependencies:
@@ -68,7 +70,7 @@ The manifest is intentionally close to Cargo's shape:
 ```toml
 [package]
 name = "hello"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2026"
 
 [build]
@@ -144,12 +146,18 @@ resolves through `./lib`. Set `C_MINUS_LIB=/path/to/lib` only when invoking
 
 `c- -bare input.c- > output.c` lowers without any libc dependency, for
 microcontrollers and other freestanding targets. Instead of emitting
-`#include <stdlib.h>` and friends, it inlines `lib/c-bare.h` at the top of the
-output, a tiny freestanding runtime that implements exactly the libc surface
-the generated code uses (`malloc`/`calloc`/`realloc`/`free`, `memset`/`memcpy`,
-`strlen`/`strcmp`/`strncpy`/`strdup`, `printf`/`fprintf`/`puts`/`asprintf`, and
-`abort`). Every function is `weak`, so the definitions also satisfy the `mem*`
-calls the C compiler itself may emit.
+`#include <stdlib.h>` and friends, it inlines the *declarations* from
+`lib/c-bare.h`, a tiny freestanding runtime that implements exactly the libc
+surface the generated code uses (`malloc`/`calloc`/`realloc`/`free`,
+`memset`/`memcpy`, `strlen`/`strcmp`/`strncpy`/`strdup`,
+`printf`/`fprintf`/`puts`/`asprintf`, and `abort`).
+
+The runtime *definitions* live behind `CMINUS_BARE_IMPL` and are compiled once
+into a separate object that the program links against. Keeping the definitions
+out of the program translation units is deliberate: the compiler then sees
+`printf` and friends as ordinary libc declarations and may fold, for example,
+`printf("...\n")` into `puts()` and drop the unused format engine entirely. A
+constant-string hello-world links to roughly 600–800 bytes with no libc.
 
 The runtime is built on a single primitive for your board:
 
@@ -158,33 +166,31 @@ int putchar(int c);   /* send one byte to your UART/console */
 ```
 
 On a hosted Linux target (`__linux__`, on x86-64/aarch64/riscv64/arm) the
-runtime already provides a `putchar` and a `_start` through raw syscalls, both
-`weak`, so a `-bare` program builds and runs with no board code at all. Real
-freestanding targets (for example `arm-none-eabi-gcc`, which does not define
-`__linux__`) get nothing here and supply their own `putchar` and startup.
+runtime object already provides a `putchar` and a `_start` through raw
+syscalls, both `weak`, so a `-bare` program builds and runs with no board code
+at all. Real freestanding targets (for example `arm-none-eabi-gcc`, which does
+not define `__linux__`) supply their own `putchar` and startup. Because the
+runtime is a separate object, a board source that defines a strong `putchar`
+(or `_start`) simply overrides the weak default — no macros needed.
 
-To replace the Linux defaults with your own, compile with
-`-DCMINUS_BARE_NO_DEFAULT_PUTCHAR` and/or `-DCMINUS_BARE_NO_DEFAULT_START` (the
-runtime is inlined into every translation unit, so a strong override in the
-same file would otherwise collide) and provide the function yourself.
-
-`cpm new` and `cpm init` also write `lib/c-bare.h`, so `c- -bare` from inside a
-project resolves it through `./lib`. Compile the generated file freestanding;
-on Linux no extra startup is needed:
+`cpm new` and `cpm init` write `lib/c-bare.h`. The easiest path is a bare `cpm`
+project (below), which compiles and links the runtime object automatically.
+Building by hand takes two objects:
 
 ```sh
 c- -bare program.c- > program.c
-cc -ffreestanding -nostdlib -fno-builtin program.c -o program   # Linux: runs as-is
+printf '#define CMINUS_BARE_IMPL\n#include <c-bare.h>\n' > c-bare-runtime.c
+# runtime: freestanding, builtins off so its own printf is not rewritten
+cc -Os -ffreestanding -fno-builtin -Ilib -c c-bare-runtime.c -o c-bare-runtime.o
+# program: NOT freestanding, so printf("...\n") can fold to puts
+cc -Os -nostdlib -ffunction-sections -fdata-sections -Wl,--gc-sections \
+   program.c c-bare-runtime.o -o program
 ```
 
-For the smallest image, add size optimization and let the linker drop every
-runtime helper the program does not use (the runtime functions are `weak` and
-each lands in its own section):
-
-```sh
-cc -Os -ffunction-sections -fdata-sections -Wl,--gc-sections \
-   -ffreestanding -nostdlib -fno-builtin program.c putchar.c -o program
-```
+Use `gcc` for the program object. `clang` currently miscompiles some generated
+code (the checked-index statement expressions) at `-Os`/`-Oz`; it is fine for
+programs that avoid those, which is why the runtime object itself builds with
+either.
 
 ### Making a whole project bare
 
@@ -217,6 +223,28 @@ Add `strip = true` to `[build]` to strip the binary after linking (skipped for
 `cpm val`/`cpm leak`, which need the symbols). With `compiler = "clang"`,
 `strip = true`, and a `puts` hello-world, the resulting executable is around
 600 bytes with no libc dependency.
+
+For the smallest runnable Linux ELF, also set `strip_sections = true`. Section
+headers are not needed by the Linux loader, so `cpm` asks `strip` to remove
+them after linking:
+
+```toml
+[package]
+version = "0.2.0"
+
+[build]
+compiler = "clang"
+cflags = "-std=gnu99 -Wall -Wextra -flto=thin"
+bare = true
+strip = true
+strip_sections = true
+```
+
+The checked-in `small` project uses this mode and currently builds a runnable
+`Hello World` ELF of about 274 bytes on x86-64 Linux.
+
+`bare_runtime = false` remains available for comparison-only experiments. It
+skips the runtime object; without your own `_start`, the result is not runnable.
 
 Heap is a fixed static buffer; override its size with
 `-DCMINUS_BARE_HEAP_SIZE=<bytes>`. `free` is a no-op (bump allocator).
@@ -424,14 +452,14 @@ int first = ptr->first();
 
 Generic method blocks are intentionally not part of this feature.
 
-The standard library currently provides `Vec<T>` and `List<T>`. Both support
-`new`, `push`, `len`, `is_empty`, `clear`, `first`, `last`, `get`, `set`,
-checked indexed access, automatic deletion for owning local variables, and
-`foreach`.
-`Vec<T>` also supports `capacity`, `reserve`, and `pop_opt`. `List<T>` also
-supports `push_front` and `pop_front_opt`. `Map<K,V>` provides a generic
-hash table with `new`, `set`, `get_opt`, `contains`, `remove`, `len`,
-`is_empty`, `clear`, and automatic deletion for owning local variables.
+The standard library currently provides `Vec<T>`, `List<T>`, and `Map<K,V>`.
+`Vec<T>` and `List<T>` support `new`, `push`, `len`, `is_empty`, `clear`,
+`first`, `last`, `get`, `set`, checked indexed access, automatic deletion for
+owning local variables, and `foreach`. `Vec<T>` also supports `capacity`,
+`reserve`, and `pop_opt`. `List<T>` also supports `push_front` and
+`pop_front_opt`. `Map<K,V>` provides a generic hash table with `new`, `set`,
+`get_opt`, `contains`, `remove`, `len`, `is_empty`, `clear`, and automatic
+deletion for owning local variables.
 
 Owning element containers are available as `OwnedVec<T>`, `OwnedList<T>`, and
 `OwnedMap<K,V>`. They are intended for pointer element/value types. Insert

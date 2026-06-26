@@ -1,0 +1,9 @@
+#include <c-.h>
+
+int main(void)
+{
+    volatile char* message = "Hello World\n";
+    int (*print)(const char*, ...) = printf;
+    print((char*)message);
+    return 0;
+}

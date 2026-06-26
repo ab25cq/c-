@@ -3,24 +3,29 @@
  *
  * A tiny freestanding C library that lets `c-` output run with no libc. It
  * implements exactly the libc surface the generated C uses (memory, a few
- * string helpers, printf-family, abort) on top of a single user-provided
- * primitive:
+ * string helpers, printf-family, abort) on top of a single board primitive:
  *
  *     int putchar(int c);
  *
- * Write that for your board (UART, semihosting, ...) and link it in. Everything
- * else here is `weak`, so it merges across translation units and satisfies the
- * mem* calls the compiler itself may emit.
+ * This header has two faces, selected by CMINUS_BARE_IMPL:
  *
- * Build a generated file produced with `c- -bare` like:
+ *   - Without it (the default) only declarations are visible. `c- -bare`
+ *     inlines this into each program source, so the compiler sees printf etc.
+ *     as ordinary libc declarations and can fold e.g. printf("...\n") into
+ *     puts(), dropping the format engine when it is unused.
+ *   - With it, the definitions appear too. The runtime is compiled exactly once
+ *     into a separate object (cpm does this automatically; see README) and
+ *     linked in. Keeping the definitions out of the program translation units
+ *     is what makes those libcall optimizations legal.
  *
- *     cc -ffreestanding -nostdlib -fno-builtin program.c putchar.c -o program
- *
- * Heap size is a fixed static buffer; override with
- * -DCMINUS_BARE_HEAP_SIZE=<bytes>.
+ * Heap is a fixed static buffer; override with -DCMINUS_BARE_HEAP_SIZE=<bytes>.
  */
 #ifndef CMINUS_BARE_H
 #define CMINUS_BARE_H
+
+/* ----------------------------------------------------------------------- */
+/* declarations (visible to every translation unit)                        */
+/* ----------------------------------------------------------------------- */
 
 typedef __SIZE_TYPE__ size_t;
 typedef __PTRDIFF_TYPE__ ptrdiff_t;
@@ -34,7 +39,7 @@ typedef __builtin_va_list va_list;
 #define NULL ((void*)0)
 #endif
 
-/* The host provides this; it is the only required symbol. */
+/* The board provides this; it is the only required external symbol. */
 extern int putchar(int c);
 
 /*
@@ -42,30 +47,55 @@ extern int putchar(int c);
  * end up at putchar on a board with a single console.
  */
 typedef struct cminus_bare_file { int fd; } FILE;
-/* weak: the runtime is inlined into every -bare translation unit, so these
-   definitions must merge instead of colliding at link time. */
-__attribute__((weak)) FILE __cminus_bare_stdout = { 1 };
-__attribute__((weak)) FILE __cminus_bare_stderr = { 2 };
+extern FILE __cminus_bare_stdout;
+extern FILE __cminus_bare_stderr;
 #define stdout (&__cminus_bare_stdout)
 #define stderr (&__cminus_bare_stderr)
-
-#define CMINUS_BARE_API __attribute__((weak))
 
 #ifndef CMINUS_BARE_HEAP_SIZE
 #define CMINUS_BARE_HEAP_SIZE (64u * 1024u)
 #endif
 
+extern void* memset(void* dst, int value, size_t count);
+extern void* memcpy(void* dst, const void* src, size_t count);
+extern void* memmove(void* dst, const void* src, size_t count);
+extern int memcmp(const void* a, const void* b, size_t count);
+extern void* malloc(size_t size);
+extern void free(void* ptr);
+extern void* calloc(size_t count, size_t size);
+extern void* realloc(void* ptr, size_t size);
+extern size_t strlen(const char* s);
+extern int strcmp(const char* a, const char* b);
+extern char* strncpy(char* dst, const char* src, size_t count);
+extern char* strdup(const char* src);
+extern int printf(const char* fmt, ...);
+extern int fprintf(FILE* stream, const char* fmt, ...);
+extern int puts(const char* s);
+extern int asprintf(char** out, const char* fmt, ...);
+extern int backtrace(void** buffer, int size);
+extern void backtrace_symbols_fd(void* const* buffer, int size, int fd);
+extern void abort(void);
+extern void exit(int status);
+
 /* ----------------------------------------------------------------------- */
-/* Linux syscall primitives                                                */
+/* definitions (compiled once into the runtime object)                     */
 /* ----------------------------------------------------------------------- */
+#ifdef CMINUS_BARE_IMPL
+
+/*
+ * weak: the board may override putchar (and _start), and the compiler may emit
+ * its own mem* calls that these satisfy.
+ */
+#define CMINUS_BARE_API __attribute__((weak))
+
+__attribute__((weak)) FILE __cminus_bare_stdout = { 1 };
+__attribute__((weak)) FILE __cminus_bare_stderr = { 2 };
 
 /*
  * On a hosted Linux target, write/exit syscalls let the runtime provide a
- * default putchar/_start (see the bottom of this file) and a one-call puts,
- * with no board code. Defining CMINUS_BARE_HAVE_SYSCALLS also tells puts below
- * to emit the whole line in a single write instead of a putchar loop. Real
+ * default putchar/_start and a single-write puts with no board code. Real
  * freestanding targets (no __linux__/known arch) get none of this and supply
- * their own putchar.
+ * their own putchar (and startup).
  */
 #if defined(__linux__)
 #if defined(__x86_64__)
@@ -140,9 +170,7 @@ static __attribute__((unused)) void cminus_bare_sys_exit(long code)
 #endif
 #endif /* __linux__ */
 
-/* ----------------------------------------------------------------------- */
-/* memory                                                                  */
-/* ----------------------------------------------------------------------- */
+/* memory -------------------------------------------------------------- */
 
 CMINUS_BARE_API void* memset(void* dst, int value, size_t count)
 {
@@ -267,9 +295,7 @@ CMINUS_BARE_API void* realloc(void* ptr, size_t size)
     return next;
 }
 
-/* ----------------------------------------------------------------------- */
-/* strings                                                                 */
-/* ----------------------------------------------------------------------- */
+/* strings ------------------------------------------------------------- */
 
 CMINUS_BARE_API size_t strlen(const char* s)
 {
@@ -314,9 +340,7 @@ CMINUS_BARE_API char* strdup(const char* src)
     return copy;
 }
 
-/* ----------------------------------------------------------------------- */
-/* formatted output, all routed through putchar                            */
-/* ----------------------------------------------------------------------- */
+/* formatted output, routed through putchar ---------------------------- */
 
 struct cminus_bare_sink {
     char* buf;    /* destination buffer when in buffer mode */
@@ -585,9 +609,7 @@ CMINUS_BARE_API int asprintf(char** out, const char* fmt, ...)
     return len;
 }
 
-/* ----------------------------------------------------------------------- */
-/* control                                                                 */
-/* ----------------------------------------------------------------------- */
+/* control ------------------------------------------------------------- */
 
 /*
  * No stack unwinding on bare metal: cminus_panic still prints the source file
@@ -620,42 +642,27 @@ CMINUS_BARE_API void exit(int status)
     }
 }
 
-/* ----------------------------------------------------------------------- */
-/* Linux host startup                                                      */
-/* ----------------------------------------------------------------------- */
-
 /*
- * On a hosted Linux target, provide putchar and _start through raw syscalls so
- * a -bare program builds and runs with no board code at all. Both are weak, but
- * because the runtime is inlined into every translation unit a *strong*
- * override in the same file would collide; to supply your own, compile with
- * -DCMINUS_BARE_NO_DEFAULT_PUTCHAR and/or -DCMINUS_BARE_NO_DEFAULT_START.
- *
- * Real freestanding targets (e.g. arm-none-eabi) do not define __linux__, so
- * nothing is emitted here and the board provides putchar and startup itself.
+ * Linux host startup: provide a default putchar and _start so a -bare program
+ * runs with no board code. Both are weak, so a board that links its own
+ * putchar/_start (in a separate source) simply overrides them.
  */
-
 #if defined(CMINUS_BARE_HAVE_SYSCALLS)
-
-#if !defined(CMINUS_BARE_NO_DEFAULT_PUTCHAR)
 __attribute__((weak)) int putchar(int c)
 {
     unsigned char ch = (unsigned char)c;
     cminus_bare_sys_write(1, &ch, 1);
     return c;
 }
-#endif
 
-#if !defined(CMINUS_BARE_NO_DEFAULT_START)
 extern int main(void);
 __attribute__((weak)) void _start(void)
 {
     cminus_bare_sys_exit((long)main());
 }
-#endif
-
 #endif /* CMINUS_BARE_HAVE_SYSCALLS */
 
+#endif /* CMINUS_BARE_IMPL */
 
 #endif /* CMINUS_BARE_H */
 struct __CMinusIndex_int{

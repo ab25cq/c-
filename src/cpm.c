@@ -19,15 +19,26 @@
 #define CPM_GC_SECTIONS_FLAGS "-ffunction-sections -fdata-sections -Wl,--gc-sections"
 #define CPM_SIZE_OPT_FLAGS "-Os"
 /*
- * Freestanding link plus size-minimizing layout: drop unwind tables, the
- * build-id note, RELRO, and the page gap between code and data segments, and
- * fix the entry to _start. -ffreestanding/-fno-builtin stay for correctness
- * (without them the compiler may rewrite our variadic printf and miscompile
- * it). These only shrink the file; they do not change behaviour.
+ * Bare builds link the program against a separately-compiled runtime object
+ * (see CPM_BARE_RUNTIME_FLAGS). Program translation units are NOT freestanding:
+ * leaving the standard-library declarations "real" lets the compiler fold e.g.
+ * printf("...\n") into puts() and drop the unused format engine. The flags here
+ * cover freestanding linking plus a size-minimizing ELF layout: no unwind
+ * tables/build-id/RELRO, code and data merged into one segment, entry at
+ * _start.
  */
-#define CPM_BARE_FLAGS "-ffreestanding -nostdlib -fno-builtin -fno-stack-protector " \
+#define CPM_BARE_PROGRAM_FLAGS "-nostdlib -fno-stack-protector " \
     "-fno-asynchronous-unwind-tables -fno-ident -no-pie -Wl,-e,_start " \
     "-Wl,--build-id=none -Wl,-z,noseparate-code -Wl,-z,norelro"
+
+/*
+ * The runtime object holds the actual definitions and IS compiled freestanding
+ * with builtins off, so the compiler does not rewrite our own variadic printf.
+ * Unused helpers are dropped at the final link by --gc-sections.
+ */
+#define CPM_BARE_RUNTIME_FLAGS "-ffreestanding -fno-builtin -fno-stack-protector " \
+    "-fno-asynchronous-unwind-tables -fno-ident -ffunction-sections -fdata-sections"
+#define CPM_BARE_NO_RUNTIME_PROGRAM_FLAGS "-nostdlib -fno-stack-protector -Wl,-e,0"
 #define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address,leak"
 #define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
 #define LEAK_FALLBACK_TO_VALGRIND 1
@@ -41,7 +52,9 @@ struct Manifest {
     char cflags[VALUE_MAX_LEN];
     char ldflags[VALUE_MAX_LEN];
     int bare;
+    int bare_runtime;
     int strip;
+    int strip_sections;
 };
 
 struct SourceList {
@@ -542,11 +555,12 @@ static void manifest_defaults(struct Manifest *m)
 {
     memset(m, 0, sizeof(*m));
     strcpy(m->name, "app");
-    strcpy(m->version, "0.1.0");
+    strcpy(m->version, "0.2.0");
     strcpy(m->src, "src/main.c-");
     strcpy(m->compiler, "cc");
     strcpy(m->cflags, "-std=gnu99 -Wall -Wextra");
     m->ldflags[0] = '\0';
+    m->bare_runtime = 1;
 }
 
 static void manifest_finish(struct Manifest *m)
@@ -609,10 +623,18 @@ static void read_manifest(struct Manifest *m)
                 char unquoted[VALUE_MAX_LEN];
                 unquote_value(unquoted, sizeof(unquoted), value);
                 m->bare = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "bare_runtime") == 0) {
+                char unquoted[VALUE_MAX_LEN];
+                unquote_value(unquoted, sizeof(unquoted), value);
+                m->bare_runtime = strcmp(unquoted, "false") != 0 && strcmp(unquoted, "0") != 0;
             } else if (strcmp(section, "build") == 0 && strcmp(key, "strip") == 0) {
                 char unquoted[VALUE_MAX_LEN];
                 unquote_value(unquoted, sizeof(unquoted), value);
                 m->strip = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "strip_sections") == 0) {
+                char unquoted[VALUE_MAX_LEN];
+                unquote_value(unquoted, sizeof(unquoted), value);
+                m->strip_sections = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
             }
         }
     }
@@ -627,7 +649,7 @@ static void write_manifest(const char *name)
     snprintf(text, sizeof(text),
              "[package]\n"
              "name = \"%s\"\n"
-             "version = \"0.1.0\"\n"
+             "version = \"0.2.0\"\n"
              "edition = \"2026\"\n"
              "\n"
              "[build]\n"
@@ -1242,6 +1264,24 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
         mkdir_p(dir);
     }
     /*
+     * For bare builds, compile the runtime (definitions behind CMINUS_BARE_IMPL)
+     * into its own object first. Keeping it out of the program units is what lets
+     * the program-side libcall optimizations fire; it is compiled freestanding so
+     * its own printf is not rewritten.
+     */
+    if (m.bare && m.bare_runtime) {
+        const char *opt = optimize ? CPM_SIZE_OPT_FLAGS : "";
+        write_file("target/debug/c-bare-runtime.c",
+                   "#define CMINUS_BARE_IMPL\n#include <c-bare.h>\n");
+        snprintf(cmd, sizeof(cmd),
+                 "%s %s %s %s -Ilib -Itarget/debug -c target/debug/c-bare-runtime.c "
+                 "-o target/debug/c-bare-runtime.o",
+                 m.compiler, m.cflags, opt, CPM_BARE_RUNTIME_FLAGS);
+        if (run_cmd(cmd) != 0) {
+            return 1;
+        }
+    }
+    /*
      * Put every function and global in its own section and let the linker
      * garbage-collect the ones the program never references. This drops the
      * unused (and weak/duplicate) helpers the standard library and bare runtime
@@ -1252,11 +1292,18 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
     {
         const char *opt = optimize ? CPM_SIZE_OPT_FLAGS : "";
         const char *extra = (extra_cflags != NULL) ? extra_cflags : "";
-        const char *bare = m.bare ? CPM_BARE_FLAGS : "";
+        const char *bare = m.bare ? (m.bare_runtime ? CPM_BARE_PROGRAM_FLAGS : CPM_BARE_NO_RUNTIME_PROGRAM_FLAGS) : "";
         snprintf(cmd, sizeof(cmd), "%s %s %s %s %s %s -Itarget/debug",
                  m.compiler, m.cflags, extra, opt, bare, CPM_GC_SECTIONS_FLAGS);
     }
     append_generated_c_paths(cmd, sizeof(cmd), &sources, &m);
+    if (m.bare && m.bare_runtime) {
+        const char *rt = " target/debug/c-bare-runtime.o";
+        if (strlen(cmd) + strlen(rt) + 1 >= sizeof(cmd)) {
+            die("cpm: command too long");
+        }
+        strcat(cmd, rt);
+    }
     if (strlen(cmd) + strlen(q_out) + 5 >= sizeof(cmd)) {
         die("cpm: command too long");
     }
@@ -1278,7 +1325,8 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
      */
     if (m.strip && optimize) {
         char strip_cmd[PATH_MAX_LEN * 3];
-        snprintf(strip_cmd, sizeof(strip_cmd), "strip -s %s", q_out);
+        snprintf(strip_cmd, sizeof(strip_cmd), "strip -s%s %s",
+                 m.strip_sections ? " --strip-section-headers" : "", q_out);
         if (run_cmd(strip_cmd) != 0) {
             return 1;
         }

@@ -193,6 +193,8 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
 {BLOCK}     { pending_add(yytext, (size_t)yyleng); }
 
 "return"    { return emit_token(RETURN); }
+"case"      { return emit_token(CASE); }
+"default"   { return emit_token(DEFAULT); }
 {ID_START}{ID_CONT}* {
                 if (strcmp(yytext, "new") == 0) {
                     new_type_scan = 1;
@@ -239,12 +241,13 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
                 new_type_scan = 0;
                 return emit_token(COMMA);
             }
+":"         { return emit_token(COLON); }
 "="         { return emit_token(EQUAL); }
 "%"         { return emit_token(PERCENT); }
 "<"/[A-Za-z_] { return emit_token(LT); }
 ">"         { return emit_token(GT); }
 
-[+\-*/!^&|<>?:.~] {
+[+\-*/!^&|<>?.~] {
                 return emit_token(OP);
             }
 

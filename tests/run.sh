@@ -121,8 +121,10 @@ int main(void)
 SRC
 if [ "$(uname -m)" = "x86_64" ]; then
     (cd /tmp/cpm-bare-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" build > build.out 2>&1)
-    # No system header (including the project-local <c-bare.h>) leaks through.
-    if grep -E '#include[[:space:]]*<' /tmp/cpm-bare-smoke/target/debug/*.c >/dev/null; then
+    # No system header leaks into the program sources. The generated runtime
+    # object source (c-bare-runtime.c) does include <c-bare.h> on purpose.
+    if ls /tmp/cpm-bare-smoke/target/debug/*.c | grep -v c-bare-runtime.c \
+        | xargs grep -E '#include[[:space:]]*<' >/dev/null 2>&1; then
         echo "bare project still includes a system header" >&2
         exit 1
     fi
@@ -134,15 +136,12 @@ if [ "$(uname -m)" = "x86_64" ]; then
     test "$(/tmp/cpm-bare-smoke/target/debug/cpm-bare-smoke)" = "bare 42"
 fi
 
-# Overriding the defaults: opt out with the macros and supply your own
-# putchar/_start. This also exercises one cminus_panic across two TUs.
+# Overriding the defaults: a board source defines its own putchar/_start. Since
+# the runtime is a separate object, the strong board symbols simply override the
+# weak runtime ones, with no macros. Also exercises one cminus_panic across TUs.
 rm -rf /tmp/cpm-bare-override
 CPM_BARE="$ROOT/lib/c-bare.h" ./cpm new /tmp/cpm-bare-override
-cat >> /tmp/cpm-bare-override/C-.toml <<'TOML'
-
-bare = true
-cflags = "-std=gnu99 -Wall -Wextra -DCMINUS_BARE_NO_DEFAULT_PUTCHAR -DCMINUS_BARE_NO_DEFAULT_START"
-TOML
+printf '\nbare = true\n' >> /tmp/cpm-bare-override/C-.toml
 cat > /tmp/cpm-bare-override/src/main.c- <<'SRC'
 #include <c-.h>
 

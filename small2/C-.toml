@@ -1,0 +1,13 @@
+[package]
+name = "small2"
+version = "0.2.0"
+edition = "2026"
+
+[build]
+src = "src/main.c-"
+compiler = "clang"
+cflags = "-std=gnu99 -Wall -Wextra -flto=thin -fno-builtin-printf"
+ldflags = ""
+bare = true
+strip = true
+strip_sections = true

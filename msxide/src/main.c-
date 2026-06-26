@@ -1,0 +1,1194 @@
+#include <locale.h>
+#include <ncursesw/curses.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MEM_SIZE 65536
+#define LOG_LINES 12
+
+struct Z80 {
+    unsigned char a;
+    unsigned char f;
+    unsigned char b;
+    unsigned char c;
+    unsigned char d;
+    unsigned char e;
+    unsigned char h;
+    unsigned char l;
+    unsigned short pc;
+    unsigned short sp;
+    unsigned long cycles;
+    int halted;
+};
+
+struct MSX {
+    struct Z80 cpu;
+    unsigned char mem[MEM_SIZE];
+    unsigned char vram[16384];
+    unsigned char vdp_reg[32];
+    unsigned char vdp_status;
+    unsigned short vdp_addr;
+    int running;
+    int show_help;
+    char log[LOG_LINES][96];
+    int log_head;
+};
+
+static unsigned short pair_hl(struct Z80* cpu)
+{
+    return ((unsigned short)cpu->h << 8) | cpu->l;
+}
+
+static void set_hl(struct Z80* cpu, unsigned short value)
+{
+    cpu->h = (unsigned char)(value >> 8);
+    cpu->l = (unsigned char)(value & 255);
+}
+
+static void log_msg(struct MSX* msx, const char* text)
+{
+    strncpy(msx->log[msx->log_head], text, 95);
+    msx->log[msx->log_head][95] = '\0';
+    msx->log_head++;
+    if (msx->log_head >= LOG_LINES) {
+        msx->log_head = 0;
+    }
+}
+
+static unsigned char mem_read(struct MSX* msx, unsigned short addr)
+{
+    return msx->mem[addr];
+}
+
+static void mem_write(struct MSX* msx, unsigned short addr, unsigned char value)
+{
+    msx->mem[addr] = value;
+}
+
+static unsigned char fetch8(struct MSX* msx)
+{
+    unsigned char v = mem_read(msx, msx->cpu.pc);
+    msx->cpu.pc++;
+    return v;
+}
+
+static unsigned short fetch16(struct MSX* msx)
+{
+    unsigned char lo = fetch8(msx);
+    unsigned char hi = fetch8(msx);
+    return ((unsigned short)hi << 8) | lo;
+}
+
+static void push16(struct MSX* msx, unsigned short value)
+{
+    msx->cpu.sp--;
+    mem_write(msx, msx->cpu.sp, (unsigned char)(value >> 8));
+    msx->cpu.sp--;
+    mem_write(msx, msx->cpu.sp, (unsigned char)(value & 255));
+}
+
+static unsigned short pop16(struct MSX* msx)
+{
+    unsigned char lo = mem_read(msx, msx->cpu.sp);
+    msx->cpu.sp++;
+    unsigned char hi = mem_read(msx, msx->cpu.sp);
+    msx->cpu.sp++;
+    return ((unsigned short)hi << 8) | lo;
+}
+
+#define F_S 0x80
+#define F_Z 0x40
+#define F_H 0x10
+#define F_PV 0x04
+#define F_N 0x02
+#define F_C 0x01
+
+static unsigned short pair_bc(struct Z80* cpu)
+{
+    return ((unsigned short)cpu->b << 8) | cpu->c;
+}
+
+static unsigned short pair_de(struct Z80* cpu)
+{
+    return ((unsigned short)cpu->d << 8) | cpu->e;
+}
+
+static void set_bc(struct Z80* cpu, unsigned short value)
+{
+    cpu->b = (unsigned char)(value >> 8);
+    cpu->c = (unsigned char)(value & 255);
+}
+
+static void set_de(struct Z80* cpu, unsigned short value)
+{
+    cpu->d = (unsigned char)(value >> 8);
+    cpu->e = (unsigned char)(value & 255);
+}
+
+static int parity_even(unsigned char value)
+{
+    int bits = 0;
+    int i = 0;
+    while (i < 8) {
+        if ((value & (1 << i)) != 0) {
+            bits++;
+        }
+        i++;
+    }
+    return (bits & 1) == 0;
+}
+
+static void set_szp_flags(struct Z80* cpu, unsigned char value)
+{
+    cpu->f &= F_C;
+    if (value == 0) {
+        cpu->f |= F_Z;
+    }
+    if ((value & 0x80) != 0) {
+        cpu->f |= F_S;
+    }
+    if (parity_even(value)) {
+        cpu->f |= F_PV;
+    }
+}
+
+static int cond_true(struct Z80* cpu, int cond)
+{
+    if (cond == 0) {
+        return (cpu->f & F_Z) == 0;
+    }
+    if (cond == 1) {
+        return (cpu->f & F_Z) != 0;
+    }
+    if (cond == 2) {
+        return (cpu->f & F_C) == 0;
+    }
+    if (cond == 3) {
+        return (cpu->f & F_C) != 0;
+    }
+    if (cond == 4) {
+        return (cpu->f & F_PV) == 0;
+    }
+    if (cond == 5) {
+        return (cpu->f & F_PV) != 0;
+    }
+    if (cond == 6) {
+        return (cpu->f & F_S) == 0;
+    }
+    return (cpu->f & F_S) != 0;
+}
+
+static unsigned short get_rp(struct Z80* cpu, int rp)
+{
+    if (rp == 0) {
+        return pair_bc(cpu);
+    }
+    if (rp == 1) {
+        return pair_de(cpu);
+    }
+    if (rp == 2) {
+        return pair_hl(cpu);
+    }
+    return cpu->sp;
+}
+
+static void set_rp(struct Z80* cpu, int rp, unsigned short value)
+{
+    if (rp == 0) {
+        set_bc(cpu, value);
+    } else if (rp == 1) {
+        set_de(cpu, value);
+    } else if (rp == 2) {
+        set_hl(cpu, value);
+    } else {
+        cpu->sp = value;
+    }
+}
+
+static unsigned char read_r8(struct MSX* msx, int r)
+{
+    struct Z80* cpu = &msx->cpu;
+    if (r == 0) {
+        return cpu->b;
+    }
+    if (r == 1) {
+        return cpu->c;
+    }
+    if (r == 2) {
+        return cpu->d;
+    }
+    if (r == 3) {
+        return cpu->e;
+    }
+    if (r == 4) {
+        return cpu->h;
+    }
+    if (r == 5) {
+        return cpu->l;
+    }
+    if (r == 6) {
+        return mem_read(msx, pair_hl(cpu));
+    }
+    return cpu->a;
+}
+
+static void write_r8(struct MSX* msx, int r, unsigned char value)
+{
+    struct Z80* cpu = &msx->cpu;
+    if (r == 0) {
+        cpu->b = value;
+    } else if (r == 1) {
+        cpu->c = value;
+    } else if (r == 2) {
+        cpu->d = value;
+    } else if (r == 3) {
+        cpu->e = value;
+    } else if (r == 4) {
+        cpu->h = value;
+    } else if (r == 5) {
+        cpu->l = value;
+    } else if (r == 6) {
+        mem_write(msx, pair_hl(cpu), value);
+    } else {
+        cpu->a = value;
+    }
+}
+
+static unsigned char inc8(struct Z80* cpu, unsigned char value)
+{
+    unsigned char r = (unsigned char)(value + 1);
+    unsigned char carry = cpu->f & F_C;
+    cpu->f = carry;
+    if ((value & 0x0f) == 0x0f) {
+        cpu->f |= F_H;
+    }
+    if (value == 0x7f) {
+        cpu->f |= F_PV;
+    }
+    if (r == 0) {
+        cpu->f |= F_Z;
+    }
+    if ((r & 0x80) != 0) {
+        cpu->f |= F_S;
+    }
+    return r;
+}
+
+static unsigned char dec8(struct Z80* cpu, unsigned char value)
+{
+    unsigned char r = (unsigned char)(value - 1);
+    unsigned char carry = cpu->f & F_C;
+    cpu->f = carry | F_N;
+    if ((value & 0x0f) == 0) {
+        cpu->f |= F_H;
+    }
+    if (value == 0x80) {
+        cpu->f |= F_PV;
+    }
+    if (r == 0) {
+        cpu->f |= F_Z;
+    }
+    if ((r & 0x80) != 0) {
+        cpu->f |= F_S;
+    }
+    return r;
+}
+
+static void add_a(struct Z80* cpu, unsigned char value, int carry_in)
+{
+    unsigned int c = carry_in && ((cpu->f & F_C) != 0) ? 1 : 0;
+    unsigned int r = (unsigned int)cpu->a + value + c;
+    unsigned char old = cpu->a;
+    cpu->a = (unsigned char)(r & 255);
+    cpu->f = 0;
+    if (((old ^ value ^ cpu->a) & 0x10) != 0) {
+        cpu->f |= F_H;
+    }
+    if (((old ^ cpu->a) & (value ^ cpu->a) & 0x80) != 0) {
+        cpu->f |= F_PV;
+    }
+    if ((r & 256) != 0) {
+        cpu->f |= F_C;
+    }
+    if (cpu->a == 0) {
+        cpu->f |= F_Z;
+    }
+    if ((cpu->a & 0x80) != 0) {
+        cpu->f |= F_S;
+    }
+}
+
+static void sub_a(struct Z80* cpu, unsigned char value, int carry_in, int store)
+{
+    unsigned int c = carry_in && ((cpu->f & F_C) != 0) ? 1 : 0;
+    unsigned int r = (unsigned int)cpu->a - value - c;
+    unsigned char old = cpu->a;
+    unsigned char out = (unsigned char)(r & 255);
+    cpu->f = F_N;
+    if (((old ^ value ^ out) & 0x10) != 0) {
+        cpu->f |= F_H;
+    }
+    if (((old ^ value) & (old ^ out) & 0x80) != 0) {
+        cpu->f |= F_PV;
+    }
+    if ((r & 256) != 0) {
+        cpu->f |= F_C;
+    }
+    if (out == 0) {
+        cpu->f |= F_Z;
+    }
+    if ((out & 0x80) != 0) {
+        cpu->f |= F_S;
+    }
+    if (store) {
+        cpu->a = out;
+    }
+}
+
+static void logic_a(struct Z80* cpu, unsigned char value, int op)
+{
+    if (op == 4) {
+        cpu->a &= value;
+        cpu->f = F_H;
+    } else if (op == 5) {
+        cpu->a ^= value;
+        cpu->f = 0;
+    } else {
+        cpu->a |= value;
+        cpu->f = 0;
+    }
+    set_szp_flags(cpu, cpu->a);
+}
+
+static unsigned char io_read(struct MSX* msx, unsigned char port)
+{
+    (void)msx;
+    if (port == 0x99) {
+        return msx->vdp_status;
+    }
+    return 0xff;
+}
+
+static void io_write(struct MSX* msx, unsigned char port, unsigned char value)
+{
+    if (port == 0x98) {
+        msx->vram[msx->vdp_addr & 0x3fff] = value;
+        msx->vdp_addr++;
+    } else if (port == 0x99) {
+        msx->vdp_addr = ((unsigned short)value << 8) | (msx->vdp_addr & 255);
+    }
+}
+
+static void z80_reset(struct MSX* msx)
+{
+    memset(&msx->cpu, 0, sizeof(msx->cpu));
+    msx->cpu.sp = 0xf380;
+    msx->running = 0;
+}
+
+static int load_rom_at(struct MSX* msx, const char* path, unsigned short base, int max_size)
+{
+    FILE* fp = fopen(path, "rb");
+    int count;
+
+    if (fp == NULL) {
+        return 0;
+    }
+    count = fread(msx->mem + base, 1, max_size, fp);
+    fclose(fp);
+    if (count > 0) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "loaded %s at %04X (%d bytes)", path, base, count);
+        log_msg(msx, buf);
+    }
+    return count;
+}
+
+static void msx_init(struct MSX* msx)
+{
+    memset(msx, 0, sizeof(*msx));
+    z80_reset(msx);
+    log_msg(msx, "MSX IDE ready");
+    if (!load_rom_at(msx, "roms/msx.rom", 0x0000, 0x8000)) {
+        if (!load_rom_at(msx, "roms/MSX.ROM", 0x0000, 0x8000)) {
+            log_msg(msx, "ROM not found: put MSX BIOS/BASIC at roms/msx.rom");
+        }
+    }
+    load_rom_at(msx, "roms/basic.rom", 0x8000, 0x4000);
+    load_rom_at(msx, "roms/MSXBASIC.ROM", 0x8000, 0x4000);
+}
+
+static void z80_cb_step(struct MSX* msx)
+{
+    struct Z80* cpu = &msx->cpu;
+    unsigned char op = fetch8(msx);
+    int group = (int)(op >> 6);
+    int y = (int)((op >> 3) & 7);
+    int r = (int)(op & 7);
+    unsigned char v = read_r8(msx, r);
+    unsigned char out = v;
+
+    if (group == 0) {
+        if (y == 0) {
+            out = (unsigned char)((v << 1) | (v >> 7));
+            cpu->f = (v >> 7) & F_C;
+        } else if (y == 1) {
+            out = (unsigned char)((v >> 1) | (v << 7));
+            cpu->f = v & F_C;
+        } else if (y == 2) {
+            out = (unsigned char)((v << 1) | ((cpu->f & F_C) != 0));
+            cpu->f = (v >> 7) & F_C;
+        } else if (y == 3) {
+            out = (unsigned char)((v >> 1) | (((cpu->f & F_C) != 0) << 7));
+            cpu->f = v & F_C;
+        } else if (y == 4) {
+            out = (unsigned char)(v << 1);
+            cpu->f = (v >> 7) & F_C;
+        } else if (y == 5) {
+            out = (unsigned char)((v >> 1) | (v & 0x80));
+            cpu->f = v & F_C;
+        } else if (y == 7) {
+            out = (unsigned char)(v >> 1);
+            cpu->f = v & F_C;
+        }
+        write_r8(msx, r, out);
+        set_szp_flags(cpu, out);
+    } else if (group == 1) {
+        unsigned char keep_c = cpu->f & F_C;
+        cpu->f = keep_c | F_H;
+        if ((v & (1 << y)) == 0) {
+            cpu->f |= F_Z | F_PV;
+        }
+        if (y == 7 && (v & 0x80) != 0) {
+            cpu->f |= F_S;
+        }
+    } else if (group == 2) {
+        write_r8(msx, r, (unsigned char)(v & ~(1 << y)));
+    } else {
+        write_r8(msx, r, (unsigned char)(v | (1 << y)));
+    }
+    cpu->cycles += r == 6 ? 15 : 8;
+}
+
+static void z80_ed_step(struct MSX* msx)
+{
+    struct Z80* cpu = &msx->cpu;
+    unsigned char op = fetch8(msx);
+
+    if (op == 0x44 || op == 0x4c || op == 0x54 || op == 0x5c || op == 0x64 || op == 0x6c || op == 0x74 || op == 0x7c) {
+        sub_a(cpu, cpu->a, 0, 1);
+        cpu->cycles += 8;
+        return;
+    }
+    if (op == 0x45 || op == 0x4d) {
+        cpu->pc = pop16(msx);
+        cpu->cycles += 14;
+        return;
+    }
+    if (op == 0x47) {
+        cpu->cycles += 9;
+        return;
+    }
+    if (op == 0x57) {
+        cpu->a = 0xff;
+        set_szp_flags(cpu, cpu->a);
+        cpu->cycles += 9;
+        return;
+    }
+    if (op == 0xa0 || op == 0xb0) {
+        mem_write(msx, pair_de(cpu), mem_read(msx, pair_hl(cpu)));
+        set_hl(cpu, pair_hl(cpu) + 1);
+        set_de(cpu, pair_de(cpu) + 1);
+        set_bc(cpu, pair_bc(cpu) - 1);
+        cpu->f &= F_C;
+        if (pair_bc(cpu) != 0) {
+            cpu->f |= F_PV;
+        }
+        if (op == 0xb0 && pair_bc(cpu) != 0) {
+            cpu->pc -= 2;
+            cpu->cycles += 21;
+        } else {
+            cpu->cycles += 16;
+        }
+        return;
+    }
+    if (op == 0xa8 || op == 0xb8) {
+        mem_write(msx, pair_de(cpu), mem_read(msx, pair_hl(cpu)));
+        set_hl(cpu, pair_hl(cpu) - 1);
+        set_de(cpu, pair_de(cpu) - 1);
+        set_bc(cpu, pair_bc(cpu) - 1);
+        cpu->f &= F_C;
+        if (pair_bc(cpu) != 0) {
+            cpu->f |= F_PV;
+        }
+        if (op == 0xb8 && pair_bc(cpu) != 0) {
+            cpu->pc -= 2;
+            cpu->cycles += 21;
+        } else {
+            cpu->cycles += 16;
+        }
+        return;
+    }
+    {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "unimplemented ED opcode %02X at %04X", op, (cpu->pc - 2) & 0xffff);
+        log_msg(msx, buf);
+        cpu->halted = 1;
+    }
+}
+
+static void z80_step(struct MSX* msx)
+{
+    struct Z80* cpu = &msx->cpu;
+    unsigned char op;
+    unsigned short nn;
+    unsigned char n;
+    int r;
+    int rp;
+
+    if (cpu->halted) {
+        cpu->cycles += 4;
+        return;
+    }
+    op = fetch8(msx);
+
+    if (op >= 0x40 && op <= 0x7f) {
+        if (op == 0x76) {
+            cpu->halted = 1;
+            cpu->cycles += 4;
+            return;
+        }
+        write_r8(msx, (op >> 3) & 7, read_r8(msx, op & 7));
+        cpu->cycles += ((op & 7) == 6 || ((op >> 3) & 7) == 6) ? 7 : 4;
+        return;
+    }
+    if ((op & 0xc7) == 0x04) {
+        r = (op >> 3) & 7;
+        write_r8(msx, r, inc8(cpu, read_r8(msx, r)));
+        cpu->cycles += r == 6 ? 11 : 4;
+        return;
+    }
+    if ((op & 0xc7) == 0x05) {
+        r = (op >> 3) & 7;
+        write_r8(msx, r, dec8(cpu, read_r8(msx, r)));
+        cpu->cycles += r == 6 ? 11 : 4;
+        return;
+    }
+    if ((op & 0xc7) == 0x06) {
+        r = (op >> 3) & 7;
+        write_r8(msx, r, fetch8(msx));
+        cpu->cycles += r == 6 ? 10 : 7;
+        return;
+    }
+    if (op >= 0x80 && op <= 0xbf) {
+        int alu = (op >> 3) & 7;
+        n = read_r8(msx, op & 7);
+        if (alu == 0) {
+            add_a(cpu, n, 0);
+        } else if (alu == 1) {
+            add_a(cpu, n, 1);
+        } else if (alu == 2) {
+            sub_a(cpu, n, 0, 1);
+        } else if (alu == 3) {
+            sub_a(cpu, n, 1, 1);
+        } else if (alu == 7) {
+            sub_a(cpu, n, 0, 0);
+        } else {
+            logic_a(cpu, n, alu);
+        }
+        cpu->cycles += (op & 7) == 6 ? 7 : 4;
+        return;
+    }
+
+    switch (op) {
+    case 0x00:
+        cpu->cycles += 4;
+        break;
+    case 0x01:
+    case 0x11:
+    case 0x21:
+    case 0x31:
+        set_rp(cpu, (op >> 4) & 3, fetch16(msx));
+        cpu->cycles += 10;
+        break;
+    case 0x02:
+        mem_write(msx, pair_bc(cpu), cpu->a);
+        cpu->cycles += 7;
+        break;
+    case 0x12:
+        mem_write(msx, pair_de(cpu), cpu->a);
+        cpu->cycles += 7;
+        break;
+    case 0x0a:
+        cpu->a = mem_read(msx, pair_bc(cpu));
+        cpu->cycles += 7;
+        break;
+    case 0x1a:
+        cpu->a = mem_read(msx, pair_de(cpu));
+        cpu->cycles += 7;
+        break;
+    case 0x03:
+    case 0x13:
+    case 0x23:
+    case 0x33:
+        rp = (op >> 4) & 3;
+        set_rp(cpu, rp, get_rp(cpu, rp) + 1);
+        cpu->cycles += 6;
+        break;
+    case 0x0b:
+    case 0x1b:
+    case 0x2b:
+    case 0x3b:
+        rp = (op >> 4) & 3;
+        set_rp(cpu, rp, get_rp(cpu, rp) - 1);
+        cpu->cycles += 6;
+        break;
+    case 0x09:
+    case 0x19:
+    case 0x29:
+    case 0x39:
+        {
+            unsigned int sum = (unsigned int)pair_hl(cpu) + get_rp(cpu, (op >> 4) & 3);
+            cpu->f &= F_S | F_Z | F_PV;
+            if ((sum & 0x10000) != 0) {
+                cpu->f |= F_C;
+            }
+            set_hl(cpu, (unsigned short)sum);
+            cpu->cycles += 11;
+        }
+        break;
+    case 0x07:
+        cpu->f = (cpu->a >> 7) & F_C;
+        cpu->a = (unsigned char)((cpu->a << 1) | (cpu->a >> 7));
+        cpu->cycles += 4;
+        break;
+    case 0x0f:
+        cpu->f = cpu->a & F_C;
+        cpu->a = (unsigned char)((cpu->a >> 1) | (cpu->a << 7));
+        cpu->cycles += 4;
+        break;
+    case 0x17:
+        {
+            unsigned char c = (cpu->f & F_C) != 0;
+            cpu->f = (cpu->a >> 7) & F_C;
+            cpu->a = (unsigned char)((cpu->a << 1) | c);
+            cpu->cycles += 4;
+        }
+        break;
+    case 0x1f:
+        {
+            unsigned char c = (cpu->f & F_C) != 0;
+            cpu->f = cpu->a & F_C;
+            cpu->a = (unsigned char)((cpu->a >> 1) | (c << 7));
+            cpu->cycles += 4;
+        }
+        break;
+    case 0x18:
+        cpu->pc = (unsigned short)(cpu->pc + (signed char)fetch8(msx));
+        cpu->cycles += 12;
+        break;
+    case 0x10:
+        n = fetch8(msx);
+        cpu->b--;
+        if (cpu->b != 0) {
+            cpu->pc = (unsigned short)(cpu->pc + (signed char)n);
+            cpu->cycles += 13;
+        } else {
+            cpu->cycles += 8;
+        }
+        break;
+    case 0x20:
+    case 0x28:
+    case 0x30:
+    case 0x38:
+        n = fetch8(msx);
+        if (cond_true(cpu, (op >> 3) & 3)) {
+            cpu->pc = (unsigned short)(cpu->pc + (signed char)n);
+            cpu->cycles += 12;
+        } else {
+            cpu->cycles += 7;
+        }
+        break;
+    case 0x22:
+        nn = fetch16(msx);
+        mem_write(msx, nn, cpu->l);
+        mem_write(msx, nn + 1, cpu->h);
+        cpu->cycles += 16;
+        break;
+    case 0x2a:
+        nn = fetch16(msx);
+        cpu->l = mem_read(msx, nn);
+        cpu->h = mem_read(msx, nn + 1);
+        cpu->cycles += 16;
+        break;
+    case 0x27:
+        cpu->cycles += 4;
+        break;
+    case 0x2f:
+        cpu->a = (unsigned char)~cpu->a;
+        cpu->f |= F_H | F_N;
+        cpu->cycles += 4;
+        break;
+    case 0x32:
+        nn = fetch16(msx);
+        mem_write(msx, nn, cpu->a);
+        cpu->cycles += 13;
+        break;
+    case 0x37:
+        cpu->f = (cpu->f & (F_S | F_Z | F_PV)) | F_C;
+        cpu->cycles += 4;
+        break;
+    case 0x3a:
+        nn = fetch16(msx);
+        cpu->a = mem_read(msx, nn);
+        cpu->cycles += 13;
+        break;
+    case 0x3f:
+        cpu->f = (cpu->f & (F_S | F_Z | F_PV)) | ((cpu->f & F_C) ? 0 : F_C);
+        cpu->cycles += 4;
+        break;
+    case 0xc0:
+    case 0xc8:
+    case 0xd0:
+    case 0xd8:
+    case 0xe0:
+    case 0xe8:
+    case 0xf0:
+    case 0xf8:
+        if (cond_true(cpu, (op >> 3) & 7)) {
+            cpu->pc = pop16(msx);
+            cpu->cycles += 11;
+        } else {
+            cpu->cycles += 5;
+        }
+        break;
+    case 0xc1:
+    case 0xd1:
+    case 0xe1:
+    case 0xf1:
+        nn = pop16(msx);
+        rp = (op >> 4) & 3;
+        if (rp == 3) {
+            cpu->f = (unsigned char)(nn & 255);
+            cpu->a = (unsigned char)(nn >> 8);
+        } else {
+            set_rp(cpu, rp, nn);
+        }
+        cpu->cycles += 10;
+        break;
+    case 0xc2:
+    case 0xca:
+    case 0xd2:
+    case 0xda:
+    case 0xe2:
+    case 0xea:
+    case 0xf2:
+    case 0xfa:
+        nn = fetch16(msx);
+        if (cond_true(cpu, (op >> 3) & 7)) {
+            cpu->pc = nn;
+        }
+        cpu->cycles += 10;
+        break;
+    case 0xc3:
+        cpu->pc = fetch16(msx);
+        cpu->cycles += 10;
+        break;
+    case 0xc4:
+    case 0xcc:
+    case 0xd4:
+    case 0xdc:
+    case 0xe4:
+    case 0xec:
+    case 0xf4:
+    case 0xfc:
+        nn = fetch16(msx);
+        if (cond_true(cpu, (op >> 3) & 7)) {
+            push16(msx, cpu->pc);
+            cpu->pc = nn;
+            cpu->cycles += 17;
+        } else {
+            cpu->cycles += 10;
+        }
+        break;
+    case 0xc5:
+    case 0xd5:
+    case 0xe5:
+    case 0xf5:
+        rp = (op >> 4) & 3;
+        if (rp == 3) {
+            push16(msx, ((unsigned short)cpu->a << 8) | cpu->f);
+        } else {
+            push16(msx, get_rp(cpu, rp));
+        }
+        cpu->cycles += 11;
+        break;
+    case 0xc6:
+        add_a(cpu, fetch8(msx), 0);
+        cpu->cycles += 7;
+        break;
+    case 0xce:
+        add_a(cpu, fetch8(msx), 1);
+        cpu->cycles += 7;
+        break;
+    case 0xd6:
+        sub_a(cpu, fetch8(msx), 0, 1);
+        cpu->cycles += 7;
+        break;
+    case 0xde:
+        sub_a(cpu, fetch8(msx), 1, 1);
+        cpu->cycles += 7;
+        break;
+    case 0xe6:
+        logic_a(cpu, fetch8(msx), 4);
+        cpu->cycles += 7;
+        break;
+    case 0xee:
+        logic_a(cpu, fetch8(msx), 5);
+        cpu->cycles += 7;
+        break;
+    case 0xf6:
+        logic_a(cpu, fetch8(msx), 6);
+        cpu->cycles += 7;
+        break;
+    case 0xfe:
+        sub_a(cpu, fetch8(msx), 0, 0);
+        cpu->cycles += 7;
+        break;
+    case 0xc7:
+    case 0xcf:
+    case 0xd7:
+    case 0xdf:
+    case 0xe7:
+    case 0xef:
+    case 0xf7:
+    case 0xff:
+        push16(msx, cpu->pc);
+        cpu->pc = op & 0x38;
+        cpu->cycles += 11;
+        break;
+    case 0xc9:
+        cpu->pc = pop16(msx);
+        cpu->cycles += 10;
+        break;
+    case 0xcd:
+        nn = fetch16(msx);
+        push16(msx, cpu->pc);
+        cpu->pc = nn;
+        cpu->cycles += 17;
+        break;
+    case 0xcb:
+        z80_cb_step(msx);
+        break;
+    case 0xd3:
+        n = fetch8(msx);
+        io_write(msx, n, cpu->a);
+        cpu->cycles += 11;
+        break;
+    case 0xdb:
+        n = fetch8(msx);
+        cpu->a = io_read(msx, n);
+        cpu->cycles += 11;
+        break;
+    case 0xe3:
+        {
+            unsigned short tmp = mem_read(msx, cpu->sp) | ((unsigned short)mem_read(msx, cpu->sp + 1) << 8);
+            mem_write(msx, cpu->sp, cpu->l);
+            mem_write(msx, cpu->sp + 1, cpu->h);
+            set_hl(cpu, tmp);
+            cpu->cycles += 19;
+        }
+        break;
+    case 0xe9:
+        cpu->pc = pair_hl(cpu);
+        cpu->cycles += 4;
+        break;
+    case 0xeb:
+        nn = pair_de(cpu);
+        set_de(cpu, pair_hl(cpu));
+        set_hl(cpu, nn);
+        cpu->cycles += 4;
+        break;
+    case 0xed:
+        z80_ed_step(msx);
+        break;
+    case 0xf3:
+    case 0xfb:
+        cpu->cycles += 4;
+        break;
+    case 0xf9:
+        cpu->sp = pair_hl(cpu);
+        cpu->cycles += 6;
+        break;
+    default:
+        {
+            char buf[96];
+            snprintf(buf, sizeof(buf), "unimplemented opcode %02X at %04X", op, (cpu->pc - 1) & 0xffff);
+            log_msg(msx, buf);
+            cpu->halted = 1;
+        }
+        break;
+    }
+}
+
+static const char* op_name(unsigned char op)
+{
+    if (op == 0x00) {
+        return "NOP";
+    }
+    if (op == 0x01) {
+        return "LD BC,nn";
+    }
+    if (op == 0x06) {
+        return "LD B,n";
+    }
+    if (op == 0x0e) {
+        return "LD C,n";
+    }
+    if (op == 0x11) {
+        return "LD DE,nn";
+    }
+    if (op == 0x21) {
+        return "LD HL,nn";
+    }
+    if (op == 0x31) {
+        return "LD SP,nn";
+    }
+    if (op == 0x32) {
+        return "LD (nn),A";
+    }
+    if (op == 0x3a) {
+        return "LD A,(nn)";
+    }
+    if (op == 0x3e) {
+        return "LD A,n";
+    }
+    if (op == 0x76) {
+        return "HALT";
+    }
+    if (op == 0x77) {
+        return "LD (HL),A";
+    }
+    if (op == 0x7e) {
+        return "LD A,(HL)";
+    }
+    if (op == 0xaf) {
+        return "XOR A";
+    }
+    if (op == 0xc3) {
+        return "JP nn";
+    }
+    if (op == 0xc9) {
+        return "RET";
+    }
+    if (op == 0xcd) {
+        return "CALL nn";
+    }
+    if (op == 0xd3) {
+        return "OUT (n),A";
+    }
+    if (op == 0xdb) {
+        return "IN A,(n)";
+    }
+    if (op == 0xf3) {
+        return "DI";
+    }
+    if (op == 0xfb) {
+        return "EI";
+    }
+    if (op == 0xfe) {
+        return "CP n";
+    }
+    return "?";
+}
+
+static void draw_panel(struct MSX* msx)
+{
+    int row;
+    int i;
+    erase();
+    mvprintw(0, 0, "c- MSX/Z80 IDE  q quit  s step  r run  p pause  R reset  h help");
+    mvprintw(2, 0, "PC:%04X SP:%04X AF:%02X%02X BC:%02X%02X DE:%02X%02X HL:%02X%02X cycles:%lu %s",
+             msx->cpu.pc, msx->cpu.sp, msx->cpu.a, msx->cpu.f, msx->cpu.b, msx->cpu.c,
+             msx->cpu.d, msx->cpu.e, msx->cpu.h, msx->cpu.l, msx->cpu.cycles,
+             msx->cpu.halted ? "HALT" : (msx->running ? "RUN" : "STOP"));
+    mvprintw(4, 0, "Disassembly");
+    row = 5;
+    {
+        unsigned short pc = msx->cpu.pc;
+        i = 0;
+        while (i < 12) {
+            unsigned char op = mem_read(msx, pc);
+            mvprintw(row + i, 0, "%04X: %02X  %-12s", pc, op, op_name(op));
+            pc++;
+            if (op == 0x01 || op == 0x11 || op == 0x21 || op == 0x31 || op == 0x32 ||
+                op == 0x3a || op == 0xc3 || op == 0xcd) {
+                pc += 2;
+            } else if (op == 0x06 || op == 0x0e || op == 0x16 || op == 0x1e ||
+                       op == 0x26 || op == 0x2e || op == 0x3e || op == 0xd3 ||
+                       op == 0xdb || op == 0xe6 || op == 0xfe) {
+                pc++;
+            }
+            i++;
+        }
+    }
+    mvprintw(4, 32, "Memory around PC");
+    i = 0;
+    while (i < 12) {
+        unsigned short addr = (msx->cpu.pc + i * 8) & 0xffff;
+        mvprintw(5 + i, 32, "%04X: %02X %02X %02X %02X %02X %02X %02X %02X",
+                 addr, mem_read(msx, addr), mem_read(msx, addr + 1), mem_read(msx, addr + 2),
+                 mem_read(msx, addr + 3), mem_read(msx, addr + 4), mem_read(msx, addr + 5),
+                 mem_read(msx, addr + 6), mem_read(msx, addr + 7));
+        i++;
+    }
+    mvprintw(18, 0, "Log");
+    i = 0;
+    while (i < LOG_LINES) {
+        int index = (msx->log_head + i) % LOG_LINES;
+        mvprintw(19 + i, 0, "%s", msx->log[index]);
+        i++;
+    }
+    if (msx->show_help) {
+        mvprintw(5, 62, "ROM files:");
+        mvprintw(6, 62, "roms/msx.rom");
+        mvprintw(7, 62, "roms/basic.rom");
+        mvprintw(9, 62, "This is an early MSX shell:");
+        mvprintw(10, 62, "Z80 core + IDE + ROM loader.");
+        mvprintw(11, 62, "Full MSX-BASIC boot needs");
+        mvprintw(12, 62, "more Z80 ops and VDP/PSG/PPI.");
+    }
+    refresh();
+}
+
+static int run_until_halt(struct MSX* msx, int limit)
+{
+    int steps = 0;
+    while (!msx->cpu.halted && steps < limit) {
+        z80_step(msx);
+        steps++;
+    }
+    return msx->cpu.halted;
+}
+
+static int self_test(void)
+{
+    struct MSX msx;
+    memset(&msx, 0, sizeof(msx));
+    z80_reset(&msx);
+
+    msx.mem[0] = 0x3e;
+    msx.mem[1] = 0x2a;
+    msx.mem[2] = 0x32;
+    msx.mem[3] = 0x00;
+    msx.mem[4] = 0xc0;
+    msx.mem[5] = 0x76;
+    if (!run_until_halt(&msx, 64) || msx.mem[0xc000] != 0x2a) {
+        fprintf(stderr, "self-test failed: ld/store\n");
+        return 1;
+    }
+
+    memset(&msx, 0, sizeof(msx));
+    z80_reset(&msx);
+    msx.mem[0] = 0x06;
+    msx.mem[1] = 0x03;
+    msx.mem[2] = 0x3c;
+    msx.mem[3] = 0x10;
+    msx.mem[4] = 0xfd;
+    msx.mem[5] = 0x32;
+    msx.mem[6] = 0x01;
+    msx.mem[7] = 0xc0;
+    msx.mem[8] = 0x76;
+    if (!run_until_halt(&msx, 64) || msx.mem[0xc001] != 3) {
+        fprintf(stderr, "self-test failed: djnz/inc\n");
+        return 1;
+    }
+
+    memset(&msx, 0, sizeof(msx));
+    z80_reset(&msx);
+    msx.mem[0] = 0x21;
+    msx.mem[1] = 0x00;
+    msx.mem[2] = 0x01;
+    msx.mem[3] = 0x11;
+    msx.mem[4] = 0x10;
+    msx.mem[5] = 0xc0;
+    msx.mem[6] = 0x01;
+    msx.mem[7] = 0x03;
+    msx.mem[8] = 0x00;
+    msx.mem[9] = 0xed;
+    msx.mem[10] = 0xb0;
+    msx.mem[11] = 0x76;
+    msx.mem[0x0100] = 0x11;
+    msx.mem[0x0101] = 0x22;
+    msx.mem[0x0102] = 0x33;
+    if (!run_until_halt(&msx, 128) || msx.mem[0xc010] != 0x11 ||
+        msx.mem[0xc011] != 0x22 || msx.mem[0xc012] != 0x33) {
+        fprintf(stderr, "self-test failed: ldir\n");
+        return 1;
+    }
+
+    memset(&msx, 0, sizeof(msx));
+    z80_reset(&msx);
+    msx.mem[0] = 0x3e;
+    msx.mem[1] = 0x00;
+    msx.mem[2] = 0xcb;
+    msx.mem[3] = 0xc7;
+    msx.mem[4] = 0x32;
+    msx.mem[5] = 0x02;
+    msx.mem[6] = 0xc0;
+    msx.mem[7] = 0x76;
+    if (!run_until_halt(&msx, 64) || msx.mem[0xc002] != 1) {
+        fprintf(stderr, "self-test failed: cb-set\n");
+        return 1;
+    }
+    puts("self-test ok");
+    return 0;
+}
+
+int main(int argc, char** argv)
+{
+    struct MSX msx;
+    int ch;
+
+    if (argc > 1 && strcmp(argv[1], "--self-test") == 0) {
+        return self_test();
+    }
+    setlocale(LC_ALL, "");
+    msx_init(&msx);
+    initscr();
+    cbreak();
+    noecho();
+    keypad(stdscr, 1);
+    nodelay(stdscr, 1);
+    curs_set(0);
+    msx.show_help = 1;
+    for (;;) {
+        ch = getch();
+        if (ch == 'q') {
+            break;
+        } else if (ch == 's') {
+            z80_step(&msx);
+        } else if (ch == 'r') {
+            msx.running = 1;
+        } else if (ch == 'p') {
+            msx.running = 0;
+        } else if (ch == 'R') {
+            z80_reset(&msx);
+            log_msg(&msx, "reset");
+        } else if (ch == 'h') {
+            msx.show_help = !msx.show_help;
+        }
+        if (msx.running) {
+            int i = 0;
+            while (i < 2000 && !msx.cpu.halted) {
+                z80_step(&msx);
+                i++;
+            }
+        }
+        draw_panel(&msx);
+        napms(16);
+    }
+    endwin();
+    return 0;
+}
