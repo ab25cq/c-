@@ -6296,7 +6296,10 @@ static int collection_index_call(const char *name,
     if (struct_tmpl == NULL || struct_inst == NULL) {
         return 0;
     }
-    if (strcmp(struct_tmpl->name, "Vec") != 0 && strcmp(struct_tmpl->name, "List") != 0) {
+    if (strcmp(struct_tmpl->name, "Vec") != 0 &&
+        strcmp(struct_tmpl->name, "List") != 0 &&
+        strcmp(struct_tmpl->name, "OwnedVec") != 0 &&
+        strcmp(struct_tmpl->name, "OwnedList") != 0) {
         return 0;
     }
     option_en = payload_enum_find("__CMinusIndex");
