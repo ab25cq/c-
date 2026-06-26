@@ -17,7 +17,7 @@ enum Kind {
 
 int main(void)
 {
-    struct Pair*% p = new struct Pair;
+    struct Pair* p = new struct Pair;
     union Cell cell;
     enum Kind kind = KIND_A;
     cell.i = 7;

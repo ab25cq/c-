@@ -49,13 +49,13 @@ static __attribute__((unused)) struct Holder* Holder_clone(struct Holder* self)
 
 int main(void)
 {
-    int* owned = calloc(1, sizeof(int));
+    int* owned_value = calloc(1, sizeof(int));
     struct Holder holder = {0};
     memset(&holder, 0, sizeof(holder));
-    void* __owned_old0 = owned;
+    void* __owned_old0 = owned_value;
 
 
-    owned = calloc(1, sizeof(int));
+    owned_value = calloc(1, sizeof(int));
     if (__owned_old0 != NULL) {
         free(__owned_old0);
     }
@@ -76,17 +76,17 @@ int main(void)
 
 
 
-    if (owned == NULL || holder.value == NULL) {
+    if (owned_value == NULL || holder.value == NULL) {
         Holder_finalize(&holder);
-        if (owned != NULL) {
-            free(owned);
+        if (owned_value != NULL) {
+            free(owned_value);
         }
 
         return 1;
     }
     Holder_finalize(&holder);
-    if (owned != NULL) {
-        free(owned);
+    if (owned_value != NULL) {
+        free(owned_value);
     }
 
     return 0;

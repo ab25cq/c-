@@ -2,7 +2,7 @@
 
 int main(void)
 {
-    int*% p = malloc(sizeof(int));
+    owned int* p = malloc(sizeof(int));
     p++;
     return 0;
 }

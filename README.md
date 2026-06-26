@@ -16,7 +16,6 @@ Runtime/debugging dependencies:
 - `valgrind` for `cpm val` and Linux fallback leak checks
 - AddressSanitizer runtime for `cpm leak`
   - Fedora/RHEL: `libasan`
-  - macOS: Apple Clang or LLVM Clang with AddressSanitizer support
 - `execinfo.h` / `backtrace(3)` support for panic stack-frame output
   - glibc systems usually provide this with the C library
   - Alpine/musl may require `libexecinfo-dev`
@@ -35,9 +34,6 @@ sudo apk add build-base bison flex valgrind libexecinfo-dev
 
 # Arch Linux
 sudo pacman -S base-devel bison flex valgrind
-
-# macOS with Homebrew
-brew install bison flex
 ```
 
 ## cpm Package Manager
@@ -79,6 +75,7 @@ edition = "2026"
 src = "src/main.c-"
 compiler = "cc"
 cflags = "-std=gnu99 -Wall -Wextra"
+ldflags = ""
 ```
 
 `cpm build` lowers every `.c-` file under `src` with `c-`, writes generated C
@@ -110,14 +107,11 @@ uniq void fun(void)
 
 `cpm leak` rebuilds with compiler sanitizer instrumentation, then runs the
 executable with leak detection enabled. This is the preferred project leak
-check because it uses the target C compiler's runtime diagnostics. On Linux it
-uses `-fsanitize=address,leak`. On macOS it uses AddressSanitizer only,
-`-fsanitize=address`, because Apple Clang does not consistently support the
-separate `leak` sanitizer flag.
+check because it uses the target C compiler's runtime diagnostics. It uses
+`-fsanitize=address,leak`.
 
-On Linux, if the sanitizer build or run cannot be used in the current
-environment, `cpm leak` falls back to the Valgrind path. On macOS, `cpm leak`
-stays ASan-based and reports sanitizer failures directly.
+If the sanitizer build or run cannot be used in the current environment,
+`cpm leak` falls back to the Valgrind path.
 
 `cpm val` builds normally and runs the executable under Valgrind:
 
@@ -136,27 +130,31 @@ By default `cpm` runs `c-` from `PATH`. For development or tests, set
 resolves through `./lib`. Set `C_MINUS_LIB=/path/to/lib` only when invoking
 `c-` directly with a non-project library root.
 
-The first feature is an owned pointer marker:
+Local pointer ownership is automatic for owning expressions:
 
 ```c
-int*% a = new int;
+int* a = new int;
 ```
 
-`malloc` is an ordinary function call. GCC-style `malloc` function attributes
-are ignored by ownership analysis. A function result is treated as owning only
-when the function return type itself is marked with `%`, or when the expression
-uses `new`.
+`new`, `clone`, `s"..."`, `*_new()` functions, and pointer-returning function
+calls assigned to local pointer declarations are treated as owning values. The
+compiler tracks the local and emits cleanup at every function exit path,
+including before `return`.
 
-Owning results assigned to `%` pointer declarations are bound to the current
-function scope, and the output C receives a `free(a);` before function exits.
-Owning results assigned to ordinary pointer lvalues are rejected. Use `%` when
-the current scope or struct field owns the allocation.
+Use `borrow` when the pointer is not owned by the current function:
+
+```c
+borrow char* home = getenv("HOME");
+```
+
+`borrow` declarations are not freed. Assigning an owning expression such as
+`new int` to a `borrow` declaration is a compile-time error.
 
 The `new` operator allocates one zeroed object with `calloc` and returns an
 owning pointer:
 
 ```c
-int*% value = new int;
+int* value = new int;
 ```
 
 is lowered to:
@@ -165,23 +163,37 @@ is lowered to:
 int* value = calloc(1, sizeof(int));
 ```
 
-Like `%`-marked function results, a `new` result bound to `%` lives until the
-current function exit. A `new` result bound to an ordinary pointer is a
-compile-time error.
+The generated cleanup releases `value` at the end of the current function.
+On an early `return`, other tracked locals are released before the return.
+
+Use `move` to transfer ownership out of a variable:
+
+```c
+int* make_value(void)
+{
+    int* value = new int;
+    return move value;
+}
+```
+
+`move value` is lowered to `value` in C and removes `value` from the current
+function cleanup list. The caller receives an owning pointer when it stores the
+result in a local pointer; use `borrow` at the caller when the result is not
+owned.
 
 For structs, `new` may use the struct tag directly and may include a simple
 object initializer:
 
 ```c
-struct Person*% person = new Person { name: strdup("aaa"), age: 48 };
+struct Person* person = new Person { name: strdup("aaa"), age: 48 };
 ```
 
 This is lowered to a `calloc(1, sizeof(struct Person))` temporary followed by
 field assignments. Owned fields such as `string name` are released by the
 generated `Person_finalize` when `person` leaves scope.
 
-Pointer arithmetic on `%` owned pointers is rejected, including `+`, `-`,
-`++`, `--`, `+=`, and `-=`.
+Pointer arithmetic on owned pointers is rejected, including `+`, `-`, `++`,
+`--`, `+=`, and `-=`.
 
 Simple method-call syntax is lowered to plain C calls. If `d` has type
 `struct data`, then:
@@ -314,8 +326,26 @@ int first = ptr->first();
 Generic method blocks are intentionally not part of this feature.
 
 The standard library currently provides `Vec<T>` and `List<T>`. Both support
-`new`, `push`, `first`, indexed access, automatic deletion for `%` variables,
-and `foreach`.
+`new`, `push`, `len`, `is_empty`, `clear`, `first`, `last`, `get`, `set`,
+checked indexed access, automatic deletion for owning local variables, and
+`foreach`.
+`Vec<T>` also supports `capacity`, `reserve`, and `pop_opt`. `List<T>` also
+supports `push_front` and `pop_front_opt`. `Map<K,V>` provides a generic
+hash table with `new`, `set`, `get_opt`, `contains`, `remove`, `len`,
+`is_empty`, `clear`, and automatic deletion for owning local variables.
+
+Owning element containers are available as `OwnedVec<T>`, `OwnedList<T>`, and
+`OwnedMap<K,V>`. They are intended for pointer element/value types. Insert
+owned values with `move`; `set`, `remove`, `clear`, and `delete` free contained
+values. `pop_opt` transfers an element out without freeing it. `OwnedMap`
+owns values and treats keys as value or borrowed data.
+
+```c
+struct OwnedVec<int*>* xs = OwnedVec_new<int*>();
+int* value = new int;
+xs.push(move value);
+xs.clear();
+```
 
 `foreach` iterates over `Vec<T>` values through `.data` and `.len`, and over
 `List<T>` values through linked-list nodes:
@@ -375,15 +405,17 @@ struct Pair pair = {0};
 memset(&pair, 0, sizeof(pair));
 ```
 
-Struct fields may also use `%` to express owned heap pointers:
+Struct fields may use owned field types such as `string`, or the `owned`
+keyword for raw heap fields. Generated finalizers release owned fields when
+the struct value or owning struct pointer leaves scope.
 
 ```c
 struct Holder {
-    int*% value;
+    owned int* value;
 };
 ```
 
-`c-` removes the marker from the output field and emits a finalizer:
+`c-` emits a finalizer:
 
 ```c
 struct Holder {
@@ -405,8 +437,7 @@ When a local struct value reaches the function exit, or when an owned struct
 pointer is released, the generated code calls the finalizer before the
 existing `free` operation.
 
-`string` is a built-in owned string alias. Source code may either use it
-directly or write `typedef char*% string;`; the output C receives a single
+`string` is a built-in owned string alias. The output C receives a single
 plain C definition:
 
 ```c
@@ -443,7 +474,7 @@ Heap strings use the `s"..."` syntax. They must be assigned to a `char*`
 lvalue. For example:
 
 ```c
-char*% text = s"aaa \{1+1}";
+char* text = s"aaa \{1+1}";
 ```
 
 is lowered to an `asprintf` call:
@@ -453,8 +484,7 @@ char* text;
 asprintf(&text, "aaa %d", 1+1);
 ```
 
-When the left hand side is `%`, the string is freed at function exit. When it
-is an ordinary `char*`, it is freed immediately after the statement. Output C
+The string is tracked as an owned local and freed at function exit. Output C
 using heap strings expects `asprintf` to be declared by the target C library.
 
 If an `s"..."` heap string appears as an rvalue inside a larger expression,
@@ -493,7 +523,7 @@ if (({ char* __right_value0 = NULL; asprintf(&__right_value0, "abc"); int __righ
 ```
 
 The parser also tracks a small C type table. It records local/global
-declarations, pointer depth, owned pointer markers, and `struct` / `union` /
+declarations, pointer depth, ownership qualifiers, and `struct` / `union` /
 `enum` tags. Simple declarations and assignments are checked when both sides
 have known types. Complex expressions that are not yet modeled are left as
 unknown to avoid false positives.

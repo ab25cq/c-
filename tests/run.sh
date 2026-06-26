@@ -43,9 +43,9 @@ cc -std=c99 -Wall -Wextra -pedantic tests/struct_finalizer.out.c -o tests/struct
 ./tests/struct_finalizer.out
 
 ./c- tests/new_operator.c- > tests/new_operator.out.c
-grep 'int\* owned = calloc(1, sizeof(int));' tests/new_operator.out.c >/dev/null
+grep 'int\* owned_value = calloc(1, sizeof(int));' tests/new_operator.out.c >/dev/null
 grep 'struct Item\* item = calloc(1, sizeof(struct Item));' tests/new_operator.out.c >/dev/null
-grep 'free(owned);' tests/new_operator.out.c >/dev/null
+grep 'free(owned_value);' tests/new_operator.out.c >/dev/null
 grep 'free(item);' tests/new_operator.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/new_operator.out.c -o tests/new_operator.out
 ./tests/new_operator.out
@@ -144,8 +144,14 @@ cc -std=c99 -Wall -Wextra -pedantic tests/default_params.out.c -o tests/default_
 grep 'struct Vec_int' tests/generics_foreach.out.c >/dev/null
 grep 'struct Vec_Item' tests/generics_foreach.out.c >/dev/null
 grep 'Vec_first_int' tests/generics_foreach.out.c >/dev/null
+grep 'Vec_len_int' tests/generics_foreach.out.c >/dev/null
+grep 'Vec_pop_opt_int' tests/generics_foreach.out.c >/dev/null
 grep 'Vec_get_opt_int' tests/generics_foreach.out.c >/dev/null
+grep 'List_push_front_int' tests/generics_foreach.out.c >/dev/null
+grep 'List_pop_front_opt_int' tests/generics_foreach.out.c >/dev/null
 grep 'List_get_opt_int' tests/generics_foreach.out.c >/dev/null
+grep 'struct Map_int_int' tests/generics_foreach.out.c >/dev/null
+grep 'Map_get_opt_int_int' tests/generics_foreach.out.c >/dev/null
 grep '__CMinusIndex_int_TAG_None' tests/generics_foreach.out.c >/dev/null
 grep '__foreach' tests/generics_foreach.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/generics_foreach.out.c -o tests/generics_foreach.out
@@ -194,7 +200,7 @@ cc -std=c99 -Wall -Wextra -pedantic tests/string_typedef.out.c -o tests/string_t
 
 ./c- tests/owned_reassign.c- > tests/owned_reassign.out.c
 grep 'void\* __owned_old' tests/owned_reassign.out.c >/dev/null
-grep 'owned = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
+grep 'owned_value = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
 grep 'holder.value = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
 grep 'if (__owned_old' tests/owned_reassign.out.c >/dev/null
 grep 'free(__owned_old' tests/owned_reassign.out.c >/dev/null
@@ -210,11 +216,11 @@ grep 'return strcmp("aaa", "aaa");' tests/method_calls.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/method_calls.out.c -o tests/method_calls.out
 ./tests/method_calls.out
 
-if ./c- tests/bad.c- > /dev/null 2> tests/unowned_new.err; then
-    echo "unowned new unexpectedly succeeded" >&2
+if ./c- tests/bad.c- > /dev/null 2> tests/borrow_new.err; then
+    echo "borrow new unexpectedly succeeded" >&2
     exit 1
 fi
-grep "new result requires a pointer % declaration" tests/unowned_new.err >/dev/null
+grep "borrow declaration cannot take ownership of new result" tests/borrow_new.err >/dev/null
 
 ./c- tests/owned_return.c- > tests/owned_return.out.c
 grep 'struct Pair\* make_pair(void);' tests/owned_return.out.c >/dev/null
@@ -226,7 +232,7 @@ cc -std=c99 -Wall -Wextra -pedantic tests/owned_return.out.c -o tests/owned_retu
 ./c- tests/attr_malloc_return.c- > tests/attr_malloc_return.out.c
 grep 'int\* p = raw_alloc(sizeof(int));' tests/attr_malloc_return.out.c >/dev/null
 if grep 'free(p);' tests/attr_malloc_return.out.c >/dev/null; then
-    echo "malloc attribute unexpectedly made raw_alloc owned" >&2
+    echo "borrow raw_alloc unexpectedly became owned" >&2
     exit 1
 fi
 cc -std=c99 -Wall -Wextra -pedantic tests/attr_malloc_return.out.c -o tests/attr_malloc_return.out
@@ -266,7 +272,7 @@ if ./c- tests/bad_owned_non_pointer.c- > /dev/null 2> tests/bad_owned_non_pointe
     echo "bad owned non-pointer unexpectedly succeeded" >&2
     exit 1
 fi
-grep "new result requires a pointer % declaration" tests/bad_owned_non_pointer.err >/dev/null
+grep "new result requires a pointer declaration" tests/bad_owned_non_pointer.err >/dev/null
 
 if ./c- tests/bad_type_pointer_to_int.c- > /dev/null 2> tests/bad_type_pointer_to_int.err; then
     echo "bad pointer-to-int assignment unexpectedly succeeded" >&2

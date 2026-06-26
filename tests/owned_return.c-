@@ -4,15 +4,16 @@ struct Pair {
     int x;
 };
 
-struct Pair*% make_pair(void);
+struct Pair* make_pair(void);
 
-struct Pair*% make_pair(void)
+struct Pair* make_pair(void)
 {
-    return malloc(sizeof(struct Pair));
+    struct Pair* p = malloc(sizeof(struct Pair));
+    return move p;
 }
 
 int main(void)
 {
-    struct Pair*% p = make_pair();
+    struct Pair* p = make_pair();
     return 0;
 }

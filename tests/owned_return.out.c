@@ -36,7 +36,8 @@ struct Pair* make_pair(void);
 
 struct Pair* make_pair(void)
 {
-    return malloc(sizeof(struct Pair));
+    struct Pair* p = malloc(sizeof(struct Pair));
+    return p;
 }
 
 int main(void)

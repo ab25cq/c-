@@ -15,7 +15,7 @@ extern int yylineno;
 #define MAX_FINALIZERS 128
 #define MAX_FIELDS 64
 #define MAX_PARAMS 32
-#define MAX_GENERIC_TEMPLATES 64
+#define MAX_GENERIC_TEMPLATES 128
 #define MAX_GENERIC_INSTANCES 128
 #define MAX_ENUM_VARIANTS 64
 #define DEFAULT_EXPR_MAX 256
@@ -244,6 +244,9 @@ static int g_index_id;
 static int g_need_stdio_h;
 static int g_need_execinfo_h;
 static int g_emit_uniq;
+static int g_function_returns_move;
+static char g_current_function_name[NAME_MAX_LEN];
+static struct Type g_current_function_ret;
 static const char *g_input_path;
 
 int yylex(void);
@@ -286,8 +289,12 @@ static void owned_func_add_type(const char *name, struct Type ret);
 static void append_indent_from(const char *s, struct Text *out);
 static void append_leading_newlines(const char *s, struct Text *out);
 static int rhs_has_malloc_call(const char *rhs, char *func_name);
+static int rhs_has_function_call(const char *rhs);
 static int rhs_has_new_expr(const char *rhs, struct Type *type);
 static int rhs_has_clone_expr(const char *rhs, struct Type *type);
+static int decl_has_borrow(const char *s);
+static int extract_move_name(const char *s, char *name);
+static void remove_moved_locals(const char *s);
 static struct Text *strip_attributes(struct Text *in);
 static struct Text *remove_percent(struct Text *in);
 static void check_owned_pointer_arithmetic(const char *stmt);
@@ -332,10 +339,11 @@ struct Text;
 }
 
 %token <node> IDENT NUMBER STRING_LITERAL CHAR_LITERAL PP_LINE RETURN KEYWORD OP
-%token <node> LBRACE RBRACE LPAREN RPAREN LBRACKET RBRACKET SEMI COMMA EQUAL PERCENT OTHER
+%token <node> LBRACE RBRACE LPAREN RPAREN LBRACKET RBRACKET LT GT SEMI COMMA EQUAL PERCENT OTHER
 
 %type <node> translation_unit external_item top_seq top_part token token_no_comma
 %type <node> paren_group paren_items paren_part bracket_group bracket_items bracket_part
+%type <node> angle_group angle_items angle_part
 %type <node> compound_items compound_item stmt_seq stmt_part return_statement
 
 %start translation_unit
@@ -375,6 +383,8 @@ top_part
     | paren_group
         { $$ = $1; }
     | bracket_group
+        { $$ = $1; }
+    | angle_group
         { $$ = $1; }
     ;
 
@@ -423,6 +433,8 @@ stmt_part
         { $$ = $1; }
     | bracket_group
         { $$ = $1; }
+    | angle_group
+        { $$ = $1; }
     ;
 
 paren_group
@@ -443,6 +455,8 @@ paren_part
     | paren_group
         { $$ = $1; }
     | bracket_group
+        { $$ = $1; }
+    | angle_group
         { $$ = $1; }
     ;
 
@@ -465,6 +479,31 @@ bracket_part
         { $$ = $1; }
     | bracket_group
         { $$ = $1; }
+    | angle_group
+        { $$ = $1; }
+    ;
+
+angle_group
+    : LT angle_items GT
+        { $$ = text_join3($1, $2, $3); }
+    ;
+
+angle_items
+    : /* empty */
+        { $$ = text_new(); }
+    | angle_items angle_part
+        { $$ = text_join($1, $2); }
+    ;
+
+angle_part
+    : token
+        { $$ = $1; }
+    | paren_group
+        { $$ = $1; }
+    | bracket_group
+        { $$ = $1; }
+    | angle_group
+        { $$ = $1; }
     ;
 
 token
@@ -479,6 +518,10 @@ token
     | KEYWORD
         { $$ = $1; }
     | OP
+        { $$ = $1; }
+    | LT
+        { $$ = $1; }
+    | GT
         { $$ = $1; }
     | COMMA
         { $$ = $1; }
@@ -502,6 +545,10 @@ token_no_comma
     | KEYWORD
         { $$ = $1; }
     | OP
+        { $$ = $1; }
+    | LT
+        { $$ = $1; }
+    | GT
         { $$ = $1; }
     | EQUAL
         { $$ = $1; }
@@ -795,10 +842,13 @@ static void mangle_type_arg(char *out, size_t out_size, const char *arg)
             out[n++] = *p;
         } else if (*p == '*') {
             const char *word = "ptr";
+            if (n > 0 && out[n - 1] != '_') {
+                out[n++] = '_';
+            }
             while (*word != '\0' && n + 1 < out_size) {
                 out[n++] = *word++;
             }
-        } else if (*p == '_' || isspace((unsigned char)*p)) {
+        } else if (*p == '_' || isspace((unsigned char)*p) || *p == ',' || *p == '<' || *p == '>') {
             if (n > 0 && out[n - 1] != '_') {
                 out[n++] = '_';
             }
@@ -1338,6 +1388,40 @@ static int parse_generic_angle_arg(const char *p, char *arg, const char **after)
     return 0;
 }
 
+static int split_generic_list(const char *list, char items[][NAME_MAX_LEN], int max_items)
+{
+    const char *start = list;
+    const char *p = list;
+    int depth = 0;
+    int count = 0;
+
+    while (1) {
+        if (*p == '<') {
+            depth++;
+        } else if (*p == '>') {
+            if (depth > 0) {
+                depth--;
+            }
+        }
+        if ((*p == ',' && depth == 0) || *p == '\0') {
+            if (count >= max_items) {
+                return -1;
+            }
+            copy_trimmed(items[count], NAME_MAX_LEN, start, p);
+            if (items[count][0] == '\0') {
+                return -1;
+            }
+            count++;
+            if (*p == '\0') {
+                break;
+            }
+            start = p + 1;
+        }
+        p++;
+    }
+    return count;
+}
+
 static struct Text *replace_param_and_generics(const char *s,
                                                const char *param,
                                                const char *arg,
@@ -1345,11 +1429,15 @@ static struct Text *replace_param_and_generics(const char *s,
                                                const char *new_name)
 {
     struct Text *out = text_new();
-    size_t param_len = strlen(param);
+    char params[4][NAME_MAX_LEN];
+    char args[4][NAME_MAX_LEN];
+    int param_count = split_generic_list(param, params, 4);
+    int arg_count = split_generic_list(arg, args, 4);
     size_t old_len = strlen(old_name);
     const char *p = s;
 
     while (*p != '\0') {
+        int replaced_param = 0;
         if (old_len > 0 && strncmp(p, old_name, old_len) == 0 && !is_ident((unsigned char)p[old_len]) &&
             (p == s || !is_ident((unsigned char)p[-1]))) {
             const char *after;
@@ -1361,11 +1449,24 @@ static struct Text *replace_param_and_generics(const char *s,
             }
             text_add(out, new_name);
             p += old_len;
-        } else if (param_len > 0 && strncmp(p, param, param_len) == 0 && !is_ident((unsigned char)p[param_len]) &&
-                   (p == s || !is_ident((unsigned char)p[-1]))) {
-            text_add(out, arg);
-            p += param_len;
         } else {
+            int i;
+            if (param_count > 0 && param_count == arg_count) {
+                for (i = 0; i < param_count; i++) {
+                    size_t param_len = strlen(params[i]);
+                    if (param_len > 0 && strncmp(p, params[i], param_len) == 0 &&
+                        !is_ident((unsigned char)p[param_len]) &&
+                        (p == s || !is_ident((unsigned char)p[-1]))) {
+                        text_add(out, args[i]);
+                        p += param_len;
+                        replaced_param = 1;
+                        break;
+                    }
+                }
+            }
+            if (replaced_param) {
+                continue;
+            }
             text_add_ch(out, *p++);
         }
     }
@@ -1668,7 +1769,7 @@ static int skip_decl_word(const char *word)
 {
     static const char *words[] = {
         "auto", "extern", "register", "static", "typedef", "const", "volatile",
-        "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", NULL
+        "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", "borrow", "owned", NULL
     };
     int i;
     for (i = 0; words[i] != NULL; i++) {
@@ -1703,6 +1804,19 @@ static enum TypeKind keyword_type(const char *word)
         return TY_DOUBLE;
     }
     return TY_UNKNOWN;
+}
+
+static int has_decl_word_before(const char *s, const char *limit, const char *word)
+{
+    const char *p = s;
+    size_t n = strlen(word);
+    while ((p = strstr(p, word)) != NULL && p < limit) {
+        if ((p == s || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[n])) {
+            return 1;
+        }
+        p += n;
+    }
+    return 0;
 }
 
 struct DeclInfo {
@@ -1876,6 +1990,9 @@ static int parse_function_signature(const char *s, char *name, struct Type *ret)
             ret->owned = 1;
         }
     }
+    if (has_decl_word_before(s, name_start, "owned")) {
+        ret->owned = 1;
+    }
     return 1;
 }
 
@@ -1937,7 +2054,8 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     decl->name[name_end - name_start] = '\0';
     decl->type = base_type;
     decl->type.ptr += ptr;
-    decl->type.owned = base_type.owned || strchr(base_end, '%') != NULL;
+    decl->type.owned = base_type.owned || strchr(base_end, '%') != NULL ||
+        has_decl_word_before(s, name_start, "owned");
     scan = skip_ws(name_end);
     if (*scan == '(' && eq < 0) {
         decl->is_function = 1;
@@ -2638,6 +2756,9 @@ static void begin_function(void)
     g_owned.count = 0;
     g_finalized_locals.count = 0;
     g_locals.count = 0;
+    g_function_returns_move = 0;
+    g_current_function_name[0] = '\0';
+    g_current_function_ret = type_unknown();
     g_in_function = 1;
 }
 
@@ -2670,6 +2791,11 @@ static void begin_top_block(struct Text *head)
         g_in_function = 0;
     } else if (g_top_block_is_function) {
         begin_function();
+        if (parse_function_signature(head->text, name, &ret)) {
+            strncpy(g_current_function_name, name, NAME_MAX_LEN - 1);
+            g_current_function_name[NAME_MAX_LEN - 1] = '\0';
+            g_current_function_ret = ret;
+        }
     } else if (parse_struct_head(head->text, name)) {
         g_in_aggregate_struct = 1;
         strncpy(g_current_struct_tag, name, NAME_MAX_LEN - 1);
@@ -2885,6 +3011,25 @@ static void owned_add(const char *name, struct Type type)
     owned_add_to(&g_owned, name, type);
 }
 
+static void owned_remove_from(struct Owned *owned, const char *name)
+{
+    int index = owned_index_in(owned, name);
+    int i;
+    if (index < 0) {
+        return;
+    }
+    for (i = index; i + 1 < owned->count; i++) {
+        strcpy(owned->name[i], owned->name[i + 1]);
+        owned->type[i] = owned->type[i + 1];
+    }
+    owned->count--;
+}
+
+static void owned_remove(const char *name)
+{
+    owned_remove_from(&g_owned, name);
+}
+
 static void finalized_local_add(const char *name, struct Type type)
 {
     owned_add_to(&g_finalized_locals, name, type);
@@ -2947,6 +3092,75 @@ static void register_owned_function_signature(const char *s)
         }
         ret.owned = 1;
         owned_func_add_type(name, ret);
+    }
+}
+
+static int function_name_looks_owned(const char *name)
+{
+    size_t n = strlen(name);
+    if (n >= 4 && strcmp(name + n - 4, "_new") == 0) {
+        return 1;
+    }
+    if (strstr(name, "_new_") != NULL) {
+        return 1;
+    }
+    return 0;
+}
+
+static int decl_has_borrow(const char *s)
+{
+    const char *eq = strchr(s, '=');
+    size_t n = eq != NULL ? (size_t)(eq - s) : strlen(s);
+    char *head = xstrndup(s, n);
+    int result = text_has_word(head, "borrow");
+    free(head);
+    return result;
+}
+
+static int extract_move_name(const char *s, char *name)
+{
+    const char *p = s;
+    name[0] = '\0';
+    while ((p = strstr(p, "move")) != NULL) {
+        if ((p == s || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[4])) {
+            const char *q = skip_ws(p + 4);
+            const char *end;
+            if (!is_ident_start((unsigned char)*q)) {
+                p += 4;
+                continue;
+            }
+            end = read_name(q, name);
+            if ((size_t)(end - q) >= NAME_MAX_LEN) {
+                name[0] = '\0';
+                return 0;
+            }
+            memcpy(name, q, (size_t)(end - q));
+            name[end - q] = '\0';
+            return 1;
+        }
+        p += 4;
+    }
+    return 0;
+}
+
+static void remove_moved_locals(const char *s)
+{
+    const char *p = s;
+    while ((p = strstr(p, "move")) != NULL) {
+        if ((p == s || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[4])) {
+            char name[NAME_MAX_LEN];
+            const char *q = skip_ws(p + 4);
+            const char *end;
+            if (is_ident_start((unsigned char)*q)) {
+                end = read_name(q, name);
+                if ((size_t)(end - q) < NAME_MAX_LEN) {
+                    memcpy(name, q, (size_t)(end - q));
+                    name[end - q] = '\0';
+                    owned_remove(name);
+                }
+            }
+        }
+        p += 4;
     }
 }
 
@@ -3288,8 +3502,50 @@ static int rhs_has_malloc_call(const char *rhs, char *func_name)
                 return 1;
             }
         }
+        {
+            char name[NAME_MAX_LEN];
+            const char *end = read_name(rhs + i, name);
+            const char *q = end;
+            if ((size_t)(end - (rhs + i)) < NAME_MAX_LEN && function_name_looks_owned(name)) {
+                while (isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q == '(') {
+                    strcpy(func_name, name);
+                    return 1;
+                }
+            }
+        }
     }
     func_name[0] = '\0';
+    return 0;
+}
+
+static int rhs_has_function_call(const char *rhs)
+{
+    size_t i;
+    for (i = 0; rhs[i] != '\0'; i++) {
+        char name[NAME_MAX_LEN];
+        const char *end;
+        const char *q;
+        if (!is_ident_start((unsigned char)rhs[i])) {
+            continue;
+        }
+        end = read_name(rhs + i, name);
+        if (strcmp(name, "sizeof") == 0 || strcmp(name, "new") == 0 ||
+            strcmp(name, "clone") == 0 || strcmp(name, "move") == 0) {
+            i = (size_t)(end - rhs);
+            continue;
+        }
+        q = end;
+        while (isspace((unsigned char)*q)) {
+            q++;
+        }
+        if (*q == '(') {
+            return 1;
+        }
+        i = (size_t)(end - rhs);
+    }
     return 0;
 }
 
@@ -4898,6 +5154,25 @@ static struct Text *remove_percent(struct Text *in)
             }
             continue;
         }
+        if ((strncmp(in->text + i, "borrow", 6) == 0 &&
+             (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
+             !is_ident((unsigned char)in->text[i + 6])) ||
+            (strncmp(in->text + i, "owned", 5) == 0 &&
+             (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
+             !is_ident((unsigned char)in->text[i + 5])) ||
+            (strncmp(in->text + i, "move", 4) == 0 &&
+             (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
+             !is_ident((unsigned char)in->text[i + 4]))) {
+            size_t n = in->text[i] == 'b' ? 6 : (in->text[i] == 'o' ? 5 : 4);
+            i += n;
+            while (i < in->len && isspace((unsigned char)in->text[i])) {
+                i++;
+            }
+            if (i < in->len) {
+                i--;
+            }
+            continue;
+        }
         if (in->text[i] != '%') {
             text_add_ch(out, in->text[i]);
         }
@@ -5357,11 +5632,14 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     int owned_assign = 0;
     struct Type owned_assign_type;
     char *owned_assign_lhs = NULL;
+    int is_borrowed = 0;
+    char moved_name[NAME_MAX_LEN];
 
     post_free_name[0] = '\0';
     owned_name[0] = '\0';
     func_name[0] = '\0';
     lhs_name[0] = '\0';
+    moved_name[0] = '\0';
     post_free_type = type_unknown();
     owned_assign_type = type_unknown();
     new_type = type_unknown();
@@ -5388,11 +5666,34 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         return remove_percent(strip_attributes(all));
     }
     check_owned_pointer_arithmetic(all->text);
+    if (text_has_word(all->text, "move")) {
+        g_function_returns_move = 1;
+        if (g_current_function_name[0] != '\0' && g_current_function_ret.ptr > 0) {
+            struct Type ret_type = g_current_function_ret;
+            ret_type.owned = 1;
+            owned_func_add_type(g_current_function_name, ret_type);
+        }
+    }
+    remove_moved_locals(all->text);
 
     if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+        is_borrowed = decl_has_borrow(all->text);
         if (decl.has_init) {
             rhs_type = expr_type(decl.init);
-            if (rhs_has_s_string(decl.init)) {
+            if (extract_move_name(decl.init, moved_name)) {
+                if (decl.type.ptr <= 0) {
+                    fprintf(stderr, "c-: type error: move result requires a pointer declaration for '%s'\n", decl.name);
+                    text_free(all);
+                    exit(1);
+                }
+                if (is_borrowed) {
+                    fprintf(stderr, "c-: type error: borrow declaration cannot take ownership with move for '%s'\n", decl.name);
+                    text_free(all);
+                    exit(1);
+                }
+                decl.type.owned = 1;
+                owned_add(decl.name, decl.type);
+            } else if (rhs_has_s_string(decl.init)) {
                 struct Text *out;
                 struct Text *call;
                 if (decl.type.ptr <= 0 || decl.type.kind != TY_CHAR) {
@@ -5400,13 +5701,13 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                     text_free(all);
                     exit(1);
                 }
-                if (decl.type.owned) {
-                    owned_add(decl.name, decl.type);
-                } else {
-                    post_free = 1;
-                    strcpy(post_free_name, decl.name);
-                    post_free_type = decl.type;
+                if (is_borrowed) {
+                    fprintf(stderr, "c-: type error: borrow declaration cannot take ownership of s string for '%s'\n", decl.name);
+                    text_free(all);
+                    exit(1);
                 }
+                decl.type.owned = 1;
+                owned_add(decl.name, decl.type);
                 check_assignment_type(decl.name, decl.type, rhs_type);
                 symbol_add(decl.name, decl.type);
                 out = build_decl_without_initializer(all->text, eq);
@@ -5423,39 +5724,42 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 rhs_type = new_type;
                 if (new_type.ptr > 0) {
                     if (decl.type.ptr <= 0) {
-                        fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: clone result requires a pointer declaration for '%s'\n", decl.name);
                         text_free(all);
                         exit(1);
                     }
-                    if (decl.type.owned) {
-                        owned_add(decl.name, decl.type);
-                    } else {
-                        fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", decl.name);
+                    if (is_borrowed) {
+                        fprintf(stderr, "c-: type error: borrow declaration cannot take ownership of clone result for '%s'\n", decl.name);
                         text_free(all);
                         exit(1);
                     }
+                    decl.type.owned = 1;
+                    owned_add(decl.name, decl.type);
                 }
             } else if (rhs_has_malloc_call(decl.init, func_name) || rhs_has_new_expr(decl.init, &new_type)) {
                 if (decl.type.ptr <= 0) {
                     if (func_name[0] != '\0') {
-                        fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: malloc result requires a pointer declaration for '%s'\n", decl.name);
                     } else {
-                        fprintf(stderr, "c-: type error: new result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: new result requires a pointer declaration for '%s'\n", decl.name);
                     }
                     text_free(all);
                     exit(1);
                 }
-                if (decl.type.owned) {
-                    owned_add(decl.name, decl.type);
-                } else {
+                if (is_borrowed) {
                     if (func_name[0] != '\0') {
-                        fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: borrow declaration cannot take ownership of malloc result for '%s'\n", decl.name);
                     } else {
-                        fprintf(stderr, "c-: type error: new result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: borrow declaration cannot take ownership of new result for '%s'\n", decl.name);
                     }
                     text_free(all);
                     exit(1);
                 }
+                decl.type.owned = 1;
+                owned_add(decl.name, decl.type);
+            } else if (!is_borrowed && decl.type.ptr > 0 && rhs_has_function_call(decl.init)) {
+                decl.type.owned = 1;
+                owned_add(decl.name, decl.type);
             }
             check_assignment_type(decl.name, decl.type, rhs_type);
         }
@@ -5482,7 +5786,30 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         return all;
     }
 
-    if (eq >= 0 && rhs_has_s_string(all->text + eq + 1)) {
+    if (eq >= 0 && extract_move_name(all->text + eq + 1, moved_name)) {
+        if (!extract_lhs_name(all->text, eq, lhs_name)) {
+            fprintf(stderr, "c-: result of move must be assigned to a pointer lvalue\n");
+            text_free(all);
+            exit(1);
+        }
+        lhs = symbol_find(lhs_name);
+        lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
+        if (!type_is_known(lhs_type) || lhs_type.ptr <= 0) {
+            fprintf(stderr, "c-: type error: move result requires a pointer lvalue for '%s'\n", lhs_name);
+            text_free(all);
+            exit(1);
+        }
+        if (lhs != NULL) {
+            int was_owned = lhs->type.owned;
+            lhs->type.owned = 1;
+            strcpy(owned_name, lhs_name);
+            owned_assign = was_owned;
+            owned_assign_type = lhs->type;
+            if (owned_assign) {
+                owned_assign_lhs = slice_lhs_expr(all->text, eq);
+            }
+        }
+    } else if (eq >= 0 && rhs_has_s_string(all->text + eq + 1)) {
         if (!extract_lhs_name(all->text, eq, lhs_name) || !lhs_is_plain_name(all->text, eq, lhs_name)) {
             fprintf(stderr, "c-: type error: s string requires a plain char pointer lvalue\n");
             text_free(all);
@@ -5522,7 +5849,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (extract_owned_decl_name(all->text, owned_name)) {
             lhs = symbol_find(owned_name);
             if (lhs != NULL && lhs->type.ptr <= 0) {
-                fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", owned_name);
+                fprintf(stderr, "c-: type error: clone result requires a pointer declaration for '%s'\n", owned_name);
                 text_free(all);
                 exit(1);
             }
@@ -5537,17 +5864,21 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             }
             check_assignment_type(lhs_name, lhs_type, rhs_type);
             if (new_type.ptr > 0) {
-                if (lhs != NULL && lhs->type.owned) {
+                if (lhs != NULL) {
+                    int was_owned = lhs->type.owned;
+                    lhs->type.owned = 1;
                     strcpy(owned_name, lhs_name);
-                    owned_assign = 1;
+                    owned_assign = was_owned;
                     owned_assign_type = lhs->type;
-                    owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                    if (owned_assign) {
+                        owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                    }
                 } else if (lhs_type.owned) {
                     owned_assign = 1;
                     owned_assign_type = lhs_type;
                     owned_assign_lhs = slice_lhs_expr(all->text, eq);
                 } else {
-                    fprintf(stderr, "c-: type error: clone result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                    fprintf(stderr, "c-: type error: clone result requires an owned pointer lvalue for '%s'\n", lhs_name);
                     text_free(all);
                     exit(1);
                 }
@@ -5565,7 +5896,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (extract_owned_decl_name(all->text, owned_name)) {
             lhs = symbol_find(owned_name);
             if (lhs != NULL && lhs->type.ptr <= 0) {
-                fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", owned_name);
+                fprintf(stderr, "c-: type error: malloc result requires a pointer declaration for '%s'\n", owned_name);
                 text_free(all);
                 exit(1);
             }
@@ -5580,29 +5911,33 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 exit(1);
             }
             check_assignment_type(lhs_name, lhs_type, rhs_type);
-            if (lhs != NULL && lhs->type.owned) {
+            if (lhs != NULL) {
+                int was_owned = lhs->type.owned;
+                lhs->type.owned = 1;
                 strcpy(owned_name, lhs_name);
-                owned_assign = 1;
+                owned_assign = was_owned;
                 owned_assign_type = lhs->type;
-                owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                if (owned_assign) {
+                    owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                }
             } else if (lhs_type.owned) {
                 owned_assign = 1;
                 owned_assign_type = lhs_type;
                 owned_assign_lhs = slice_lhs_expr(all->text, eq);
             } else {
                 if (func_name[0] != '\0') {
-                    fprintf(stderr, "c-: type error: malloc result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                    fprintf(stderr, "c-: type error: malloc result requires an owned pointer lvalue for '%s'\n", lhs_name);
                 } else {
-                    fprintf(stderr, "c-: type error: new result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                    fprintf(stderr, "c-: type error: new result requires an owned pointer lvalue for '%s'\n", lhs_name);
                 }
                 text_free(all);
                 exit(1);
             }
         } else {
             if (func_name[0] != '\0') {
-                fprintf(stderr, "c-: result of owned function '%s' must be assigned to a %% pointer declaration\n", func_name);
+                fprintf(stderr, "c-: result of owned function '%s' must be assigned to a pointer declaration\n", func_name);
             } else {
-                fprintf(stderr, "c-: result of new must be assigned to a %% pointer declaration\n");
+                fprintf(stderr, "c-: result of new must be assigned to a pointer declaration\n");
             }
             text_free(all);
             exit(1);
@@ -5660,10 +5995,12 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
         return all;
     }
     check_owned_pointer_arithmetic(all->text);
+    remove_moved_locals(all->text);
     all = rewrite_generics(all);
     all = rewrite_method_calls(all);
     all = rewrite_index_access(all);
     all = rewrite_parameter_calls(all);
+    all = remove_percent(strip_attributes(all));
     if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
         struct Text *out = text_new();
         struct Text *indent = text_new();
@@ -5688,6 +6025,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     struct Node *body_ast = body->ast;
     char name[NAME_MAX_LEN];
     char param[NAME_MAX_LEN];
+    struct Type ret;
 
     if (g_current_payload_enum) {
         if (!parse_payload_enum_head(head->text, param, name)) {
@@ -5775,9 +6113,12 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         return out;
     }
 
-    (void)name;
     register_function_params(head->text);
     register_owned_function_signature(head->text);
+    if (g_function_returns_move && parse_function_signature(head->text, name, &ret) && ret.ptr > 0) {
+        ret.owned = 1;
+        owned_func_add_type(name, ret);
+    }
     head = strip_default_parameters(head);
     head = remove_percent(strip_attributes(head));
     {
@@ -5796,6 +6137,9 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     g_owned.count = 0;
     g_finalized_locals.count = 0;
     g_locals.count = 0;
+    g_function_returns_move = 0;
+    g_current_function_name[0] = '\0';
+    g_current_function_ret = type_unknown();
     g_in_function = 0;
     return out;
 }

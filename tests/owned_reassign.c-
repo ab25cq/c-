@@ -1,19 +1,19 @@
 #include <stdlib.h>
 
 struct Holder {
-    int*% value;
+    owned int* value;
 };
 
 int main(void)
 {
-    int*% owned = new int;
+    int* owned_value = new int;
     struct Holder holder;
 
-    owned = new int;
+    owned_value = new int;
     holder.value = new int;
     holder.value = new int;
 
-    if (owned == NULL || holder.value == NULL) {
+    if (owned_value == NULL || holder.value == NULL) {
         return 1;
     }
     return 0;

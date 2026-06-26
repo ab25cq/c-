@@ -85,7 +85,7 @@ extern int yylineno;
 #define MAX_FINALIZERS 128
 #define MAX_FIELDS 64
 #define MAX_PARAMS 32
-#define MAX_GENERIC_TEMPLATES 64
+#define MAX_GENERIC_TEMPLATES 128
 #define MAX_GENERIC_INSTANCES 128
 #define MAX_ENUM_VARIANTS 64
 #define DEFAULT_EXPR_MAX 256
@@ -314,6 +314,9 @@ static int g_index_id;
 static int g_need_stdio_h;
 static int g_need_execinfo_h;
 static int g_emit_uniq;
+static int g_function_returns_move;
+static char g_current_function_name[NAME_MAX_LEN];
+static struct Type g_current_function_ret;
 static const char *g_input_path;
 
 int yylex(void);
@@ -356,8 +359,12 @@ static void owned_func_add_type(const char *name, struct Type ret);
 static void append_indent_from(const char *s, struct Text *out);
 static void append_leading_newlines(const char *s, struct Text *out);
 static int rhs_has_malloc_call(const char *rhs, char *func_name);
+static int rhs_has_function_call(const char *rhs);
 static int rhs_has_new_expr(const char *rhs, struct Type *type);
 static int rhs_has_clone_expr(const char *rhs, struct Type *type);
+static int decl_has_borrow(const char *s);
+static int extract_move_name(const char *s, char *name);
+static void remove_moved_locals(const char *s);
 static struct Text *strip_attributes(struct Text *in);
 static struct Text *remove_percent(struct Text *in);
 static void check_owned_pointer_arithmetic(const char *stmt);
@@ -392,7 +399,7 @@ static void append_finalize_for_type(struct Text *out, const char *indent, const
 static struct Text *prepend_owned_assignment_release(struct Text *stmt, const char *original, const char *lhs_expr, struct Type type);
 static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name);
 
-#line 396 "src/parser.c"
+#line 403 "src/parser.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -437,30 +444,35 @@ enum yysymbol_kind_t
   YYSYMBOL_RPAREN = 14,                    /* RPAREN  */
   YYSYMBOL_LBRACKET = 15,                  /* LBRACKET  */
   YYSYMBOL_RBRACKET = 16,                  /* RBRACKET  */
-  YYSYMBOL_SEMI = 17,                      /* SEMI  */
-  YYSYMBOL_COMMA = 18,                     /* COMMA  */
-  YYSYMBOL_EQUAL = 19,                     /* EQUAL  */
-  YYSYMBOL_PERCENT = 20,                   /* PERCENT  */
-  YYSYMBOL_OTHER = 21,                     /* OTHER  */
-  YYSYMBOL_YYACCEPT = 22,                  /* $accept  */
-  YYSYMBOL_translation_unit = 23,          /* translation_unit  */
-  YYSYMBOL_external_item = 24,             /* external_item  */
-  YYSYMBOL_25_1 = 25,                      /* $@1  */
-  YYSYMBOL_top_seq = 26,                   /* top_seq  */
-  YYSYMBOL_top_part = 27,                  /* top_part  */
-  YYSYMBOL_compound_items = 28,            /* compound_items  */
-  YYSYMBOL_compound_item = 29,             /* compound_item  */
-  YYSYMBOL_return_statement = 30,          /* return_statement  */
-  YYSYMBOL_stmt_seq = 31,                  /* stmt_seq  */
-  YYSYMBOL_stmt_part = 32,                 /* stmt_part  */
-  YYSYMBOL_paren_group = 33,               /* paren_group  */
-  YYSYMBOL_paren_items = 34,               /* paren_items  */
-  YYSYMBOL_paren_part = 35,                /* paren_part  */
-  YYSYMBOL_bracket_group = 36,             /* bracket_group  */
-  YYSYMBOL_bracket_items = 37,             /* bracket_items  */
-  YYSYMBOL_bracket_part = 38,              /* bracket_part  */
-  YYSYMBOL_token = 39,                     /* token  */
-  YYSYMBOL_token_no_comma = 40             /* token_no_comma  */
+  YYSYMBOL_LT = 17,                        /* LT  */
+  YYSYMBOL_GT = 18,                        /* GT  */
+  YYSYMBOL_SEMI = 19,                      /* SEMI  */
+  YYSYMBOL_COMMA = 20,                     /* COMMA  */
+  YYSYMBOL_EQUAL = 21,                     /* EQUAL  */
+  YYSYMBOL_PERCENT = 22,                   /* PERCENT  */
+  YYSYMBOL_OTHER = 23,                     /* OTHER  */
+  YYSYMBOL_YYACCEPT = 24,                  /* $accept  */
+  YYSYMBOL_translation_unit = 25,          /* translation_unit  */
+  YYSYMBOL_external_item = 26,             /* external_item  */
+  YYSYMBOL_27_1 = 27,                      /* $@1  */
+  YYSYMBOL_top_seq = 28,                   /* top_seq  */
+  YYSYMBOL_top_part = 29,                  /* top_part  */
+  YYSYMBOL_compound_items = 30,            /* compound_items  */
+  YYSYMBOL_compound_item = 31,             /* compound_item  */
+  YYSYMBOL_return_statement = 32,          /* return_statement  */
+  YYSYMBOL_stmt_seq = 33,                  /* stmt_seq  */
+  YYSYMBOL_stmt_part = 34,                 /* stmt_part  */
+  YYSYMBOL_paren_group = 35,               /* paren_group  */
+  YYSYMBOL_paren_items = 36,               /* paren_items  */
+  YYSYMBOL_paren_part = 37,                /* paren_part  */
+  YYSYMBOL_bracket_group = 38,             /* bracket_group  */
+  YYSYMBOL_bracket_items = 39,             /* bracket_items  */
+  YYSYMBOL_bracket_part = 40,              /* bracket_part  */
+  YYSYMBOL_angle_group = 41,               /* angle_group  */
+  YYSYMBOL_angle_items = 42,               /* angle_items  */
+  YYSYMBOL_angle_part = 43,                /* angle_part  */
+  YYSYMBOL_token = 44,                     /* token  */
+  YYSYMBOL_token_no_comma = 45             /* token_no_comma  */
 };
 typedef enum yysymbol_kind_t yysymbol_kind_t;
 
@@ -788,19 +800,19 @@ union yyalloc
 /* YYFINAL -- State number of the termination state.  */
 #define YYFINAL  2
 /* YYLAST -- Last index in YYTABLE.  */
-#define YYLAST   217
+#define YYLAST   272
 
 /* YYNTOKENS -- Number of terminals.  */
-#define YYNTOKENS  22
+#define YYNTOKENS  24
 /* YYNNTS -- Number of nonterminals.  */
-#define YYNNTS  19
+#define YYNNTS  22
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  60
+#define YYNRULES  75
 /* YYNSTATES -- Number of states.  */
-#define YYNSTATES  72
+#define YYNSTATES  87
 
 /* YYMAXUTOK -- Last valid token kind.  */
-#define YYMAXUTOK   276
+#define YYMAXUTOK   278
 
 
 /* YYTRANSLATE(TOKEN-NUM) -- Symbol number corresponding to TOKEN-NUM
@@ -841,20 +853,21 @@ static const yytype_int8 yytranslate[] =
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     1,     2,     3,     4,
        5,     6,     7,     8,     9,    10,    11,    12,    13,    14,
-      15,    16,    17,    18,    19,    20,    21
+      15,    16,    17,    18,    19,    20,    21,    22,    23
 };
 
 #if YYDEBUG
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   347,   347,   348,   353,   355,   357,   360,   359,   366,
-     368,   373,   375,   377,   383,   384,   389,   391,   393,   395,
-     397,   399,   401,   406,   408,   413,   415,   420,   422,   424,
-     429,   435,   436,   441,   443,   445,   450,   456,   457,   462,
-     464,   466,   471,   473,   475,   477,   479,   481,   483,   485,
-     487,   489,   494,   496,   498,   500,   502,   504,   506,   508,
-     510
+       0,   355,   355,   356,   361,   363,   365,   368,   367,   374,
+     376,   381,   383,   385,   387,   393,   394,   399,   401,   403,
+     405,   407,   409,   411,   416,   418,   423,   425,   430,   432,
+     434,   436,   441,   447,   448,   453,   455,   457,   459,   464,
+     470,   471,   476,   478,   480,   482,   487,   493,   494,   499,
+     501,   503,   505,   510,   512,   514,   516,   518,   520,   522,
+     524,   526,   528,   530,   532,   537,   539,   541,   543,   545,
+     547,   549,   551,   553,   555,   557
 };
 #endif
 
@@ -872,12 +885,13 @@ static const char *const yytname[] =
 {
   "\"end of file\"", "error", "\"invalid token\"", "IDENT", "NUMBER",
   "STRING_LITERAL", "CHAR_LITERAL", "PP_LINE", "RETURN", "KEYWORD", "OP",
-  "LBRACE", "RBRACE", "LPAREN", "RPAREN", "LBRACKET", "RBRACKET", "SEMI",
-  "COMMA", "EQUAL", "PERCENT", "OTHER", "$accept", "translation_unit",
-  "external_item", "$@1", "top_seq", "top_part", "compound_items",
-  "compound_item", "return_statement", "stmt_seq", "stmt_part",
-  "paren_group", "paren_items", "paren_part", "bracket_group",
-  "bracket_items", "bracket_part", "token", "token_no_comma", YY_NULLPTR
+  "LBRACE", "RBRACE", "LPAREN", "RPAREN", "LBRACKET", "RBRACKET", "LT",
+  "GT", "SEMI", "COMMA", "EQUAL", "PERCENT", "OTHER", "$accept",
+  "translation_unit", "external_item", "$@1", "top_seq", "top_part",
+  "compound_items", "compound_item", "return_statement", "stmt_seq",
+  "stmt_part", "paren_group", "paren_items", "paren_part", "bracket_group",
+  "bracket_items", "bracket_part", "angle_group", "angle_items",
+  "angle_part", "token", "token_no_comma", YY_NULLPTR
 };
 
 static const char *
@@ -887,12 +901,12 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 }
 #endif
 
-#define YYPACT_NINF (-54)
+#define YYPACT_NINF (-67)
 
 #define yypact_value_is_default(Yyn) \
   ((Yyn) == YYPACT_NINF)
 
-#define YYTABLE_NINF (-1)
+#define YYTABLE_NINF (-72)
 
 #define yytable_value_is_error(Yyn) \
   0
@@ -901,14 +915,15 @@ yysymbol_name (yysymbol_kind_t yysymbol)
    STATE-NUM.  */
 static const yytype_int16 yypact[] =
 {
-     -54,    25,   -54,   -54,   -54,   -54,   -54,   -54,   -54,   -54,
-     -54,   -54,   -54,   -54,   -54,   -54,   -54,   120,   -54,   -54,
-     -54,   -54,   139,   158,   -54,   -54,   -54,   -54,   -54,   -54,
-     -54,   -54,   -54,   -54,   -54,   -54,   -54,   -54,   -54,   -54,
-     -54,   -54,   -54,   -54,   -54,   -54,   -54,   -54,    44,   -54,
-     177,   -54,   -54,   -54,   -54,   -54,   101,   -54,   -54,   -54,
-     -54,   -54,   196,    63,   -54,   -54,   -54,   -54,   -54,   -54,
-      82,   -54
+     -67,    39,   -67,   -67,   -67,   -67,   -67,   -67,   -67,   -67,
+     -67,   -67,    -6,   -67,   -67,   -67,   -67,   -67,   -67,   144,
+     -67,   -67,   -67,   -67,   -67,   165,   186,   207,   -67,   -67,
+     -67,   -67,   -67,   -67,   -67,   -67,   -67,   -67,    -8,   -67,
+     -67,   -67,   -67,   -67,   -67,   -67,   -67,   -67,   -67,   -67,
+     -67,   -67,   -67,   -67,   -67,   -67,   -67,   -67,   -67,   -67,
+     -67,   -67,    60,   -67,   228,   -67,   -67,   -67,   -67,   -67,
+     123,   -67,   -67,   -67,   -67,   -67,   -67,   249,    81,   -67,
+     -67,   -67,   -67,   -67,   -67,   102,   -67
 };
 
 /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
@@ -916,28 +931,31 @@ static const yytype_int16 yypact[] =
    means the default is an error.  */
 static const yytype_int8 yydefact[] =
 {
-       2,     0,     1,    52,    53,    54,    55,     4,    56,    57,
-      31,    37,     5,    58,    59,    60,     3,     0,     9,    12,
-      13,    11,     0,     0,     7,     6,    10,    42,    43,    44,
-      45,    46,    47,    30,    48,    49,    50,    51,    34,    32,
-      35,    33,    36,    40,    41,    38,    39,    14,     0,    16,
-       0,    14,     8,    17,    15,    18,     0,    25,    28,    29,
-      27,    23,     0,     0,    14,    19,    20,    26,    24,    21,
-       0,    22
+       2,     0,     1,    65,    66,    67,    68,     4,    69,    70,
+      33,    40,    47,    72,     5,    73,    74,    75,     3,     0,
+       9,    12,    13,    14,    11,     0,     0,     0,     7,     6,
+      10,    53,    54,    55,    56,    57,    58,    32,    47,    60,
+      61,    62,    63,    64,    36,    34,    37,    38,    35,    39,
+      43,    44,    41,    45,    42,    46,    50,    51,    52,    48,
+      49,    15,     0,    17,     0,    15,     8,    18,    16,    19,
+       0,    26,    29,    30,    31,    28,    24,     0,     0,    15,
+      20,    21,    27,    25,    22,     0,    23
 };
 
 /* YYPGOTO[NTERM-NUM].  */
 static const yytype_int8 yypgoto[] =
 {
-     -54,   -54,   -54,   -54,   -54,   -13,   -45,   -54,   -54,   -43,
-     -53,    -1,   -54,   -54,     1,   -54,   -54,   -18,     0
+     -67,   -67,   -67,   -67,   -67,   -12,   -63,   -67,   -67,   -50,
+     -66,    -1,   -67,   -67,     2,   -67,   -67,    11,   -67,   -67,
+     -17,     0
 };
 
 /* YYDEFGOTO[NTERM-NUM].  */
 static const yytype_int8 yydefgoto[] =
 {
-       0,     1,    16,    47,    17,    18,    48,    54,    55,    56,
-      57,    58,    22,    39,    59,    23,    45,    41,    60
+       0,     1,    18,    61,    19,    20,    62,    68,    69,    70,
+      71,    72,    25,    45,    73,    26,    52,    74,    27,    59,
+      48,    75
 };
 
 /* YYTABLE[YYPACT[STATE-NUM]] -- What to do in state STATE-NUM.  If
@@ -945,92 +963,107 @@ static const yytype_int8 yydefgoto[] =
    number is the opposite.  If YYTABLE_NINF, syntax error.  */
 static const yytype_int8 yytable[] =
 {
-      19,    21,    20,    67,    26,    46,    63,    62,     0,    67,
-       0,     0,     0,     0,     0,     0,    19,    21,    20,    70,
-       0,    38,    43,    40,    44,     2,     0,     0,     3,     4,
-       5,     6,     7,     0,     8,     9,     0,     0,    10,     0,
-      11,     0,    12,     0,    13,    14,    15,     3,     4,     5,
-       6,    49,    50,     8,     9,    51,    52,    10,     0,    11,
-       0,    53,     0,    13,    14,    15,     3,     4,     5,     6,
-      49,    50,     8,     9,    51,    69,    10,     0,    11,     0,
-      53,     0,    13,    14,    15,     3,     4,     5,     6,    49,
-      50,     8,     9,    51,    71,    10,     0,    11,     0,    53,
-       0,    13,    14,    15,     3,     4,     5,     6,     0,     0,
-       8,     9,    64,     0,    10,     0,    11,     0,    65,    66,
-      13,    14,    15,     3,     4,     5,     6,     0,     0,     8,
-       9,    24,     0,    10,     0,    11,     0,    25,     0,    13,
-      14,    15,    27,    28,    29,    30,     0,     0,    31,    32,
-       0,     0,    10,    33,    11,     0,     0,    34,    35,    36,
-      37,    27,    28,    29,    30,     0,     0,    31,    32,     0,
-       0,    10,     0,    11,    42,     0,    34,    35,    36,    37,
-       3,     4,     5,     6,     0,     0,     8,     9,     0,     0,
-      10,     0,    11,     0,    61,     0,    13,    14,    15,     3,
-       4,     5,     6,     0,     0,     8,     9,     0,     0,    10,
-       0,    11,     0,    68,     0,    13,    14,    15
+      21,    24,    78,    22,    82,   -71,   -59,    30,   -59,    54,
+      60,    82,    23,   -71,    77,     0,    85,     0,    21,    24,
+       0,    22,     0,     0,    44,    50,    56,    46,    51,    57,
+      23,     0,     0,     0,     0,     0,    47,    53,    58,     2,
+       0,     0,     3,     4,     5,     6,     7,     0,     8,     9,
+       0,     0,    10,     0,    11,     0,    12,    13,    14,     0,
+      15,    16,    17,     3,     4,     5,     6,    63,    64,     8,
+       9,    65,    66,    10,     0,    11,     0,    12,    13,    67,
+       0,    15,    16,    17,     3,     4,     5,     6,    63,    64,
+       8,     9,    65,    84,    10,     0,    11,     0,    12,    13,
+      67,     0,    15,    16,    17,     3,     4,     5,     6,    63,
+      64,     8,     9,    65,    86,    10,     0,    11,     0,    12,
+      13,    67,     0,    15,    16,    17,     3,     4,     5,     6,
+       0,     0,     8,     9,    79,     0,    10,     0,    11,     0,
+      12,    13,    80,    81,    15,    16,    17,     3,     4,     5,
+       6,     0,     0,     8,     9,    28,     0,    10,     0,    11,
+       0,    12,    13,    29,     0,    15,    16,    17,    31,    32,
+      33,    34,     0,     0,    35,    36,     0,     0,    10,    37,
+      11,     0,    38,    39,     0,    40,    41,    42,    43,    31,
+      32,    33,    34,     0,     0,    35,    36,     0,     0,    10,
+       0,    11,    49,    38,    39,     0,    40,    41,    42,    43,
+      31,    32,    33,    34,     0,     0,    35,    36,     0,     0,
+      10,     0,    11,     0,    38,    55,     0,    40,    41,    42,
+      43,     3,     4,     5,     6,     0,     0,     8,     9,     0,
+       0,    10,     0,    11,     0,    12,    13,    76,     0,    15,
+      16,    17,     3,     4,     5,     6,     0,     0,     8,     9,
+       0,     0,    10,     0,    11,     0,    12,    13,    83,     0,
+      15,    16,    17
 };
 
 static const yytype_int8 yycheck[] =
 {
-       1,     1,     1,    56,    17,    23,    51,    50,    -1,    62,
-      -1,    -1,    -1,    -1,    -1,    -1,    17,    17,    17,    64,
-      -1,    22,    23,    22,    23,     0,    -1,    -1,     3,     4,
-       5,     6,     7,    -1,     9,    10,    -1,    -1,    13,    -1,
-      15,    -1,    17,    -1,    19,    20,    21,     3,     4,     5,
-       6,     7,     8,     9,    10,    11,    12,    13,    -1,    15,
-      -1,    17,    -1,    19,    20,    21,     3,     4,     5,     6,
-       7,     8,     9,    10,    11,    12,    13,    -1,    15,    -1,
-      17,    -1,    19,    20,    21,     3,     4,     5,     6,     7,
+       1,     1,    65,     1,    70,    11,    14,    19,    16,    26,
+      27,    77,     1,    19,    64,    -1,    79,    -1,    19,    19,
+      -1,    19,    -1,    -1,    25,    26,    27,    25,    26,    27,
+      19,    -1,    -1,    -1,    -1,    -1,    25,    26,    27,     0,
+      -1,    -1,     3,     4,     5,     6,     7,    -1,     9,    10,
+      -1,    -1,    13,    -1,    15,    -1,    17,    18,    19,    -1,
+      21,    22,    23,     3,     4,     5,     6,     7,     8,     9,
+      10,    11,    12,    13,    -1,    15,    -1,    17,    18,    19,
+      -1,    21,    22,    23,     3,     4,     5,     6,     7,     8,
+       9,    10,    11,    12,    13,    -1,    15,    -1,    17,    18,
+      19,    -1,    21,    22,    23,     3,     4,     5,     6,     7,
        8,     9,    10,    11,    12,    13,    -1,    15,    -1,    17,
-      -1,    19,    20,    21,     3,     4,     5,     6,    -1,    -1,
-       9,    10,    11,    -1,    13,    -1,    15,    -1,    17,    18,
-      19,    20,    21,     3,     4,     5,     6,    -1,    -1,     9,
-      10,    11,    -1,    13,    -1,    15,    -1,    17,    -1,    19,
-      20,    21,     3,     4,     5,     6,    -1,    -1,     9,    10,
-      -1,    -1,    13,    14,    15,    -1,    -1,    18,    19,    20,
-      21,     3,     4,     5,     6,    -1,    -1,     9,    10,    -1,
-      -1,    13,    -1,    15,    16,    -1,    18,    19,    20,    21,
-       3,     4,     5,     6,    -1,    -1,     9,    10,    -1,    -1,
-      13,    -1,    15,    -1,    17,    -1,    19,    20,    21,     3,
+      18,    19,    -1,    21,    22,    23,     3,     4,     5,     6,
+      -1,    -1,     9,    10,    11,    -1,    13,    -1,    15,    -1,
+      17,    18,    19,    20,    21,    22,    23,     3,     4,     5,
+       6,    -1,    -1,     9,    10,    11,    -1,    13,    -1,    15,
+      -1,    17,    18,    19,    -1,    21,    22,    23,     3,     4,
+       5,     6,    -1,    -1,     9,    10,    -1,    -1,    13,    14,
+      15,    -1,    17,    18,    -1,    20,    21,    22,    23,     3,
        4,     5,     6,    -1,    -1,     9,    10,    -1,    -1,    13,
-      -1,    15,    -1,    17,    -1,    19,    20,    21
+      -1,    15,    16,    17,    18,    -1,    20,    21,    22,    23,
+       3,     4,     5,     6,    -1,    -1,     9,    10,    -1,    -1,
+      13,    -1,    15,    -1,    17,    18,    -1,    20,    21,    22,
+      23,     3,     4,     5,     6,    -1,    -1,     9,    10,    -1,
+      -1,    13,    -1,    15,    -1,    17,    18,    19,    -1,    21,
+      22,    23,     3,     4,     5,     6,    -1,    -1,     9,    10,
+      -1,    -1,    13,    -1,    15,    -1,    17,    18,    19,    -1,
+      21,    22,    23
 };
 
 /* YYSTOS[STATE-NUM] -- The symbol kind of the accessing symbol of
    state STATE-NUM.  */
 static const yytype_int8 yystos[] =
 {
-       0,    23,     0,     3,     4,     5,     6,     7,     9,    10,
-      13,    15,    17,    19,    20,    21,    24,    26,    27,    33,
-      36,    40,    34,    37,    11,    17,    27,     3,     4,     5,
-       6,     9,    10,    14,    18,    19,    20,    21,    33,    35,
-      36,    39,    16,    33,    36,    38,    39,    25,    28,     7,
-       8,    11,    12,    17,    29,    30,    31,    32,    33,    36,
-      40,    17,    31,    28,    11,    17,    18,    32,    17,    12,
-      28,    12
+       0,    25,     0,     3,     4,     5,     6,     7,     9,    10,
+      13,    15,    17,    18,    19,    21,    22,    23,    26,    28,
+      29,    35,    38,    41,    45,    36,    39,    42,    11,    19,
+      29,     3,     4,     5,     6,     9,    10,    14,    17,    18,
+      20,    21,    22,    23,    35,    37,    38,    41,    44,    16,
+      35,    38,    40,    41,    44,    18,    35,    38,    41,    43,
+      44,    27,    30,     7,     8,    11,    12,    19,    31,    32,
+      33,    34,    35,    38,    41,    45,    19,    33,    30,    11,
+      19,    20,    34,    19,    12,    30,    12
 };
 
 /* YYR1[RULE-NUM] -- Symbol kind of the left-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr1[] =
 {
-       0,    22,    23,    23,    24,    24,    24,    25,    24,    26,
-      26,    27,    27,    27,    28,    28,    29,    29,    29,    29,
-      29,    29,    29,    30,    30,    31,    31,    32,    32,    32,
-      33,    34,    34,    35,    35,    35,    36,    37,    37,    38,
-      38,    38,    39,    39,    39,    39,    39,    39,    39,    39,
-      39,    39,    40,    40,    40,    40,    40,    40,    40,    40,
-      40
+       0,    24,    25,    25,    26,    26,    26,    27,    26,    28,
+      28,    29,    29,    29,    29,    30,    30,    31,    31,    31,
+      31,    31,    31,    31,    32,    32,    33,    33,    34,    34,
+      34,    34,    35,    36,    36,    37,    37,    37,    37,    38,
+      39,    39,    40,    40,    40,    40,    41,    42,    42,    43,
+      43,    43,    43,    44,    44,    44,    44,    44,    44,    44,
+      44,    44,    44,    44,    44,    45,    45,    45,    45,    45,
+      45,    45,    45,    45,    45,    45
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr2[] =
 {
        0,     2,     0,     2,     1,     1,     2,     0,     5,     1,
-       2,     1,     1,     1,     0,     2,     1,     1,     1,     2,
-       2,     3,     4,     2,     3,     1,     2,     1,     1,     1,
-       3,     0,     2,     1,     1,     1,     3,     0,     2,     1,
+       2,     1,     1,     1,     1,     0,     2,     1,     1,     1,
+       2,     2,     3,     4,     2,     3,     1,     2,     1,     1,
+       1,     1,     3,     0,     2,     1,     1,     1,     1,     3,
+       0,     2,     1,     1,     1,     1,     3,     0,     2,     1,
        1,     1,     1,     1,     1,     1,     1,     1,     1,     1,
        1,     1,     1,     1,     1,     1,     1,     1,     1,     1,
-       1
+       1,     1,     1,     1,     1,     1
 };
 
 
@@ -1494,361 +1527,451 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* translation_unit: %empty  */
-#line 347 "src/parser.y"
+#line 355 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1500 "src/parser.c"
+#line 1533 "src/parser.c"
     break;
 
   case 3: /* translation_unit: translation_unit external_item  */
-#line 349 "src/parser.y"
+#line 357 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); g_output = (yyval.node); }
-#line 1506 "src/parser.c"
+#line 1539 "src/parser.c"
     break;
 
   case 4: /* external_item: PP_LINE  */
-#line 354 "src/parser.y"
+#line 362 "src/parser.y"
         { (yyval.node) = process_pp_line((yyvsp[0].node)); }
-#line 1512 "src/parser.c"
+#line 1545 "src/parser.c"
     break;
 
   case 5: /* external_item: SEMI  */
-#line 356 "src/parser.y"
+#line 364 "src/parser.y"
         { (yyval.node) = process_standalone_semi((yyvsp[0].node)); }
-#line 1518 "src/parser.c"
+#line 1551 "src/parser.c"
     break;
 
   case 6: /* external_item: top_seq SEMI  */
-#line 358 "src/parser.y"
+#line 366 "src/parser.y"
         { (yyval.node) = process_external_decl((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1524 "src/parser.c"
+#line 1557 "src/parser.c"
     break;
 
   case 7: /* $@1: %empty  */
-#line 360 "src/parser.y"
+#line 368 "src/parser.y"
         { begin_top_block((yyvsp[-1].node)); }
-#line 1530 "src/parser.c"
+#line 1563 "src/parser.c"
     break;
 
   case 8: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
-#line 362 "src/parser.y"
+#line 370 "src/parser.y"
         { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1536 "src/parser.c"
+#line 1569 "src/parser.c"
     break;
 
   case 9: /* top_seq: top_part  */
-#line 367 "src/parser.y"
+#line 375 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1542 "src/parser.c"
+#line 1575 "src/parser.c"
     break;
 
   case 10: /* top_seq: top_seq top_part  */
-#line 369 "src/parser.y"
+#line 377 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1548 "src/parser.c"
+#line 1581 "src/parser.c"
     break;
 
   case 11: /* top_part: token_no_comma  */
-#line 374 "src/parser.y"
+#line 382 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1554 "src/parser.c"
+#line 1587 "src/parser.c"
     break;
 
   case 12: /* top_part: paren_group  */
-#line 376 "src/parser.y"
+#line 384 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1560 "src/parser.c"
+#line 1593 "src/parser.c"
     break;
 
   case 13: /* top_part: bracket_group  */
-#line 378 "src/parser.y"
+#line 386 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1566 "src/parser.c"
+#line 1599 "src/parser.c"
     break;
 
-  case 14: /* compound_items: %empty  */
-#line 383 "src/parser.y"
+  case 14: /* top_part: angle_group  */
+#line 388 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1605 "src/parser.c"
+    break;
+
+  case 15: /* compound_items: %empty  */
+#line 393 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1572 "src/parser.c"
+#line 1611 "src/parser.c"
     break;
 
-  case 15: /* compound_items: compound_items compound_item  */
-#line 385 "src/parser.y"
+  case 16: /* compound_items: compound_items compound_item  */
+#line 395 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1578 "src/parser.c"
+#line 1617 "src/parser.c"
     break;
 
-  case 16: /* compound_item: PP_LINE  */
-#line 390 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1584 "src/parser.c"
-    break;
-
-  case 17: /* compound_item: SEMI  */
-#line 392 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1590 "src/parser.c"
-    break;
-
-  case 18: /* compound_item: return_statement  */
-#line 394 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1596 "src/parser.c"
-    break;
-
-  case 19: /* compound_item: stmt_seq SEMI  */
-#line 396 "src/parser.y"
-        { (yyval.node) = process_statement((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1602 "src/parser.c"
-    break;
-
-  case 20: /* compound_item: stmt_seq COMMA  */
-#line 398 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1608 "src/parser.c"
-    break;
-
-  case 21: /* compound_item: LBRACE compound_items RBRACE  */
+  case 17: /* compound_item: PP_LINE  */
 #line 400 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1614 "src/parser.c"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1623 "src/parser.c"
     break;
 
-  case 22: /* compound_item: stmt_seq LBRACE compound_items RBRACE  */
+  case 18: /* compound_item: SEMI  */
 #line 402 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1629 "src/parser.c"
+    break;
+
+  case 19: /* compound_item: return_statement  */
+#line 404 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1635 "src/parser.c"
+    break;
+
+  case 20: /* compound_item: stmt_seq SEMI  */
+#line 406 "src/parser.y"
+        { (yyval.node) = process_statement((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1641 "src/parser.c"
+    break;
+
+  case 21: /* compound_item: stmt_seq COMMA  */
+#line 408 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1647 "src/parser.c"
+    break;
+
+  case 22: /* compound_item: LBRACE compound_items RBRACE  */
+#line 410 "src/parser.y"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1653 "src/parser.c"
+    break;
+
+  case 23: /* compound_item: stmt_seq LBRACE compound_items RBRACE  */
+#line 412 "src/parser.y"
         { (yyval.node) = text_join4(process_control_head((yyvsp[-3].node)), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1620 "src/parser.c"
+#line 1659 "src/parser.c"
     break;
 
-  case 23: /* return_statement: RETURN SEMI  */
-#line 407 "src/parser.y"
+  case 24: /* return_statement: RETURN SEMI  */
+#line 417 "src/parser.y"
         { (yyval.node) = process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)); }
-#line 1626 "src/parser.c"
+#line 1665 "src/parser.c"
     break;
 
-  case 24: /* return_statement: RETURN stmt_seq SEMI  */
-#line 409 "src/parser.y"
+  case 25: /* return_statement: RETURN stmt_seq SEMI  */
+#line 419 "src/parser.y"
         { (yyval.node) = process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1632 "src/parser.c"
+#line 1671 "src/parser.c"
     break;
 
-  case 25: /* stmt_seq: stmt_part  */
-#line 414 "src/parser.y"
+  case 26: /* stmt_seq: stmt_part  */
+#line 424 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1638 "src/parser.c"
+#line 1677 "src/parser.c"
     break;
 
-  case 26: /* stmt_seq: stmt_seq stmt_part  */
-#line 416 "src/parser.y"
+  case 27: /* stmt_seq: stmt_seq stmt_part  */
+#line 426 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1644 "src/parser.c"
+#line 1683 "src/parser.c"
     break;
 
-  case 27: /* stmt_part: token_no_comma  */
-#line 421 "src/parser.y"
+  case 28: /* stmt_part: token_no_comma  */
+#line 431 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1650 "src/parser.c"
+#line 1689 "src/parser.c"
     break;
 
-  case 28: /* stmt_part: paren_group  */
-#line 423 "src/parser.y"
+  case 29: /* stmt_part: paren_group  */
+#line 433 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1656 "src/parser.c"
+#line 1695 "src/parser.c"
     break;
 
-  case 29: /* stmt_part: bracket_group  */
-#line 425 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1662 "src/parser.c"
-    break;
-
-  case 30: /* paren_group: LPAREN paren_items RPAREN  */
-#line 430 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1668 "src/parser.c"
-    break;
-
-  case 31: /* paren_items: %empty  */
+  case 30: /* stmt_part: bracket_group  */
 #line 435 "src/parser.y"
-        { (yyval.node) = text_new(); }
-#line 1674 "src/parser.c"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1701 "src/parser.c"
     break;
 
-  case 32: /* paren_items: paren_items paren_part  */
+  case 31: /* stmt_part: angle_group  */
 #line 437 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1680 "src/parser.c"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1707 "src/parser.c"
     break;
 
-  case 33: /* paren_part: token  */
+  case 32: /* paren_group: LPAREN paren_items RPAREN  */
 #line 442 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1686 "src/parser.c"
-    break;
-
-  case 34: /* paren_part: paren_group  */
-#line 444 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1692 "src/parser.c"
-    break;
-
-  case 35: /* paren_part: bracket_group  */
-#line 446 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1698 "src/parser.c"
-    break;
-
-  case 36: /* bracket_group: LBRACKET bracket_items RBRACKET  */
-#line 451 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1704 "src/parser.c"
+#line 1713 "src/parser.c"
     break;
 
-  case 37: /* bracket_items: %empty  */
-#line 456 "src/parser.y"
+  case 33: /* paren_items: %empty  */
+#line 447 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1710 "src/parser.c"
+#line 1719 "src/parser.c"
     break;
 
-  case 38: /* bracket_items: bracket_items bracket_part  */
-#line 458 "src/parser.y"
+  case 34: /* paren_items: paren_items paren_part  */
+#line 449 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1716 "src/parser.c"
+#line 1725 "src/parser.c"
     break;
 
-  case 39: /* bracket_part: token  */
-#line 463 "src/parser.y"
+  case 35: /* paren_part: token  */
+#line 454 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1722 "src/parser.c"
+#line 1731 "src/parser.c"
     break;
 
-  case 40: /* bracket_part: paren_group  */
+  case 36: /* paren_part: paren_group  */
+#line 456 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1737 "src/parser.c"
+    break;
+
+  case 37: /* paren_part: bracket_group  */
+#line 458 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1743 "src/parser.c"
+    break;
+
+  case 38: /* paren_part: angle_group  */
+#line 460 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1749 "src/parser.c"
+    break;
+
+  case 39: /* bracket_group: LBRACKET bracket_items RBRACKET  */
 #line 465 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1728 "src/parser.c"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1755 "src/parser.c"
     break;
 
-  case 41: /* bracket_part: bracket_group  */
-#line 467 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1734 "src/parser.c"
+  case 40: /* bracket_items: %empty  */
+#line 470 "src/parser.y"
+        { (yyval.node) = text_new(); }
+#line 1761 "src/parser.c"
     break;
 
-  case 42: /* token: IDENT  */
+  case 41: /* bracket_items: bracket_items bracket_part  */
 #line 472 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1740 "src/parser.c"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1767 "src/parser.c"
     break;
 
-  case 43: /* token: NUMBER  */
-#line 474 "src/parser.y"
+  case 42: /* bracket_part: token  */
+#line 477 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1746 "src/parser.c"
+#line 1773 "src/parser.c"
     break;
 
-  case 44: /* token: STRING_LITERAL  */
-#line 476 "src/parser.y"
+  case 43: /* bracket_part: paren_group  */
+#line 479 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1752 "src/parser.c"
+#line 1779 "src/parser.c"
     break;
 
-  case 45: /* token: CHAR_LITERAL  */
-#line 478 "src/parser.y"
+  case 44: /* bracket_part: bracket_group  */
+#line 481 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1758 "src/parser.c"
+#line 1785 "src/parser.c"
     break;
 
-  case 46: /* token: KEYWORD  */
-#line 480 "src/parser.y"
+  case 45: /* bracket_part: angle_group  */
+#line 483 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1764 "src/parser.c"
+#line 1791 "src/parser.c"
     break;
 
-  case 47: /* token: OP  */
-#line 482 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1770 "src/parser.c"
-    break;
-
-  case 48: /* token: COMMA  */
-#line 484 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1776 "src/parser.c"
-    break;
-
-  case 49: /* token: EQUAL  */
-#line 486 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1782 "src/parser.c"
-    break;
-
-  case 50: /* token: PERCENT  */
+  case 46: /* angle_group: LT angle_items GT  */
 #line 488 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1788 "src/parser.c"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1797 "src/parser.c"
     break;
 
-  case 51: /* token: OTHER  */
-#line 490 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1794 "src/parser.c"
+  case 47: /* angle_items: %empty  */
+#line 493 "src/parser.y"
+        { (yyval.node) = text_new(); }
+#line 1803 "src/parser.c"
     break;
 
-  case 52: /* token_no_comma: IDENT  */
+  case 48: /* angle_items: angle_items angle_part  */
 #line 495 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1800 "src/parser.c"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1809 "src/parser.c"
     break;
 
-  case 53: /* token_no_comma: NUMBER  */
-#line 497 "src/parser.y"
+  case 49: /* angle_part: token  */
+#line 500 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1806 "src/parser.c"
+#line 1815 "src/parser.c"
     break;
 
-  case 54: /* token_no_comma: STRING_LITERAL  */
-#line 499 "src/parser.y"
+  case 50: /* angle_part: paren_group  */
+#line 502 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1812 "src/parser.c"
+#line 1821 "src/parser.c"
     break;
 
-  case 55: /* token_no_comma: CHAR_LITERAL  */
-#line 501 "src/parser.y"
+  case 51: /* angle_part: bracket_group  */
+#line 504 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1818 "src/parser.c"
+#line 1827 "src/parser.c"
     break;
 
-  case 56: /* token_no_comma: KEYWORD  */
-#line 503 "src/parser.y"
+  case 52: /* angle_part: angle_group  */
+#line 506 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1824 "src/parser.c"
+#line 1833 "src/parser.c"
     break;
 
-  case 57: /* token_no_comma: OP  */
-#line 505 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1830 "src/parser.c"
-    break;
-
-  case 58: /* token_no_comma: EQUAL  */
-#line 507 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1836 "src/parser.c"
-    break;
-
-  case 59: /* token_no_comma: PERCENT  */
-#line 509 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1842 "src/parser.c"
-    break;
-
-  case 60: /* token_no_comma: OTHER  */
+  case 53: /* token: IDENT  */
 #line 511 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1848 "src/parser.c"
+#line 1839 "src/parser.c"
+    break;
+
+  case 54: /* token: NUMBER  */
+#line 513 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1845 "src/parser.c"
+    break;
+
+  case 55: /* token: STRING_LITERAL  */
+#line 515 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1851 "src/parser.c"
+    break;
+
+  case 56: /* token: CHAR_LITERAL  */
+#line 517 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1857 "src/parser.c"
+    break;
+
+  case 57: /* token: KEYWORD  */
+#line 519 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1863 "src/parser.c"
+    break;
+
+  case 58: /* token: OP  */
+#line 521 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1869 "src/parser.c"
+    break;
+
+  case 59: /* token: LT  */
+#line 523 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1875 "src/parser.c"
+    break;
+
+  case 60: /* token: GT  */
+#line 525 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1881 "src/parser.c"
+    break;
+
+  case 61: /* token: COMMA  */
+#line 527 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1887 "src/parser.c"
+    break;
+
+  case 62: /* token: EQUAL  */
+#line 529 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1893 "src/parser.c"
+    break;
+
+  case 63: /* token: PERCENT  */
+#line 531 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1899 "src/parser.c"
+    break;
+
+  case 64: /* token: OTHER  */
+#line 533 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1905 "src/parser.c"
+    break;
+
+  case 65: /* token_no_comma: IDENT  */
+#line 538 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1911 "src/parser.c"
+    break;
+
+  case 66: /* token_no_comma: NUMBER  */
+#line 540 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1917 "src/parser.c"
+    break;
+
+  case 67: /* token_no_comma: STRING_LITERAL  */
+#line 542 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1923 "src/parser.c"
+    break;
+
+  case 68: /* token_no_comma: CHAR_LITERAL  */
+#line 544 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1929 "src/parser.c"
+    break;
+
+  case 69: /* token_no_comma: KEYWORD  */
+#line 546 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1935 "src/parser.c"
+    break;
+
+  case 70: /* token_no_comma: OP  */
+#line 548 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1941 "src/parser.c"
+    break;
+
+  case 71: /* token_no_comma: LT  */
+#line 550 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1947 "src/parser.c"
+    break;
+
+  case 72: /* token_no_comma: GT  */
+#line 552 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1953 "src/parser.c"
+    break;
+
+  case 73: /* token_no_comma: EQUAL  */
+#line 554 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1959 "src/parser.c"
+    break;
+
+  case 74: /* token_no_comma: PERCENT  */
+#line 556 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1965 "src/parser.c"
+    break;
+
+  case 75: /* token_no_comma: OTHER  */
+#line 558 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1971 "src/parser.c"
     break;
 
 
-#line 1852 "src/parser.c"
+#line 1975 "src/parser.c"
 
       default: break;
     }
@@ -2041,7 +2164,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 514 "src/parser.y"
+#line 561 "src/parser.y"
 
 
 static void die(const char *msg)
@@ -2326,10 +2449,13 @@ static void mangle_type_arg(char *out, size_t out_size, const char *arg)
             out[n++] = *p;
         } else if (*p == '*') {
             const char *word = "ptr";
+            if (n > 0 && out[n - 1] != '_') {
+                out[n++] = '_';
+            }
             while (*word != '\0' && n + 1 < out_size) {
                 out[n++] = *word++;
             }
-        } else if (*p == '_' || isspace((unsigned char)*p)) {
+        } else if (*p == '_' || isspace((unsigned char)*p) || *p == ',' || *p == '<' || *p == '>') {
             if (n > 0 && out[n - 1] != '_') {
                 out[n++] = '_';
             }
@@ -2869,6 +2995,40 @@ static int parse_generic_angle_arg(const char *p, char *arg, const char **after)
     return 0;
 }
 
+static int split_generic_list(const char *list, char items[][NAME_MAX_LEN], int max_items)
+{
+    const char *start = list;
+    const char *p = list;
+    int depth = 0;
+    int count = 0;
+
+    while (1) {
+        if (*p == '<') {
+            depth++;
+        } else if (*p == '>') {
+            if (depth > 0) {
+                depth--;
+            }
+        }
+        if ((*p == ',' && depth == 0) || *p == '\0') {
+            if (count >= max_items) {
+                return -1;
+            }
+            copy_trimmed(items[count], NAME_MAX_LEN, start, p);
+            if (items[count][0] == '\0') {
+                return -1;
+            }
+            count++;
+            if (*p == '\0') {
+                break;
+            }
+            start = p + 1;
+        }
+        p++;
+    }
+    return count;
+}
+
 static struct Text *replace_param_and_generics(const char *s,
                                                const char *param,
                                                const char *arg,
@@ -2876,11 +3036,15 @@ static struct Text *replace_param_and_generics(const char *s,
                                                const char *new_name)
 {
     struct Text *out = text_new();
-    size_t param_len = strlen(param);
+    char params[4][NAME_MAX_LEN];
+    char args[4][NAME_MAX_LEN];
+    int param_count = split_generic_list(param, params, 4);
+    int arg_count = split_generic_list(arg, args, 4);
     size_t old_len = strlen(old_name);
     const char *p = s;
 
     while (*p != '\0') {
+        int replaced_param = 0;
         if (old_len > 0 && strncmp(p, old_name, old_len) == 0 && !is_ident((unsigned char)p[old_len]) &&
             (p == s || !is_ident((unsigned char)p[-1]))) {
             const char *after;
@@ -2892,11 +3056,24 @@ static struct Text *replace_param_and_generics(const char *s,
             }
             text_add(out, new_name);
             p += old_len;
-        } else if (param_len > 0 && strncmp(p, param, param_len) == 0 && !is_ident((unsigned char)p[param_len]) &&
-                   (p == s || !is_ident((unsigned char)p[-1]))) {
-            text_add(out, arg);
-            p += param_len;
         } else {
+            int i;
+            if (param_count > 0 && param_count == arg_count) {
+                for (i = 0; i < param_count; i++) {
+                    size_t param_len = strlen(params[i]);
+                    if (param_len > 0 && strncmp(p, params[i], param_len) == 0 &&
+                        !is_ident((unsigned char)p[param_len]) &&
+                        (p == s || !is_ident((unsigned char)p[-1]))) {
+                        text_add(out, args[i]);
+                        p += param_len;
+                        replaced_param = 1;
+                        break;
+                    }
+                }
+            }
+            if (replaced_param) {
+                continue;
+            }
             text_add_ch(out, *p++);
         }
     }
@@ -3199,7 +3376,7 @@ static int skip_decl_word(const char *word)
 {
     static const char *words[] = {
         "auto", "extern", "register", "static", "typedef", "const", "volatile",
-        "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", NULL
+        "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", "borrow", "owned", NULL
     };
     int i;
     for (i = 0; words[i] != NULL; i++) {
@@ -3234,6 +3411,19 @@ static enum TypeKind keyword_type(const char *word)
         return TY_DOUBLE;
     }
     return TY_UNKNOWN;
+}
+
+static int has_decl_word_before(const char *s, const char *limit, const char *word)
+{
+    const char *p = s;
+    size_t n = strlen(word);
+    while ((p = strstr(p, word)) != NULL && p < limit) {
+        if ((p == s || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[n])) {
+            return 1;
+        }
+        p += n;
+    }
+    return 0;
 }
 
 struct DeclInfo {
@@ -3407,6 +3597,9 @@ static int parse_function_signature(const char *s, char *name, struct Type *ret)
             ret->owned = 1;
         }
     }
+    if (has_decl_word_before(s, name_start, "owned")) {
+        ret->owned = 1;
+    }
     return 1;
 }
 
@@ -3468,7 +3661,8 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     decl->name[name_end - name_start] = '\0';
     decl->type = base_type;
     decl->type.ptr += ptr;
-    decl->type.owned = base_type.owned || strchr(base_end, '%') != NULL;
+    decl->type.owned = base_type.owned || strchr(base_end, '%') != NULL ||
+        has_decl_word_before(s, name_start, "owned");
     scan = skip_ws(name_end);
     if (*scan == '(' && eq < 0) {
         decl->is_function = 1;
@@ -4169,6 +4363,9 @@ static void begin_function(void)
     g_owned.count = 0;
     g_finalized_locals.count = 0;
     g_locals.count = 0;
+    g_function_returns_move = 0;
+    g_current_function_name[0] = '\0';
+    g_current_function_ret = type_unknown();
     g_in_function = 1;
 }
 
@@ -4201,6 +4398,11 @@ static void begin_top_block(struct Text *head)
         g_in_function = 0;
     } else if (g_top_block_is_function) {
         begin_function();
+        if (parse_function_signature(head->text, name, &ret)) {
+            strncpy(g_current_function_name, name, NAME_MAX_LEN - 1);
+            g_current_function_name[NAME_MAX_LEN - 1] = '\0';
+            g_current_function_ret = ret;
+        }
     } else if (parse_struct_head(head->text, name)) {
         g_in_aggregate_struct = 1;
         strncpy(g_current_struct_tag, name, NAME_MAX_LEN - 1);
@@ -4416,6 +4618,25 @@ static void owned_add(const char *name, struct Type type)
     owned_add_to(&g_owned, name, type);
 }
 
+static void owned_remove_from(struct Owned *owned, const char *name)
+{
+    int index = owned_index_in(owned, name);
+    int i;
+    if (index < 0) {
+        return;
+    }
+    for (i = index; i + 1 < owned->count; i++) {
+        strcpy(owned->name[i], owned->name[i + 1]);
+        owned->type[i] = owned->type[i + 1];
+    }
+    owned->count--;
+}
+
+static void owned_remove(const char *name)
+{
+    owned_remove_from(&g_owned, name);
+}
+
 static void finalized_local_add(const char *name, struct Type type)
 {
     owned_add_to(&g_finalized_locals, name, type);
@@ -4478,6 +4699,75 @@ static void register_owned_function_signature(const char *s)
         }
         ret.owned = 1;
         owned_func_add_type(name, ret);
+    }
+}
+
+static int function_name_looks_owned(const char *name)
+{
+    size_t n = strlen(name);
+    if (n >= 4 && strcmp(name + n - 4, "_new") == 0) {
+        return 1;
+    }
+    if (strstr(name, "_new_") != NULL) {
+        return 1;
+    }
+    return 0;
+}
+
+static int decl_has_borrow(const char *s)
+{
+    const char *eq = strchr(s, '=');
+    size_t n = eq != NULL ? (size_t)(eq - s) : strlen(s);
+    char *head = xstrndup(s, n);
+    int result = text_has_word(head, "borrow");
+    free(head);
+    return result;
+}
+
+static int extract_move_name(const char *s, char *name)
+{
+    const char *p = s;
+    name[0] = '\0';
+    while ((p = strstr(p, "move")) != NULL) {
+        if ((p == s || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[4])) {
+            const char *q = skip_ws(p + 4);
+            const char *end;
+            if (!is_ident_start((unsigned char)*q)) {
+                p += 4;
+                continue;
+            }
+            end = read_name(q, name);
+            if ((size_t)(end - q) >= NAME_MAX_LEN) {
+                name[0] = '\0';
+                return 0;
+            }
+            memcpy(name, q, (size_t)(end - q));
+            name[end - q] = '\0';
+            return 1;
+        }
+        p += 4;
+    }
+    return 0;
+}
+
+static void remove_moved_locals(const char *s)
+{
+    const char *p = s;
+    while ((p = strstr(p, "move")) != NULL) {
+        if ((p == s || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[4])) {
+            char name[NAME_MAX_LEN];
+            const char *q = skip_ws(p + 4);
+            const char *end;
+            if (is_ident_start((unsigned char)*q)) {
+                end = read_name(q, name);
+                if ((size_t)(end - q) < NAME_MAX_LEN) {
+                    memcpy(name, q, (size_t)(end - q));
+                    name[end - q] = '\0';
+                    owned_remove(name);
+                }
+            }
+        }
+        p += 4;
     }
 }
 
@@ -4819,8 +5109,50 @@ static int rhs_has_malloc_call(const char *rhs, char *func_name)
                 return 1;
             }
         }
+        {
+            char name[NAME_MAX_LEN];
+            const char *end = read_name(rhs + i, name);
+            const char *q = end;
+            if ((size_t)(end - (rhs + i)) < NAME_MAX_LEN && function_name_looks_owned(name)) {
+                while (isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q == '(') {
+                    strcpy(func_name, name);
+                    return 1;
+                }
+            }
+        }
     }
     func_name[0] = '\0';
+    return 0;
+}
+
+static int rhs_has_function_call(const char *rhs)
+{
+    size_t i;
+    for (i = 0; rhs[i] != '\0'; i++) {
+        char name[NAME_MAX_LEN];
+        const char *end;
+        const char *q;
+        if (!is_ident_start((unsigned char)rhs[i])) {
+            continue;
+        }
+        end = read_name(rhs + i, name);
+        if (strcmp(name, "sizeof") == 0 || strcmp(name, "new") == 0 ||
+            strcmp(name, "clone") == 0 || strcmp(name, "move") == 0) {
+            i = (size_t)(end - rhs);
+            continue;
+        }
+        q = end;
+        while (isspace((unsigned char)*q)) {
+            q++;
+        }
+        if (*q == '(') {
+            return 1;
+        }
+        i = (size_t)(end - rhs);
+    }
     return 0;
 }
 
@@ -6429,6 +6761,25 @@ static struct Text *remove_percent(struct Text *in)
             }
             continue;
         }
+        if ((strncmp(in->text + i, "borrow", 6) == 0 &&
+             (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
+             !is_ident((unsigned char)in->text[i + 6])) ||
+            (strncmp(in->text + i, "owned", 5) == 0 &&
+             (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
+             !is_ident((unsigned char)in->text[i + 5])) ||
+            (strncmp(in->text + i, "move", 4) == 0 &&
+             (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
+             !is_ident((unsigned char)in->text[i + 4]))) {
+            size_t n = in->text[i] == 'b' ? 6 : (in->text[i] == 'o' ? 5 : 4);
+            i += n;
+            while (i < in->len && isspace((unsigned char)in->text[i])) {
+                i++;
+            }
+            if (i < in->len) {
+                i--;
+            }
+            continue;
+        }
         if (in->text[i] != '%') {
             text_add_ch(out, in->text[i]);
         }
@@ -6888,11 +7239,14 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     int owned_assign = 0;
     struct Type owned_assign_type;
     char *owned_assign_lhs = NULL;
+    int is_borrowed = 0;
+    char moved_name[NAME_MAX_LEN];
 
     post_free_name[0] = '\0';
     owned_name[0] = '\0';
     func_name[0] = '\0';
     lhs_name[0] = '\0';
+    moved_name[0] = '\0';
     post_free_type = type_unknown();
     owned_assign_type = type_unknown();
     new_type = type_unknown();
@@ -6919,11 +7273,34 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         return remove_percent(strip_attributes(all));
     }
     check_owned_pointer_arithmetic(all->text);
+    if (text_has_word(all->text, "move")) {
+        g_function_returns_move = 1;
+        if (g_current_function_name[0] != '\0' && g_current_function_ret.ptr > 0) {
+            struct Type ret_type = g_current_function_ret;
+            ret_type.owned = 1;
+            owned_func_add_type(g_current_function_name, ret_type);
+        }
+    }
+    remove_moved_locals(all->text);
 
     if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+        is_borrowed = decl_has_borrow(all->text);
         if (decl.has_init) {
             rhs_type = expr_type(decl.init);
-            if (rhs_has_s_string(decl.init)) {
+            if (extract_move_name(decl.init, moved_name)) {
+                if (decl.type.ptr <= 0) {
+                    fprintf(stderr, "c-: type error: move result requires a pointer declaration for '%s'\n", decl.name);
+                    text_free(all);
+                    exit(1);
+                }
+                if (is_borrowed) {
+                    fprintf(stderr, "c-: type error: borrow declaration cannot take ownership with move for '%s'\n", decl.name);
+                    text_free(all);
+                    exit(1);
+                }
+                decl.type.owned = 1;
+                owned_add(decl.name, decl.type);
+            } else if (rhs_has_s_string(decl.init)) {
                 struct Text *out;
                 struct Text *call;
                 if (decl.type.ptr <= 0 || decl.type.kind != TY_CHAR) {
@@ -6931,13 +7308,13 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                     text_free(all);
                     exit(1);
                 }
-                if (decl.type.owned) {
-                    owned_add(decl.name, decl.type);
-                } else {
-                    post_free = 1;
-                    strcpy(post_free_name, decl.name);
-                    post_free_type = decl.type;
+                if (is_borrowed) {
+                    fprintf(stderr, "c-: type error: borrow declaration cannot take ownership of s string for '%s'\n", decl.name);
+                    text_free(all);
+                    exit(1);
                 }
+                decl.type.owned = 1;
+                owned_add(decl.name, decl.type);
                 check_assignment_type(decl.name, decl.type, rhs_type);
                 symbol_add(decl.name, decl.type);
                 out = build_decl_without_initializer(all->text, eq);
@@ -6954,39 +7331,42 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 rhs_type = new_type;
                 if (new_type.ptr > 0) {
                     if (decl.type.ptr <= 0) {
-                        fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: clone result requires a pointer declaration for '%s'\n", decl.name);
                         text_free(all);
                         exit(1);
                     }
-                    if (decl.type.owned) {
-                        owned_add(decl.name, decl.type);
-                    } else {
-                        fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", decl.name);
+                    if (is_borrowed) {
+                        fprintf(stderr, "c-: type error: borrow declaration cannot take ownership of clone result for '%s'\n", decl.name);
                         text_free(all);
                         exit(1);
                     }
+                    decl.type.owned = 1;
+                    owned_add(decl.name, decl.type);
                 }
             } else if (rhs_has_malloc_call(decl.init, func_name) || rhs_has_new_expr(decl.init, &new_type)) {
                 if (decl.type.ptr <= 0) {
                     if (func_name[0] != '\0') {
-                        fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: malloc result requires a pointer declaration for '%s'\n", decl.name);
                     } else {
-                        fprintf(stderr, "c-: type error: new result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: new result requires a pointer declaration for '%s'\n", decl.name);
                     }
                     text_free(all);
                     exit(1);
                 }
-                if (decl.type.owned) {
-                    owned_add(decl.name, decl.type);
-                } else {
+                if (is_borrowed) {
                     if (func_name[0] != '\0') {
-                        fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: borrow declaration cannot take ownership of malloc result for '%s'\n", decl.name);
                     } else {
-                        fprintf(stderr, "c-: type error: new result requires a pointer %% declaration for '%s'\n", decl.name);
+                        fprintf(stderr, "c-: type error: borrow declaration cannot take ownership of new result for '%s'\n", decl.name);
                     }
                     text_free(all);
                     exit(1);
                 }
+                decl.type.owned = 1;
+                owned_add(decl.name, decl.type);
+            } else if (!is_borrowed && decl.type.ptr > 0 && rhs_has_function_call(decl.init)) {
+                decl.type.owned = 1;
+                owned_add(decl.name, decl.type);
             }
             check_assignment_type(decl.name, decl.type, rhs_type);
         }
@@ -7013,7 +7393,30 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         return all;
     }
 
-    if (eq >= 0 && rhs_has_s_string(all->text + eq + 1)) {
+    if (eq >= 0 && extract_move_name(all->text + eq + 1, moved_name)) {
+        if (!extract_lhs_name(all->text, eq, lhs_name)) {
+            fprintf(stderr, "c-: result of move must be assigned to a pointer lvalue\n");
+            text_free(all);
+            exit(1);
+        }
+        lhs = symbol_find(lhs_name);
+        lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
+        if (!type_is_known(lhs_type) || lhs_type.ptr <= 0) {
+            fprintf(stderr, "c-: type error: move result requires a pointer lvalue for '%s'\n", lhs_name);
+            text_free(all);
+            exit(1);
+        }
+        if (lhs != NULL) {
+            int was_owned = lhs->type.owned;
+            lhs->type.owned = 1;
+            strcpy(owned_name, lhs_name);
+            owned_assign = was_owned;
+            owned_assign_type = lhs->type;
+            if (owned_assign) {
+                owned_assign_lhs = slice_lhs_expr(all->text, eq);
+            }
+        }
+    } else if (eq >= 0 && rhs_has_s_string(all->text + eq + 1)) {
         if (!extract_lhs_name(all->text, eq, lhs_name) || !lhs_is_plain_name(all->text, eq, lhs_name)) {
             fprintf(stderr, "c-: type error: s string requires a plain char pointer lvalue\n");
             text_free(all);
@@ -7053,7 +7456,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (extract_owned_decl_name(all->text, owned_name)) {
             lhs = symbol_find(owned_name);
             if (lhs != NULL && lhs->type.ptr <= 0) {
-                fprintf(stderr, "c-: type error: clone result requires a pointer %% declaration for '%s'\n", owned_name);
+                fprintf(stderr, "c-: type error: clone result requires a pointer declaration for '%s'\n", owned_name);
                 text_free(all);
                 exit(1);
             }
@@ -7068,17 +7471,21 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             }
             check_assignment_type(lhs_name, lhs_type, rhs_type);
             if (new_type.ptr > 0) {
-                if (lhs != NULL && lhs->type.owned) {
+                if (lhs != NULL) {
+                    int was_owned = lhs->type.owned;
+                    lhs->type.owned = 1;
                     strcpy(owned_name, lhs_name);
-                    owned_assign = 1;
+                    owned_assign = was_owned;
                     owned_assign_type = lhs->type;
-                    owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                    if (owned_assign) {
+                        owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                    }
                 } else if (lhs_type.owned) {
                     owned_assign = 1;
                     owned_assign_type = lhs_type;
                     owned_assign_lhs = slice_lhs_expr(all->text, eq);
                 } else {
-                    fprintf(stderr, "c-: type error: clone result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                    fprintf(stderr, "c-: type error: clone result requires an owned pointer lvalue for '%s'\n", lhs_name);
                     text_free(all);
                     exit(1);
                 }
@@ -7096,7 +7503,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (extract_owned_decl_name(all->text, owned_name)) {
             lhs = symbol_find(owned_name);
             if (lhs != NULL && lhs->type.ptr <= 0) {
-                fprintf(stderr, "c-: type error: malloc result requires a pointer %% declaration for '%s'\n", owned_name);
+                fprintf(stderr, "c-: type error: malloc result requires a pointer declaration for '%s'\n", owned_name);
                 text_free(all);
                 exit(1);
             }
@@ -7111,29 +7518,33 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 exit(1);
             }
             check_assignment_type(lhs_name, lhs_type, rhs_type);
-            if (lhs != NULL && lhs->type.owned) {
+            if (lhs != NULL) {
+                int was_owned = lhs->type.owned;
+                lhs->type.owned = 1;
                 strcpy(owned_name, lhs_name);
-                owned_assign = 1;
+                owned_assign = was_owned;
                 owned_assign_type = lhs->type;
-                owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                if (owned_assign) {
+                    owned_assign_lhs = slice_lhs_expr(all->text, eq);
+                }
             } else if (lhs_type.owned) {
                 owned_assign = 1;
                 owned_assign_type = lhs_type;
                 owned_assign_lhs = slice_lhs_expr(all->text, eq);
             } else {
                 if (func_name[0] != '\0') {
-                    fprintf(stderr, "c-: type error: malloc result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                    fprintf(stderr, "c-: type error: malloc result requires an owned pointer lvalue for '%s'\n", lhs_name);
                 } else {
-                    fprintf(stderr, "c-: type error: new result requires a pointer %% lvalue for '%s'\n", lhs_name);
+                    fprintf(stderr, "c-: type error: new result requires an owned pointer lvalue for '%s'\n", lhs_name);
                 }
                 text_free(all);
                 exit(1);
             }
         } else {
             if (func_name[0] != '\0') {
-                fprintf(stderr, "c-: result of owned function '%s' must be assigned to a %% pointer declaration\n", func_name);
+                fprintf(stderr, "c-: result of owned function '%s' must be assigned to a pointer declaration\n", func_name);
             } else {
-                fprintf(stderr, "c-: result of new must be assigned to a %% pointer declaration\n");
+                fprintf(stderr, "c-: result of new must be assigned to a pointer declaration\n");
             }
             text_free(all);
             exit(1);
@@ -7191,10 +7602,12 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
         return all;
     }
     check_owned_pointer_arithmetic(all->text);
+    remove_moved_locals(all->text);
     all = rewrite_generics(all);
     all = rewrite_method_calls(all);
     all = rewrite_index_access(all);
     all = rewrite_parameter_calls(all);
+    all = remove_percent(strip_attributes(all));
     if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
         struct Text *out = text_new();
         struct Text *indent = text_new();
@@ -7219,6 +7632,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     struct Node *body_ast = body->ast;
     char name[NAME_MAX_LEN];
     char param[NAME_MAX_LEN];
+    struct Type ret;
 
     if (g_current_payload_enum) {
         if (!parse_payload_enum_head(head->text, param, name)) {
@@ -7306,9 +7720,12 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         return out;
     }
 
-    (void)name;
     register_function_params(head->text);
     register_owned_function_signature(head->text);
+    if (g_function_returns_move && parse_function_signature(head->text, name, &ret) && ret.ptr > 0) {
+        ret.owned = 1;
+        owned_func_add_type(name, ret);
+    }
     head = strip_default_parameters(head);
     head = remove_percent(strip_attributes(head));
     {
@@ -7327,6 +7744,9 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     g_owned.count = 0;
     g_finalized_locals.count = 0;
     g_locals.count = 0;
+    g_function_returns_move = 0;
+    g_current_function_name[0] = '\0';
+    g_current_function_ret = type_unknown();
     g_in_function = 0;
     return out;
 }

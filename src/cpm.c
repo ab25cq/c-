@@ -8,19 +8,17 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Woverlength-strings"
+#endif
+
 #define PATH_MAX_LEN 1024
 #define VALUE_MAX_LEN 512
 #define MAX_SOURCES 128
 
-#if defined(__APPLE__)
-#define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address"
-#define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
-#define LEAK_FALLBACK_TO_VALGRIND 0
-#else
 #define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address,leak"
 #define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
 #define LEAK_FALLBACK_TO_VALGRIND 1
-#endif
 
 struct Manifest {
     char name[VALUE_MAX_LEN];
@@ -29,6 +27,7 @@ struct Manifest {
     char out[PATH_MAX_LEN];
     char compiler[VALUE_MAX_LEN];
     char cflags[VALUE_MAX_LEN];
+    char ldflags[VALUE_MAX_LEN];
 };
 
 struct SourceList {
@@ -108,6 +107,39 @@ static void write_file(const char *path, const char *text)
     if (fclose(fp) != 0) {
         die_errno(path);
     }
+}
+
+static int copy_file_if_exists(const char *src, const char *dst)
+{
+    FILE *in;
+    FILE *out;
+    char buf[4096];
+    size_t n;
+
+    if (src == NULL || src[0] == '\0' || !file_exists(src)) {
+        return 0;
+    }
+    in = fopen(src, "rb");
+    if (in == NULL) {
+        return 0;
+    }
+    out = fopen(dst, "wb");
+    if (out == NULL) {
+        fclose(in);
+        return 0;
+    }
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            fclose(in);
+            fclose(out);
+            return 0;
+        }
+    }
+    fclose(in);
+    if (fclose(out) != 0) {
+        return 0;
+    }
+    return 1;
 }
 
 static void source_list_add(struct SourceList *sources, const char *path)
@@ -278,6 +310,20 @@ static void strip_owned_marker(char *s)
     char *w = s;
 
     while (*s != '\0') {
+        if (starts_word_text(s, "owned")) {
+            s += 5;
+            while (isspace((unsigned char)*s)) {
+                s++;
+            }
+            continue;
+        }
+        if (starts_word_text(s, "borrow")) {
+            s += 6;
+            while (isspace((unsigned char)*s)) {
+                s++;
+            }
+            continue;
+        }
         if (*s != '%') {
             *w++ = *s;
         }
@@ -486,6 +532,7 @@ static void manifest_defaults(struct Manifest *m)
     strcpy(m->src, "src/main.c-");
     strcpy(m->compiler, "cc");
     strcpy(m->cflags, "-std=gnu99 -Wall -Wextra");
+    m->ldflags[0] = '\0';
 }
 
 static void manifest_finish(struct Manifest *m)
@@ -542,6 +589,8 @@ static void read_manifest(struct Manifest *m)
                 unquote_value(m->compiler, sizeof(m->compiler), value);
             } else if (strcmp(section, "build") == 0 && strcmp(key, "cflags") == 0) {
                 unquote_value(m->cflags, sizeof(m->cflags), value);
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "ldflags") == 0) {
+                unquote_value(m->ldflags, sizeof(m->ldflags), value);
             }
         }
     }
@@ -562,7 +611,8 @@ static void write_manifest(const char *name)
              "[build]\n"
              "src = \"src/main.c-\"\n"
              "compiler = \"cc\"\n"
-             "cflags = \"-std=gnu99 -Wall -Wextra\"\n",
+             "cflags = \"-std=gnu99 -Wall -Wextra\"\n"
+             "ldflags = \"\"\n",
              name);
     write_file("C-.toml", text);
 }
@@ -576,7 +626,7 @@ static void write_main_source(void)
                "\n"
                "int main(void)\n"
                "{\n"
-               "    int*% value = new int;\n"
+               "    int* value = new int;\n"
                "    *value = 123;\n"
                "    if (*value == 123) {\n"
                "        puts(\"value 123\");\n"
@@ -587,8 +637,15 @@ static void write_main_source(void)
 
 static void write_stdlib_source(void)
 {
+    const char *stdlib_path;
+
     mkdir_p("lib");
     if (!file_exists("lib/c-.h")) {
+        stdlib_path = getenv("CPM_STDLIB");
+        if (copy_file_if_exists(stdlib_path, "lib/c-.h") ||
+            copy_file_if_exists("/home/ab25cq/c-/lib/c-.h", "lib/c-.h")) {
+            return;
+        }
         write_file("lib/c-.h",
                    "#include <stdlib.h>\n"
                    "#include <stdio.h>\n"
@@ -618,7 +675,7 @@ static void write_stdlib_source(void)
                    "};\n"
                    "\n"
                    "generic<T>\n"
-                   "struct Vec<T>*% Vec_new(void)\n"
+                   "struct Vec<T>* Vec_new(void)\n"
                    "{\n"
                    "    return calloc(1, sizeof(struct Vec<T>));\n"
                    "}\n"
@@ -641,6 +698,62 @@ static void write_stdlib_source(void)
                    "}\n"
                    "\n"
                    "generic<T>\n"
+                   "int Vec_len(struct Vec<T>* self)\n"
+                   "{\n"
+                   "    return self == NULL ? 0 : self->len;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "int Vec_capacity(struct Vec<T>* self)\n"
+                   "{\n"
+                   "    return self == NULL ? 0 : self->cap;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "int Vec_is_empty(struct Vec<T>* self)\n"
+                   "{\n"
+                   "    return self == NULL || self->len == 0;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "void Vec_clear(struct Vec<T>* self)\n"
+                   "{\n"
+                   "    if (self != NULL) {\n"
+                   "        self->len = 0;\n"
+                   "    }\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "int Vec_reserve(struct Vec<T>* self, int cap)\n"
+                   "{\n"
+                   "    T* next;\n"
+                   "\n"
+                   "    if (self == NULL) {\n"
+                   "        return 0;\n"
+                   "    }\n"
+                   "    if (cap <= self->cap) {\n"
+                   "        return 1;\n"
+                   "    }\n"
+                   "    next = realloc(self->data, sizeof(T) * cap);\n"
+                   "    if (next == NULL) {\n"
+                   "        return 0;\n"
+                   "    }\n"
+                   "    self->data = next;\n"
+                   "    self->cap = cap;\n"
+                   "    return 1;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "struct __CMinusIndex<T> Vec_pop_opt(struct Vec<T>* self)\n"
+                   "{\n"
+                   "    if (self == NULL || self->len <= 0) {\n"
+                   "        return new __CMinusIndex<T>.None();\n"
+                   "    }\n"
+                   "    self->len--;\n"
+                   "    return new __CMinusIndex<T>.Some(self->data[self->len]);\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
                    "void Vec_delete(struct Vec<T>* self)\n"
                    "{\n"
                    "    if (self != NULL) {\n"
@@ -652,6 +765,28 @@ static void write_stdlib_source(void)
                    "T Vec_first(struct Vec<T>* self)\n"
                    "{\n"
                    "    return self->data[0];\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "T Vec_last(struct Vec<T>* self)\n"
+                   "{\n"
+                   "    return self->data[self->len - 1];\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "T Vec_get(struct Vec<T>* self, int index)\n"
+                   "{\n"
+                   "    return self->data[index];\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "int Vec_set(struct Vec<T>* self, int index, T value)\n"
+                   "{\n"
+                   "    if (self == NULL || index < 0 || index >= self->len) {\n"
+                   "        return 0;\n"
+                   "    }\n"
+                   "    self->data[index] = value;\n"
+                   "    return 1;\n"
                    "}\n"
                    "\n"
                    "generic<T>\n"
@@ -677,7 +812,7 @@ static void write_stdlib_source(void)
                    "};\n"
                    "\n"
                    "generic<T>\n"
-                   "struct List<T>*% List_new(void)\n"
+                   "struct List<T>* List_new(void)\n"
                    "{\n"
                    "    return calloc(1, sizeof(struct List<T>));\n"
                    "}\n"
@@ -702,6 +837,74 @@ static void write_stdlib_source(void)
                    "}\n"
                    "\n"
                    "generic<T>\n"
+                   "void List_push_front(struct List<T>* self, T value)\n"
+                   "{\n"
+                   "    struct ListNode<T>* node = calloc(1, sizeof(struct ListNode<T>));\n"
+                   "\n"
+                   "    if (node == NULL) {\n"
+                   "        abort();\n"
+                   "    }\n"
+                   "    node->value = value;\n"
+                   "    node->next = self->head;\n"
+                   "    self->head = node;\n"
+                   "    if (self->tail == NULL) {\n"
+                   "        self->tail = node;\n"
+                   "    }\n"
+                   "    self->len++;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "int List_len(struct List<T>* self)\n"
+                   "{\n"
+                   "    return self == NULL ? 0 : self->len;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "int List_is_empty(struct List<T>* self)\n"
+                   "{\n"
+                   "    return self == NULL || self->len == 0;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "void List_clear(struct List<T>* self)\n"
+                   "{\n"
+                   "    struct ListNode<T>* node;\n"
+                   "\n"
+                   "    if (self == NULL) {\n"
+                   "        return;\n"
+                   "    }\n"
+                   "    node = self->head;\n"
+                   "    while (node != NULL) {\n"
+                   "        struct ListNode<T>* next = node->next;\n"
+                   "        free(node);\n"
+                   "        node = next;\n"
+                   "    }\n"
+                   "    self->head = NULL;\n"
+                   "    self->tail = NULL;\n"
+                   "    self->len = 0;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "struct __CMinusIndex<T> List_pop_front_opt(struct List<T>* self)\n"
+                   "{\n"
+                   "    struct ListNode<T>* node;\n"
+                   "    T value;\n"
+                   "\n"
+                   "    if (self == NULL || self->head == NULL) {\n"
+                   "        return new __CMinusIndex<T>.None();\n"
+                   "    }\n"
+                   "    node = self->head;\n"
+                   "    value = node->value;\n"
+                   "    self->head = node->next;\n"
+                   "    if (self->head == NULL) {\n"
+                   "        self->tail = NULL;\n"
+                   "    }\n"
+                   "    self->len--;\n"
+                   "    free(node);\n"
+                   "    return new __CMinusIndex<T>.Some(value);\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
                    "void List_delete(struct List<T>* self)\n"
                    "{\n"
                    "    struct ListNode<T>* node;\n"
@@ -721,6 +924,44 @@ static void write_stdlib_source(void)
                    "T List_first(struct List<T>* self)\n"
                    "{\n"
                    "    return self->head->value;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "T List_last(struct List<T>* self)\n"
+                   "{\n"
+                   "    return self->tail->value;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "T List_get(struct List<T>* self, int index)\n"
+                   "{\n"
+                   "    struct ListNode<T>* node = self->head;\n"
+                   "    int i = 0;\n"
+                   "\n"
+                   "    while (i < index) {\n"
+                   "        node = node->next;\n"
+                   "        i++;\n"
+                   "    }\n"
+                   "    return node->value;\n"
+                   "}\n"
+                   "\n"
+                   "generic<T>\n"
+                   "int List_set(struct List<T>* self, int index, T value)\n"
+                   "{\n"
+                   "    struct ListNode<T>* node;\n"
+                   "    int i;\n"
+                   "\n"
+                   "    if (self == NULL || index < 0 || index >= self->len) {\n"
+                   "        return 0;\n"
+                   "    }\n"
+                   "    node = self->head;\n"
+                   "    i = 0;\n"
+                   "    while (i < index) {\n"
+                   "        node = node->next;\n"
+                   "        i++;\n"
+                   "    }\n"
+                   "    node->value = value;\n"
+                   "    return 1;\n"
                    "}\n"
                    "\n"
                    "generic<T>\n"
@@ -805,7 +1046,7 @@ static int file_has_main_function(const char *path)
     return 0;
 }
 
-static void write_c_with_common_include(const char *dst, const char *src)
+static void write_c_with_common_include(const char *dst, const char *src, int include_common)
 {
     FILE *in = fopen(src, "r");
     FILE *out;
@@ -840,7 +1081,7 @@ static void write_c_with_common_include(const char *dst, const char *src)
                 fputs(line, out);
                 continue;
             }
-            if (!saw_common) {
+            if (include_common && !saw_common) {
                 fputs("#include \"common.h\"\n", out);
             }
             inserted = 1;
@@ -853,7 +1094,7 @@ static void write_c_with_common_include(const char *dst, const char *src)
         die_errno(src);
     }
     if (!inserted) {
-        if (!saw_common) {
+        if (include_common && !saw_common) {
             fputs("#include \"common.h\"\n", out);
         }
     }
@@ -904,7 +1145,7 @@ static int cmd_build_with_flags(const char *extra_cflags)
         if (run_cmd(cmd) != 0) {
             return 1;
         }
-        write_c_with_common_include(c_path, tmp_path);
+        write_c_with_common_include(c_path, tmp_path, sources.count > 1);
         unlink(tmp_path);
     }
     slash = strrchr(m.out, '/');
@@ -929,6 +1170,13 @@ static int cmd_build_with_flags(const char *extra_cflags)
     }
     strcat(cmd, " -o ");
     strcat(cmd, q_out);
+    if (m.ldflags[0] != '\0') {
+        if (strlen(cmd) + strlen(m.ldflags) + 2 >= sizeof(cmd)) {
+            die("cpm: command too long");
+        }
+        strcat(cmd, " ");
+        strcat(cmd, m.ldflags);
+    }
     if (run_cmd(cmd) != 0) {
         return 1;
     }

@@ -13,7 +13,7 @@ void data_show(struct data* self)
 int main(void)
 {
     struct data d;
-    struct data*% p = new struct data;
+    struct data* p = new struct data;
 
     d.show();
     p.show();

@@ -11,11 +11,11 @@ struct Person {
 int main(void)
 {
     string source = s"Alice";
-    struct Person*% person = new struct Person;
+    struct Person* person = new struct Person;
 
     person->name = clone source;
     person->age = 42;
-    struct Person*% copy = clone person;
+    struct Person* copy = clone person;
 
     if (person->name == NULL || copy == NULL || copy->name == NULL) {
         return 1;

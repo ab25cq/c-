@@ -241,6 +241,8 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
             }
 "="         { return emit_token(EQUAL); }
 "%"         { return emit_token(PERCENT); }
+"<"/[A-Za-z_] { return emit_token(LT); }
+">"         { return emit_token(GT); }
 
 [+\-*/!^&|<>?:.~] {
                 return emit_token(OP);

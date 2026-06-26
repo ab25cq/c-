@@ -45,7 +45,7 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 326 "src/parser.y"
+#line 333 "src/parser.y"
 
 struct Text;
 
@@ -74,11 +74,13 @@ struct Text;
     RPAREN = 269,                  /* RPAREN  */
     LBRACKET = 270,                /* LBRACKET  */
     RBRACKET = 271,                /* RBRACKET  */
-    SEMI = 272,                    /* SEMI  */
-    COMMA = 273,                   /* COMMA  */
-    EQUAL = 274,                   /* EQUAL  */
-    PERCENT = 275,                 /* PERCENT  */
-    OTHER = 276                    /* OTHER  */
+    LT = 272,                      /* LT  */
+    GT = 273,                      /* GT  */
+    SEMI = 274,                    /* SEMI  */
+    COMMA = 275,                   /* COMMA  */
+    EQUAL = 276,                   /* EQUAL  */
+    PERCENT = 277,                 /* PERCENT  */
+    OTHER = 278                    /* OTHER  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -87,11 +89,11 @@ struct Text;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 330 "src/parser.y"
+#line 337 "src/parser.y"
 
     struct Text *node;
 
-#line 95 "src/parser.h"
+#line 97 "src/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

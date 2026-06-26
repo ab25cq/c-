@@ -13,9 +13,17 @@ int main(void)
     int item_sum = 0;
     int list_sum = 0;
     struct Vec<int> nums;
+    struct Vec<int> dyn;
+    struct Vec<int*> ptr_vec_force;
     struct Vec<int>* nums_ptr;
     struct Vec<struct Item> item_vec;
-    List<int>*% list = List<int>.new();
+    struct List<int*>* ptr_list_force;
+    struct Map<int,int*>* ptr_map_force;
+    List<int>* list = List<int>.new();
+    struct Map<int,int>* map = Map_new<int,int>();
+    struct OwnedVec<int*>* owned_vec = OwnedVec_new<int*>();
+    struct OwnedList<int*>* owned_list = OwnedList_new<int*>();
+    struct OwnedMap<int,int*>* owned_map = OwnedMap_new<int,int*>();
 
     values[0] = 1;
     values[1] = 2;
@@ -24,6 +32,9 @@ int main(void)
     items[1].value = 5;
     nums.data = values;
     nums.len = 3;
+    ptr_vec_force.len = 0;
+    ptr_list_force = NULL;
+    ptr_map_force = NULL;
     nums_ptr = &nums;
     item_vec.data = items;
     item_vec.len = 2;
@@ -47,10 +58,104 @@ int main(void)
     if (nums_ptr->first() != 1) {
         return 1;
     }
+    if (nums.len() != 3 || nums.is_empty()) {
+        return 1;
+    }
+    dyn.reserve(2);
+    dyn.push(8);
+    dyn.push(9);
+    if (dyn.len() != 2 || dyn.capacity() < 2 || dyn.last() != 9) {
+        dyn.delete();
+        return 1;
+    }
+    if (!dyn.set(0, 10) || dyn.get(0) != 10) {
+        dyn.delete();
+        return 1;
+    }
+    struct __CMinusIndex<int> popped_vec = dyn.pop_opt();
+    if (!popped_vec.is_Some() || popped_vec.get_Some() != 9 || dyn.len() != 1) {
+        dyn.delete();
+        return 1;
+    }
+    dyn.clear();
+    if (!dyn.is_empty()) {
+        dyn.delete();
+        return 1;
+    }
+    dyn.delete();
     if (list.first() != 6) {
         return 1;
     }
     if (list[1] != 7) {
+        return 1;
+    }
+    map.set(100, 200);
+    map.set(101, 201);
+    struct __CMinusIndex<int> map_value = map.get_opt(100);
+    if (!map_value.is_Some() || map_value.get_Some() != 200 || !map.contains(101)) {
+        return 1;
+    }
+    map.remove(100);
+    if (map.contains(100) || map.len() != 1) {
+        return 1;
+    }
+    int* owned_a = new int;
+    int* owned_b = new int;
+    int* owned_c = new int;
+    int* owned_d = new int;
+    int* owned_e = new int;
+    int* owned_f = new int;
+
+    *owned_a = 1;
+    *owned_b = 2;
+    *owned_c = 3;
+    *owned_d = 4;
+    *owned_e = 5;
+    *owned_f = 6;
+    owned_vec.push(move owned_a);
+    if (owned_vec.len() != 1 || *owned_vec.get(0) != 1) {
+        return 1;
+    }
+    owned_vec.set(0, move owned_b);
+    if (*owned_vec.get(0) != 2) {
+        return 1;
+    }
+    owned_vec.clear();
+    if (!owned_vec.is_empty()) {
+        return 1;
+    }
+    owned_list.push(move owned_c);
+    owned_list.push_front(move owned_d);
+    if (owned_list.len() != 2 || *owned_list.get(0) != 4) {
+        return 1;
+    }
+    owned_list.clear();
+    if (!owned_list.is_empty()) {
+        return 1;
+    }
+    owned_map.set(1, move owned_e);
+    owned_map.set(1, move owned_f);
+    struct __CMinusIndex<int*> owned_map_value = owned_map.get_opt(1);
+    if (!owned_map_value.is_Some() || *owned_map_value.get_Some() != 6) {
+        return 1;
+    }
+    owned_map.remove(1);
+    if (owned_map.contains(1)) {
+        return 1;
+    }
+    list.push_front(5);
+    if (list.len() != 3 || list.first() != 5 || list.last() != 7) {
+        return 1;
+    }
+    if (!list.set(1, 66) || list.get(1) != 66) {
+        return 1;
+    }
+    struct __CMinusIndex<int> front = list.pop_front_opt();
+    if (!front.is_Some() || front.get_Some() != 5 || list.len() != 2) {
+        return 1;
+    }
+    list.clear();
+    if (!list.is_empty()) {
         return 1;
     }
     return sum == 6 && item_sum == 9 && list_sum == 13 ? 0 : 1;

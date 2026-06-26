@@ -1,7 +1,7 @@
 #include <stdlib.h>
 
 struct Holder {
-    int*% value;
+    owned int* value;
 };
 
 int main(void)
@@ -10,7 +10,7 @@ int main(void)
     stack.value = new int;
     *stack.value = 10;
 
-    struct Holder*% heap = new struct Holder;
+    struct Holder* heap = new struct Holder;
     heap->value = new int;
     *heap->value = 20;
 

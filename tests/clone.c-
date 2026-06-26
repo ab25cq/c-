@@ -1,15 +1,15 @@
 #include <stdlib.h>
 
 struct Pair {
-    int*% left;
-    int*% right;
+    owned int* left;
+    owned int* right;
 };
 
 int main(void)
 {
-    struct Pair*% p = new struct Pair;
-    int*% left_copy = new int;
-    int*% right_copy = new int;
+    struct Pair* p = new struct Pair;
+    int* left_copy = new int;
+    int* right_copy = new int;
 
     p->left = new int;
     *p->left = 7;
@@ -18,7 +18,7 @@ int main(void)
 
     left_copy = clone p->left;
     right_copy = clone p->right;
-    struct Pair*% q = clone p;
+    struct Pair* q = clone p;
 
     if (left_copy == NULL || right_copy == NULL || q == NULL) {
         return 1;

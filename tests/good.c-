@@ -2,7 +2,7 @@
 
 int main(void)
 {
-    int*% a = new int;
+    int* a = new int;
     *a = 123;
     return 0;
 }
