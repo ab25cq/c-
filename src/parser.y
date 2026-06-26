@@ -4749,6 +4749,23 @@ static struct Text *rewrite_index_access(struct Text *in)
         const char *close;
         struct Text *replacement;
 
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                if (*p == quote) {
+                    text_add_ch(out, *p++);
+                    break;
+                }
+                text_add_ch(out, *p++);
+            }
+            continue;
+        }
         if (!is_ident_start((unsigned char)*p)) {
             text_add_ch(out, *p++);
             continue;

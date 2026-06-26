@@ -1,0 +1,17 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <c-.h>
+
+int main(void)
+{
+    struct Vec<int> nums;
+
+    nums.push(10);
+    nums.push(20);
+
+    /* The "a[0]" and 'x[1]' inside these literals must not be rewritten. */
+    printf("a[0] x[1] = %d\n", nums[1]);
+    printf("%c\n", 'a');
+
+    return 0;
+}

@@ -164,6 +164,12 @@ grep 'OwnedVec_delete_int_ptr(a);' tests/owned_vec_delete.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra -Werror tests/owned_vec_delete.out.c -o tests/owned_vec_delete.out
 test "$(./tests/owned_vec_delete.out)" = "1"
 
+./c- tests/index_string_literal.c- > tests/index_string_literal.out.c
+grep 'printf("a\[0\] x\[1\] = %d' tests/index_string_literal.out.c >/dev/null
+grep 'Vec_get_opt_int(&nums, 1)' tests/index_string_literal.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra -Werror tests/index_string_literal.out.c -o tests/index_string_literal.out
+test "$(./tests/index_string_literal.out)" = "$(printf 'a[0] x[1] = 20\na')"
+
 ./c- tests/index_panic.c- > tests/index_panic.out.c
 cc -std=gnu99 -Wall -Wextra tests/index_panic.out.c -o tests/index_panic.out
 if ./tests/index_panic.out > tests/index_panic.out.log 2> tests/index_panic.err; then
