@@ -1,0 +1,11 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <c-.h>
+
+int main(void)
+{
+    OwnedVec<int*>* a = OwnedVec<int*>.new();
+    
+    a.push(new int);
+    return 0;
+}
