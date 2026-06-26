@@ -4485,6 +4485,17 @@ static int is_execinfo_include(const char *line)
     return strncmp(p, "<execinfo.h>", 12) == 0;
 }
 
+static int is_cbare_include(const char *line)
+{
+    const char *p = skip_ws(line);
+
+    if (strncmp(p, "#include", 8) != 0) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    return strncmp(p, "<c-bare.h>", 10) == 0;
+}
+
 static FILE *open_cminus_include(const char *include_path)
 {
     const char *lib = getenv("C_MINUS_LIB");
@@ -4559,6 +4570,16 @@ static struct Text *process_pp_line(struct Text *line)
     }
     if (is_execinfo_include(line->text)) {
         g_need_execinfo_h = 1;
+        out = text_new();
+        text_free(line);
+        return out;
+    }
+    /*
+     * <c-bare.h> is the freestanding runtime. It is inlined by -bare, so an
+     * explicit include is redundant; drop it either way so it never leaks into
+     * the output as an unresolved system include.
+     */
+    if (is_cbare_include(line->text)) {
         out = text_new();
         text_free(line);
         return out;

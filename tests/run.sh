@@ -111,6 +111,7 @@ CPM_BARE="$ROOT/lib/c-bare.h" ./cpm new /tmp/cpm-bare-smoke
 printf '\nbare = true\n' >> /tmp/cpm-bare-smoke/C-.toml
 cat > /tmp/cpm-bare-smoke/src/main.c- <<'SRC'
 #include <c-.h>
+#include <c-bare.h>
 
 int main(void)
 {
