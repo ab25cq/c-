@@ -18,7 +18,16 @@
 
 #define CPM_GC_SECTIONS_FLAGS "-ffunction-sections -fdata-sections -Wl,--gc-sections"
 #define CPM_SIZE_OPT_FLAGS "-Os"
-#define CPM_BARE_FLAGS "-ffreestanding -nostdlib -fno-builtin"
+/*
+ * Freestanding link plus size-minimizing layout: drop unwind tables, the
+ * build-id note, RELRO, and the page gap between code and data segments, and
+ * fix the entry to _start. -ffreestanding/-fno-builtin stay for correctness
+ * (without them the compiler may rewrite our variadic printf and miscompile
+ * it). These only shrink the file; they do not change behaviour.
+ */
+#define CPM_BARE_FLAGS "-ffreestanding -nostdlib -fno-builtin -fno-stack-protector " \
+    "-fno-asynchronous-unwind-tables -fno-ident -no-pie -Wl,-e,_start " \
+    "-Wl,--build-id=none -Wl,-z,noseparate-code -Wl,-z,norelro"
 #define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address,leak"
 #define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
 #define LEAK_FALLBACK_TO_VALGRIND 1
@@ -32,6 +41,7 @@ struct Manifest {
     char cflags[VALUE_MAX_LEN];
     char ldflags[VALUE_MAX_LEN];
     int bare;
+    int strip;
 };
 
 struct SourceList {
@@ -599,6 +609,10 @@ static void read_manifest(struct Manifest *m)
                 char unquoted[VALUE_MAX_LEN];
                 unquote_value(unquoted, sizeof(unquoted), value);
                 m->bare = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "strip") == 0) {
+                char unquoted[VALUE_MAX_LEN];
+                unquote_value(unquoted, sizeof(unquoted), value);
+                m->strip = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
             }
         }
     }
@@ -1257,6 +1271,17 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
     }
     if (run_cmd(cmd) != 0) {
         return 1;
+    }
+    /*
+     * Strip symbols and non-allocated sections when asked. Only for optimized
+     * builds: val/leak need the symbols for their diagnostics.
+     */
+    if (m.strip && optimize) {
+        char strip_cmd[PATH_MAX_LEN * 3];
+        snprintf(strip_cmd, sizeof(strip_cmd), "strip -s %s", q_out);
+        if (run_cmd(strip_cmd) != 0) {
+            return 1;
+        }
     }
     printf("built %s\n", m.out);
     return 0;

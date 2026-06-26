@@ -56,6 +56,91 @@ __attribute__((weak)) FILE __cminus_bare_stderr = { 2 };
 #endif
 
 /* ----------------------------------------------------------------------- */
+/* Linux syscall primitives                                                */
+/* ----------------------------------------------------------------------- */
+
+/*
+ * On a hosted Linux target, write/exit syscalls let the runtime provide a
+ * default putchar/_start (see the bottom of this file) and a one-call puts,
+ * with no board code. Defining CMINUS_BARE_HAVE_SYSCALLS also tells puts below
+ * to emit the whole line in a single write instead of a putchar loop. Real
+ * freestanding targets (no __linux__/known arch) get none of this and supply
+ * their own putchar.
+ */
+#if defined(__linux__)
+#if defined(__x86_64__)
+static __attribute__((unused)) long cminus_bare_sys_write(long fd, const void* buf, unsigned long n)
+{
+    long ret;
+    __asm__ volatile("syscall" : "=a"(ret)
+                     : "a"(1L), "D"(fd), "S"(buf), "d"(n)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+static __attribute__((unused)) void cminus_bare_sys_exit(long code)
+{
+    __asm__ volatile("syscall" : : "a"(60L), "D"(code) : "memory");
+    __builtin_unreachable();
+}
+#define CMINUS_BARE_HAVE_SYSCALLS 1
+#elif defined(__aarch64__)
+static __attribute__((unused)) long cminus_bare_sys_write(long fd, const void* buf, unsigned long n)
+{
+    register long x0 __asm__("x0") = fd;
+    register long x1 __asm__("x1") = (long)buf;
+    register long x2 __asm__("x2") = (long)n;
+    register long x8 __asm__("x8") = 64;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
+    return x0;
+}
+static __attribute__((unused)) void cminus_bare_sys_exit(long code)
+{
+    register long x0 __asm__("x0") = code;
+    register long x8 __asm__("x8") = 93;
+    __asm__ volatile("svc #0" : : "r"(x0), "r"(x8) : "memory");
+    __builtin_unreachable();
+}
+#define CMINUS_BARE_HAVE_SYSCALLS 1
+#elif defined(__riscv) && (__riscv_xlen == 64)
+static __attribute__((unused)) long cminus_bare_sys_write(long fd, const void* buf, unsigned long n)
+{
+    register long a0 __asm__("a0") = fd;
+    register long a1 __asm__("a1") = (long)buf;
+    register long a2 __asm__("a2") = (long)n;
+    register long a7 __asm__("a7") = 64;
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a7) : "memory");
+    return a0;
+}
+static __attribute__((unused)) void cminus_bare_sys_exit(long code)
+{
+    register long a0 __asm__("a0") = code;
+    register long a7 __asm__("a7") = 93;
+    __asm__ volatile("ecall" : : "r"(a0), "r"(a7) : "memory");
+    __builtin_unreachable();
+}
+#define CMINUS_BARE_HAVE_SYSCALLS 1
+#elif defined(__arm__)
+static __attribute__((unused)) long cminus_bare_sys_write(long fd, const void* buf, unsigned long n)
+{
+    register long r0 __asm__("r0") = fd;
+    register long r1 __asm__("r1") = (long)buf;
+    register long r2 __asm__("r2") = (long)n;
+    register long r7 __asm__("r7") = 4;
+    __asm__ volatile("svc #0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(r7) : "memory");
+    return r0;
+}
+static __attribute__((unused)) void cminus_bare_sys_exit(long code)
+{
+    register long r0 __asm__("r0") = code;
+    register long r7 __asm__("r7") = 1;
+    __asm__ volatile("svc #0" : : "r"(r0), "r"(r7) : "memory");
+    __builtin_unreachable();
+}
+#define CMINUS_BARE_HAVE_SYSCALLS 1
+#endif
+#endif /* __linux__ */
+
+/* ----------------------------------------------------------------------- */
 /* memory                                                                  */
 /* ----------------------------------------------------------------------- */
 
@@ -451,10 +536,20 @@ CMINUS_BARE_API int fprintf(FILE* stream, const char* fmt, ...)
 
 CMINUS_BARE_API int puts(const char* s)
 {
+#if defined(CMINUS_BARE_HAVE_SYSCALLS)
+    /* One write for the body, one for the newline: small and few syscalls. */
+    const char* p = s;
+    while (*p != '\0') {
+        p++;
+    }
+    cminus_bare_sys_write(1, s, (unsigned long)(p - s));
+    cminus_bare_sys_write(1, "\n", 1);
+#else
     while (*s != '\0') {
         putchar((int)(unsigned char)*s++);
     }
     putchar('\n');
+#endif
     return 0;
 }
 
@@ -539,78 +634,6 @@ CMINUS_BARE_API void exit(int status)
  * Real freestanding targets (e.g. arm-none-eabi) do not define __linux__, so
  * nothing is emitted here and the board provides putchar and startup itself.
  */
-#if defined(__linux__)
-
-#if defined(__x86_64__)
-static __attribute__((unused)) long cminus_bare_sys_write(long fd, const void* buf, unsigned long n)
-{
-    long ret;
-    __asm__ volatile("syscall" : "=a"(ret)
-                     : "a"(1L), "D"(fd), "S"(buf), "d"(n)
-                     : "rcx", "r11", "memory");
-    return ret;
-}
-static __attribute__((unused)) void cminus_bare_sys_exit(long code)
-{
-    __asm__ volatile("syscall" : : "a"(60L), "D"(code) : "memory");
-    __builtin_unreachable();
-}
-#define CMINUS_BARE_HAVE_SYSCALLS 1
-#elif defined(__aarch64__)
-static __attribute__((unused)) long cminus_bare_sys_write(long fd, const void* buf, unsigned long n)
-{
-    register long x0 __asm__("x0") = fd;
-    register long x1 __asm__("x1") = (long)buf;
-    register long x2 __asm__("x2") = (long)n;
-    register long x8 __asm__("x8") = 64;
-    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
-    return x0;
-}
-static __attribute__((unused)) void cminus_bare_sys_exit(long code)
-{
-    register long x0 __asm__("x0") = code;
-    register long x8 __asm__("x8") = 93;
-    __asm__ volatile("svc #0" : : "r"(x0), "r"(x8) : "memory");
-    __builtin_unreachable();
-}
-#define CMINUS_BARE_HAVE_SYSCALLS 1
-#elif defined(__riscv) && (__riscv_xlen == 64)
-static __attribute__((unused)) long cminus_bare_sys_write(long fd, const void* buf, unsigned long n)
-{
-    register long a0 __asm__("a0") = fd;
-    register long a1 __asm__("a1") = (long)buf;
-    register long a2 __asm__("a2") = (long)n;
-    register long a7 __asm__("a7") = 64;
-    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a7) : "memory");
-    return a0;
-}
-static __attribute__((unused)) void cminus_bare_sys_exit(long code)
-{
-    register long a0 __asm__("a0") = code;
-    register long a7 __asm__("a7") = 93;
-    __asm__ volatile("ecall" : : "r"(a0), "r"(a7) : "memory");
-    __builtin_unreachable();
-}
-#define CMINUS_BARE_HAVE_SYSCALLS 1
-#elif defined(__arm__)
-static __attribute__((unused)) long cminus_bare_sys_write(long fd, const void* buf, unsigned long n)
-{
-    register long r0 __asm__("r0") = fd;
-    register long r1 __asm__("r1") = (long)buf;
-    register long r2 __asm__("r2") = (long)n;
-    register long r7 __asm__("r7") = 4;
-    __asm__ volatile("svc #0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(r7) : "memory");
-    return r0;
-}
-static __attribute__((unused)) void cminus_bare_sys_exit(long code)
-{
-    register long r0 __asm__("r0") = code;
-    register long r7 __asm__("r7") = 1;
-    __asm__ volatile("svc #0" : : "r"(r0), "r"(r7) : "memory");
-    __builtin_unreachable();
-}
-#define CMINUS_BARE_HAVE_SYSCALLS 1
-#endif
 
 #if defined(CMINUS_BARE_HAVE_SYSCALLS)
 
@@ -633,7 +656,6 @@ __attribute__((weak)) void _start(void)
 
 #endif /* CMINUS_BARE_HAVE_SYSCALLS */
 
-#endif /* __linux__ */
 
 #endif /* CMINUS_BARE_H */
 struct __CMinusIndex_int{

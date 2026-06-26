@@ -201,14 +201,22 @@ bare = true
 ```
 
 With `bare = true`, `cpm build` passes `-bare` to `c-` for every source and
-links with `-ffreestanding -nostdlib -fno-builtin` (on top of the default
-`-Os` and section garbage collection). On Linux this is all you need — the
-runtime's default `putchar`/`_start` make the project build and run as-is. For
-a real microcontroller, set `compiler`, extra `cflags` (MCU flags), and
-`ldflags` (linker script, startup object) for your target, and provide the
-board's `putchar` (and startup) as ordinary source files under `src/` — for
-example a `src/board.c-`. The `cminus_panic` definition is still emitted once
-across all translation units.
+links freestanding with a size-minimizing layout: `-ffreestanding -nostdlib
+-fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fno-ident
+-no-pie`, plus linker options that drop the build-id note and RELRO and merge
+the code/data segments (`-Wl,-z,noseparate-code`), on top of the default `-Os`
+and section garbage collection. On Linux this is all you need — the runtime's
+default `putchar`/`_start` make the project build and run as-is. For a real
+microcontroller, set `compiler`, extra `cflags` (MCU flags), and `ldflags`
+(linker script, startup object) for your target, and provide the board's
+`putchar` (and startup) as ordinary source files under `src/` — for example a
+`src/board.c-`. The `cminus_panic` definition is still emitted once across all
+translation units.
+
+Add `strip = true` to `[build]` to strip the binary after linking (skipped for
+`cpm val`/`cpm leak`, which need the symbols). With `compiler = "clang"`,
+`strip = true`, and a `puts` hello-world, the resulting executable is around
+600 bytes with no libc dependency.
 
 Heap is a fixed static buffer; override its size with
 `-DCMINUS_BARE_HEAP_SIZE=<bytes>`. `free` is a no-op (bump allocator).
