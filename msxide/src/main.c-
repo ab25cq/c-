@@ -5,7 +5,8 @@
 #include <string.h>
 
 #define MEM_SIZE 65536
-#define LOG_LINES 12
+#define LOG_LINES 24
+#define BASIC_LINES 128
 
 struct Z80 {
     unsigned char a;
@@ -16,6 +17,8 @@ struct Z80 {
     unsigned char e;
     unsigned char h;
     unsigned char l;
+    unsigned short ix;
+    unsigned short iy;
     unsigned short pc;
     unsigned short sp;
     unsigned long cycles;
@@ -33,6 +36,15 @@ struct MSX {
     int show_help;
     char log[LOG_LINES][96];
     int log_head;
+    int log_count;
+    char input[96];
+    int input_len;
+    int input_cursor;
+    int cursor_log;
+    int basic_line_no[BASIC_LINES];
+    char basic_line[BASIC_LINES][96];
+    int basic_count;
+    int basic_stop;
 };
 
 static unsigned short pair_hl(struct Z80* cpu)
@@ -46,6 +58,20 @@ static void set_hl(struct Z80* cpu, unsigned short value)
     cpu->l = (unsigned char)(value & 255);
 }
 
+static unsigned short get_index(struct Z80* cpu, int use_iy)
+{
+    return use_iy ? cpu->iy : cpu->ix;
+}
+
+static void set_index(struct Z80* cpu, int use_iy, unsigned short value)
+{
+    if (use_iy) {
+        cpu->iy = value;
+    } else {
+        cpu->ix = value;
+    }
+}
+
 static void log_msg(struct MSX* msx, const char* text)
 {
     strncpy(msx->log[msx->log_head], text, 95);
@@ -54,6 +80,488 @@ static void log_msg(struct MSX* msx, const char* text)
     if (msx->log_head >= LOG_LINES) {
         msx->log_head = 0;
     }
+    msx->log[msx->log_head][0] = '\0';
+    if (msx->log_count < LOG_LINES) {
+        msx->log_count++;
+    }
+    msx->cursor_log = msx->log_head;
+    msx->input_cursor = (int)strlen(msx->log[msx->cursor_log]);
+}
+
+static void console_putc(struct MSX* msx, unsigned char value)
+{
+    size_t len;
+
+    if (value == '\r') {
+        return;
+    }
+    if (value == '\n') {
+        msx->log_head++;
+        if (msx->log_head >= LOG_LINES) {
+            msx->log_head = 0;
+        }
+        msx->log[msx->log_head][0] = '\0';
+        if (msx->log_count < LOG_LINES) {
+            msx->log_count++;
+        }
+        msx->cursor_log = msx->log_head;
+        msx->input_cursor = 0;
+        return;
+    }
+    len = strlen(msx->log[msx->log_head]);
+    if (len < 95) {
+        msx->log[msx->log_head][len] = (char)value;
+        msx->log[msx->log_head][len + 1] = '\0';
+        msx->cursor_log = msx->log_head;
+        msx->input_cursor = (int)(len + 1);
+    }
+}
+
+static void clear_input(struct MSX* msx)
+{
+    msx->input_len = 0;
+    msx->input_cursor = 0;
+    msx->input[0] = '\0';
+    msx->cursor_log = msx->log_head;
+}
+
+static void sync_input_from_cursor_line(struct MSX* msx)
+{
+    strncpy(msx->input, msx->log[msx->cursor_log], 95);
+    msx->input[95] = '\0';
+    msx->input_len = (int)strlen(msx->input);
+    if (msx->input_cursor > msx->input_len) {
+        msx->input_cursor = msx->input_len;
+    }
+}
+
+static void update_cursor_line_from_input(struct MSX* msx)
+{
+    strncpy(msx->log[msx->cursor_log], msx->input, 95);
+    msx->log[msx->cursor_log][95] = '\0';
+}
+
+static void append_blank_line(struct MSX* msx)
+{
+    msx->log_head++;
+    if (msx->log_head >= LOG_LINES) {
+        msx->log_head = 0;
+    }
+    msx->log[msx->log_head][0] = '\0';
+    if (msx->log_count < LOG_LINES) {
+        msx->log_count++;
+    }
+    msx->cursor_log = msx->log_head;
+    msx->input_len = 0;
+    msx->input_cursor = 0;
+    msx->input[0] = '\0';
+}
+
+static const char* skip_spaces(const char* s)
+{
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    return s;
+}
+
+static void trim_line(char* text)
+{
+    int len = (int)strlen(text);
+    while (len > 0 && (text[len - 1] == ' ' || text[len - 1] == '\t')) {
+        len--;
+    }
+    text[len] = '\0';
+}
+
+static int starts_ci(const char* s, const char* word)
+{
+    while (*word != '\0') {
+        char a = *s;
+        char b = *word;
+        if (a >= 'a' && a <= 'z') {
+            a = (char)(a - 'a' + 'A');
+        }
+        if (b >= 'a' && b <= 'z') {
+            b = (char)(b - 'a' + 'A');
+        }
+        if (a != b) {
+            return 0;
+        }
+        s++;
+        word++;
+    }
+    return 1;
+}
+
+static int is_digit_char(char ch)
+{
+    return ch >= '0' && ch <= '9';
+}
+
+static const char* parse_line_number(const char* s, int* number)
+{
+    int value = 0;
+    int found = 0;
+
+    s = skip_spaces(s);
+    while (is_digit_char(*s)) {
+        value = value * 10 + (*s - '0');
+        found = 1;
+        s++;
+    }
+    if (!found) {
+        return NULL;
+    }
+    *number = value;
+    return skip_spaces(s);
+}
+
+static int basic_find_line(struct MSX* msx, int number)
+{
+    int i = 0;
+    while (i < msx->basic_count) {
+        if (msx->basic_line_no[i] == number) {
+            return i;
+        }
+        i++;
+    }
+    return -1;
+}
+
+static int basic_insert_pos(struct MSX* msx, int number)
+{
+    int i = 0;
+    while (i < msx->basic_count && msx->basic_line_no[i] < number) {
+        i++;
+    }
+    return i;
+}
+
+static void basic_print_text(struct MSX* msx, const char* s);
+
+static void basic_delete_line(struct MSX* msx, int index)
+{
+    int i = index;
+    while (i + 1 < msx->basic_count) {
+        msx->basic_line_no[i] = msx->basic_line_no[i + 1];
+        strncpy(msx->basic_line[i], msx->basic_line[i + 1], 95);
+        msx->basic_line[i][95] = '\0';
+        i++;
+    }
+    if (msx->basic_count > 0) {
+        msx->basic_count--;
+    }
+}
+
+static void basic_store_line(struct MSX* msx, int number, const char* body)
+{
+    int index = basic_find_line(msx, number);
+    int pos;
+    int i;
+
+    if (*body == '\0') {
+        if (index >= 0) {
+            basic_delete_line(msx, index);
+        }
+        clear_input(msx);
+        return;
+    }
+    if (index >= 0) {
+        strncpy(msx->basic_line[index], body, 95);
+        msx->basic_line[index][95] = '\0';
+        clear_input(msx);
+        return;
+    }
+    if (msx->basic_count >= BASIC_LINES) {
+        basic_print_text(msx, "OUT OF MEMORY");
+        clear_input(msx);
+        return;
+    }
+    pos = basic_insert_pos(msx, number);
+    i = msx->basic_count;
+    while (i > pos) {
+        msx->basic_line_no[i] = msx->basic_line_no[i - 1];
+        strncpy(msx->basic_line[i], msx->basic_line[i - 1], 95);
+        msx->basic_line[i][95] = '\0';
+        i--;
+    }
+    msx->basic_line_no[pos] = number;
+    strncpy(msx->basic_line[pos], body, 95);
+    msx->basic_line[pos][95] = '\0';
+    msx->basic_count++;
+    clear_input(msx);
+}
+
+static void basic_print_text(struct MSX* msx, const char* s)
+{
+    while (*s != '\0') {
+        console_putc(msx, (unsigned char)*s);
+        s++;
+    }
+    console_putc(msx, '\n');
+}
+
+static void basic_execute_statement(struct MSX* msx, const char* line);
+
+static void basic_run_program(struct MSX* msx)
+{
+    int i = 0;
+    msx->basic_stop = 0;
+    while (i < msx->basic_count && !msx->basic_stop) {
+        char line[96];
+        strncpy(line, msx->basic_line[i], sizeof(line) - 1);
+        line[sizeof(line) - 1] = '\0';
+        trim_line(line);
+        basic_execute_statement(msx, line);
+        i++;
+    }
+    msx->basic_stop = 0;
+    clear_input(msx);
+}
+
+static void basic_list_program(struct MSX* msx)
+{
+    int i = 0;
+    while (i < msx->basic_count) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%d %s", msx->basic_line_no[i], msx->basic_line[i]);
+        basic_print_text(msx, buf);
+        i++;
+    }
+    clear_input(msx);
+}
+
+static void basic_execute_statement(struct MSX* msx, const char* line)
+{
+    borrow const char* p = skip_spaces(line);
+
+    if (*p == '\0') {
+        clear_input(msx);
+        return;
+    }
+    if (starts_ci(p, "CLS")) {
+        memset(msx->log, 0, sizeof(msx->log));
+        msx->log_head = 0;
+        msx->log_count = 1;
+        msx->cursor_log = 0;
+        clear_input(msx);
+        return;
+    }
+    if (starts_ci(p, "RUN")) {
+        basic_run_program(msx);
+        return;
+    }
+    if (starts_ci(p, "LIST")) {
+        basic_list_program(msx);
+        return;
+    }
+    if (starts_ci(p, "NEW")) {
+        msx->basic_count = 0;
+        clear_input(msx);
+        return;
+    }
+    if (starts_ci(p, "END") || starts_ci(p, "STOP")) {
+        msx->basic_stop = 1;
+        clear_input(msx);
+        return;
+    }
+    if (starts_ci(p, "PRINT")) {
+        p = skip_spaces(p + 5);
+        if (*p == '"') {
+            p++;
+            while (*p != '\0' && *p != '"') {
+                console_putc(msx, (unsigned char)*p);
+                p++;
+            }
+            console_putc(msx, '\n');
+        } else {
+            basic_print_text(msx, p);
+        }
+        clear_input(msx);
+        return;
+    }
+    basic_print_text(msx, "SYNTAX ERROR");
+    clear_input(msx);
+}
+
+static void basic_execute(struct MSX* msx, const char* line)
+{
+    int number = 0;
+    char body[96];
+    borrow const char* p = parse_line_number(line, &number);
+
+    if (p != NULL) {
+        strncpy(body, p, sizeof(body) - 1);
+        body[sizeof(body) - 1] = '\0';
+        trim_line(body);
+        basic_store_line(msx, number, body);
+        return;
+    }
+    basic_execute_statement(msx, line);
+}
+
+static void input_backspace(struct MSX* msx)
+{
+    sync_input_from_cursor_line(msx);
+    if (msx->input_cursor > 0) {
+        int i = msx->input_cursor - 1;
+        while (i < msx->input_len) {
+            msx->input[i] = msx->input[i + 1];
+            i++;
+        }
+        msx->input_len--;
+        msx->input_cursor--;
+        update_cursor_line_from_input(msx);
+    }
+}
+
+static void input_char(struct MSX* msx, int ch)
+{
+    sync_input_from_cursor_line(msx);
+    if (msx->input_len < 92 && ch >= 32 && ch < 127) {
+        int i = msx->input_len;
+        while (i > msx->input_cursor) {
+            msx->input[i] = msx->input[i - 1];
+            i--;
+        }
+        msx->input[msx->input_cursor] = (char)ch;
+        msx->input_len++;
+        msx->input_cursor++;
+        msx->input[msx->input_len] = '\0';
+        update_cursor_line_from_input(msx);
+    }
+}
+
+static void input_delete(struct MSX* msx)
+{
+    sync_input_from_cursor_line(msx);
+    if (msx->input_cursor < msx->input_len) {
+        int i = msx->input_cursor;
+        while (i < msx->input_len) {
+            msx->input[i] = msx->input[i + 1];
+            i++;
+        }
+        msx->input_len--;
+        update_cursor_line_from_input(msx);
+    }
+}
+
+static void input_left(struct MSX* msx)
+{
+    if (msx->input_cursor > 0) {
+        msx->input_cursor--;
+    }
+}
+
+static void input_right(struct MSX* msx)
+{
+    sync_input_from_cursor_line(msx);
+    if (msx->input_cursor < msx->input_len) {
+        msx->input_cursor++;
+    } else if (msx->input_len < 92) {
+        msx->input[msx->input_len] = ' ';
+        msx->input_len++;
+        msx->input_cursor++;
+        msx->input[msx->input_len] = '\0';
+        update_cursor_line_from_input(msx);
+    }
+}
+
+static void input_home(struct MSX* msx)
+{
+    msx->input_cursor = 0;
+}
+
+static void input_end(struct MSX* msx)
+{
+    sync_input_from_cursor_line(msx);
+    msx->input_cursor = msx->input_len;
+}
+
+static int first_visible_log(struct MSX* msx, int visible)
+{
+    int display_count = msx->log_count;
+    int start;
+
+    if (display_count > visible) {
+        display_count = visible;
+    }
+    start = msx->log_head - display_count + 1;
+    while (start < 0) {
+        start += LOG_LINES;
+    }
+    return start;
+}
+
+static int cursor_visible_row(struct MSX* msx, int visible)
+{
+    int display_count = msx->log_count;
+    int start;
+    int i = 0;
+
+    if (display_count > visible) {
+        display_count = visible;
+    }
+    start = first_visible_log(msx, visible);
+    while (i < display_count) {
+        if (((start + i) % LOG_LINES) == msx->cursor_log) {
+            return i;
+        }
+        i++;
+    }
+    return display_count - 1;
+}
+
+static void input_up(struct MSX* msx)
+{
+    int visible = LINES;
+    int row;
+    int start;
+
+    if (visible > LOG_LINES) {
+        visible = LOG_LINES;
+    }
+    row = cursor_visible_row(msx, visible);
+    if (row > 0) {
+        start = first_visible_log(msx, visible);
+        msx->cursor_log = (start + row - 1) % LOG_LINES;
+        sync_input_from_cursor_line(msx);
+    }
+}
+
+static void input_down(struct MSX* msx)
+{
+    int visible = LINES;
+    int display_count = msx->log_count;
+    int row;
+    int start;
+
+    if (visible > LOG_LINES) {
+        visible = LOG_LINES;
+    }
+    if (display_count > visible) {
+        display_count = visible;
+    }
+    row = cursor_visible_row(msx, visible);
+    if (row + 1 < display_count) {
+        start = first_visible_log(msx, visible);
+        msx->cursor_log = (start + row + 1) % LOG_LINES;
+        sync_input_from_cursor_line(msx);
+    } else {
+        append_blank_line(msx);
+    }
+}
+
+static void input_enter(struct MSX* msx)
+{
+    char line[96];
+    sync_input_from_cursor_line(msx);
+    strncpy(line, msx->input, sizeof(line) - 1);
+    line[sizeof(line) - 1] = '\0';
+    trim_line(line);
+    console_putc(msx, '\n');
+    basic_execute(msx, line);
 }
 
 static unsigned char mem_read(struct MSX* msx, unsigned short addr)
@@ -377,6 +885,8 @@ static void io_write(struct MSX* msx, unsigned char port, unsigned char value)
         msx->vdp_addr++;
     } else if (port == 0x99) {
         msx->vdp_addr = ((unsigned short)value << 8) | (msx->vdp_addr & 255);
+    } else if (port == 0x2f) {
+        console_putc(msx, value);
     }
 }
 
@@ -384,7 +894,7 @@ static void z80_reset(struct MSX* msx)
 {
     memset(&msx->cpu, 0, sizeof(msx->cpu));
     msx->cpu.sp = 0xf380;
-    msx->running = 0;
+    msx->running = 1;
 }
 
 static int load_rom_at(struct MSX* msx, const char* path, unsigned short base, int max_size)
@@ -408,6 +918,7 @@ static int load_rom_at(struct MSX* msx, const char* path, unsigned short base, i
 static void msx_init(struct MSX* msx)
 {
     memset(msx, 0, sizeof(*msx));
+    msx->log_count = 1;
     z80_reset(msx);
     log_msg(msx, "MSX IDE ready");
     if (!load_rom_at(msx, "roms/msx.rom", 0x0000, 0x8000)) {
@@ -535,6 +1046,288 @@ static void z80_ed_step(struct MSX* msx)
         snprintf(buf, sizeof(buf), "unimplemented ED opcode %02X at %04X", op, (cpu->pc - 2) & 0xffff);
         log_msg(msx, buf);
         cpu->halted = 1;
+    }
+}
+
+static unsigned char read_index_r8(struct MSX* msx, int r, unsigned short addr)
+{
+    struct Z80* cpu = &msx->cpu;
+    if (r == 0) {
+        return cpu->b;
+    }
+    if (r == 1) {
+        return cpu->c;
+    }
+    if (r == 2) {
+        return cpu->d;
+    }
+    if (r == 3) {
+        return cpu->e;
+    }
+    if (r == 6) {
+        return mem_read(msx, addr);
+    }
+    return cpu->a;
+}
+
+static void write_index_r8(struct MSX* msx, int r, unsigned short addr, unsigned char value)
+{
+    struct Z80* cpu = &msx->cpu;
+    if (r == 0) {
+        cpu->b = value;
+    } else if (r == 1) {
+        cpu->c = value;
+    } else if (r == 2) {
+        cpu->d = value;
+    } else if (r == 3) {
+        cpu->e = value;
+    } else if (r == 6) {
+        mem_write(msx, addr, value);
+    } else if (r == 7) {
+        cpu->a = value;
+    }
+}
+
+static void z80_index_cb_step(struct MSX* msx, int use_iy)
+{
+    struct Z80* cpu = &msx->cpu;
+    signed char disp = (signed char)fetch8(msx);
+    unsigned char op = fetch8(msx);
+    int group = (int)(op >> 6);
+    int y = (int)((op >> 3) & 7);
+    int r = (int)(op & 7);
+    unsigned short addr = (unsigned short)(get_index(cpu, use_iy) + disp);
+    unsigned char v = mem_read(msx, addr);
+    unsigned char out = v;
+
+    if (group == 0) {
+        if (y == 0) {
+            out = (unsigned char)((v << 1) | (v >> 7));
+            cpu->f = (v >> 7) & F_C;
+        } else if (y == 1) {
+            out = (unsigned char)((v >> 1) | (v << 7));
+            cpu->f = v & F_C;
+        } else if (y == 2) {
+            out = (unsigned char)((v << 1) | ((cpu->f & F_C) != 0));
+            cpu->f = (v >> 7) & F_C;
+        } else if (y == 3) {
+            out = (unsigned char)((v >> 1) | (((cpu->f & F_C) != 0) << 7));
+            cpu->f = v & F_C;
+        } else if (y == 4) {
+            out = (unsigned char)(v << 1);
+            cpu->f = (v >> 7) & F_C;
+        } else if (y == 5) {
+            out = (unsigned char)((v >> 1) | (v & 0x80));
+            cpu->f = v & F_C;
+        } else if (y == 7) {
+            out = (unsigned char)(v >> 1);
+            cpu->f = v & F_C;
+        }
+        mem_write(msx, addr, out);
+        if (r != 6) {
+            write_index_r8(msx, r, addr, out);
+        }
+        set_szp_flags(cpu, out);
+    } else if (group == 1) {
+        unsigned char keep_c = cpu->f & F_C;
+        cpu->f = keep_c | F_H;
+        if ((v & (1 << y)) == 0) {
+            cpu->f |= F_Z | F_PV;
+        }
+        if (y == 7 && (v & 0x80) != 0) {
+            cpu->f |= F_S;
+        }
+    } else if (group == 2) {
+        out = (unsigned char)(v & ~(1 << y));
+        mem_write(msx, addr, out);
+        if (r != 6) {
+            write_index_r8(msx, r, addr, out);
+        }
+    } else {
+        out = (unsigned char)(v | (1 << y));
+        mem_write(msx, addr, out);
+        if (r != 6) {
+            write_index_r8(msx, r, addr, out);
+        }
+    }
+    cpu->cycles += 23;
+}
+
+static void z80_index_step(struct MSX* msx, int use_iy)
+{
+    struct Z80* cpu = &msx->cpu;
+    unsigned char op = fetch8(msx);
+    unsigned short idx = get_index(cpu, use_iy);
+    unsigned short nn;
+    unsigned short addr;
+    unsigned char n;
+    int r;
+    int rp;
+
+    if ((op & 0xc7) == 0x04 && (((op >> 3) & 7) == 6)) {
+        signed char disp = (signed char)fetch8(msx);
+        addr = (unsigned short)(idx + disp);
+        mem_write(msx, addr, inc8(cpu, mem_read(msx, addr)));
+        cpu->cycles += 23;
+        return;
+    }
+    if ((op & 0xc7) == 0x05 && (((op >> 3) & 7) == 6)) {
+        signed char disp = (signed char)fetch8(msx);
+        addr = (unsigned short)(idx + disp);
+        mem_write(msx, addr, dec8(cpu, mem_read(msx, addr)));
+        cpu->cycles += 23;
+        return;
+    }
+    if ((op & 0xc7) == 0x06 && (((op >> 3) & 7) == 6)) {
+        signed char disp = (signed char)fetch8(msx);
+        n = fetch8(msx);
+        mem_write(msx, (unsigned short)(idx + disp), n);
+        cpu->cycles += 19;
+        return;
+    }
+    if (op >= 0x40 && op <= 0x7f && op != 0x76) {
+        int dst = (int)((op >> 3) & 7);
+        int src = (int)(op & 7);
+        if (dst == 6 || src == 6) {
+            signed char disp = (signed char)fetch8(msx);
+            addr = (unsigned short)(idx + disp);
+            write_index_r8(msx, dst, addr, read_index_r8(msx, src, addr));
+            cpu->cycles += 19;
+            return;
+        }
+    }
+    if (op >= 0x80 && op <= 0xbf && (op & 7) == 6) {
+        int alu = (int)((op >> 3) & 7);
+        signed char disp = (signed char)fetch8(msx);
+        n = mem_read(msx, (unsigned short)(idx + disp));
+        if (alu == 0) {
+            add_a(cpu, n, 0);
+        } else if (alu == 1) {
+            add_a(cpu, n, 1);
+        } else if (alu == 2) {
+            sub_a(cpu, n, 0, 1);
+        } else if (alu == 3) {
+            sub_a(cpu, n, 1, 1);
+        } else if (alu == 7) {
+            sub_a(cpu, n, 0, 0);
+        } else {
+            logic_a(cpu, n, alu);
+        }
+        cpu->cycles += 19;
+        return;
+    }
+
+    switch (op) {
+    case 0x09:
+    case 0x19:
+    case 0x29:
+    case 0x39:
+        {
+            unsigned int sum;
+            rp = (op >> 4) & 3;
+            nn = (unsigned short)(rp == 2 ? idx : get_rp(cpu, rp));
+            sum = (unsigned int)idx + nn;
+            cpu->f &= F_S | F_Z | F_PV;
+            if ((sum & 0x10000) != 0) {
+                cpu->f |= F_C;
+            }
+            set_index(cpu, use_iy, (unsigned short)sum);
+            cpu->cycles += 15;
+        }
+        break;
+    case 0x21:
+        set_index(cpu, use_iy, fetch16(msx));
+        cpu->cycles += 14;
+        break;
+    case 0x22:
+        nn = fetch16(msx);
+        idx = get_index(cpu, use_iy);
+        mem_write(msx, nn, (unsigned char)(idx & 255));
+        mem_write(msx, nn + 1, (unsigned char)(idx >> 8));
+        cpu->cycles += 20;
+        break;
+    case 0x23:
+        set_index(cpu, use_iy, idx + 1);
+        cpu->cycles += 10;
+        break;
+    case 0x2a:
+        nn = fetch16(msx);
+        set_index(cpu, use_iy, mem_read(msx, nn) | ((unsigned short)mem_read(msx, nn + 1) << 8));
+        cpu->cycles += 20;
+        break;
+    case 0x2b:
+        set_index(cpu, use_iy, idx - 1);
+        cpu->cycles += 10;
+        break;
+    case 0x34:
+    case 0x35:
+    case 0x36:
+        cpu->pc--;
+        z80_index_step(msx, use_iy);
+        break;
+    case 0x46:
+    case 0x4e:
+    case 0x56:
+    case 0x5e:
+    case 0x66:
+    case 0x6e:
+    case 0x70:
+    case 0x71:
+    case 0x72:
+    case 0x73:
+    case 0x74:
+    case 0x75:
+    case 0x77:
+    case 0x7e:
+        cpu->pc--;
+        z80_index_step(msx, use_iy);
+        break;
+    case 0x86:
+    case 0x8e:
+    case 0x96:
+    case 0x9e:
+    case 0xa6:
+    case 0xae:
+    case 0xb6:
+    case 0xbe:
+        cpu->pc--;
+        z80_index_step(msx, use_iy);
+        break;
+    case 0xcb:
+        z80_index_cb_step(msx, use_iy);
+        break;
+    case 0xe1:
+        set_index(cpu, use_iy, pop16(msx));
+        cpu->cycles += 14;
+        break;
+    case 0xe3:
+        nn = (unsigned short)(mem_read(msx, cpu->sp) | ((unsigned short)mem_read(msx, cpu->sp + 1) << 8));
+        idx = get_index(cpu, use_iy);
+        mem_write(msx, cpu->sp, (unsigned char)(idx & 255));
+        mem_write(msx, cpu->sp + 1, (unsigned char)(idx >> 8));
+        set_index(cpu, use_iy, nn);
+        cpu->cycles += 23;
+        break;
+    case 0xe5:
+        push16(msx, idx);
+        cpu->cycles += 15;
+        break;
+    case 0xe9:
+        cpu->pc = idx;
+        cpu->cycles += 8;
+        break;
+    case 0xf9:
+        cpu->sp = idx;
+        cpu->cycles += 10;
+        break;
+    default:
+        {
+            char buf[96];
+            snprintf(buf, sizeof(buf), "unimplemented %s opcode %02X at %04X", use_iy ? "FD" : "DD", op, (cpu->pc - 2) & 0xffff);
+            log_msg(msx, buf);
+            cpu->halted = 1;
+        }
+        break;
     }
 }
 
@@ -881,6 +1674,9 @@ static void z80_step(struct MSX* msx)
     case 0xcb:
         z80_cb_step(msx);
         break;
+    case 0xdd:
+        z80_index_step(msx, 0);
+        break;
     case 0xd3:
         n = fetch8(msx);
         io_write(msx, n, cpu->a);
@@ -913,6 +1709,9 @@ static void z80_step(struct MSX* msx)
     case 0xed:
         z80_ed_step(msx);
         break;
+    case 0xfd:
+        z80_index_step(msx, 1);
+        break;
     case 0xf3:
     case 0xfb:
         cpu->cycles += 4;
@@ -932,133 +1731,83 @@ static void z80_step(struct MSX* msx)
     }
 }
 
-static const char* op_name(unsigned char op)
+static void draw_fill(int y, int x, int h, int w, int pair)
 {
-    if (op == 0x00) {
-        return "NOP";
+    int row = 0;
+    int col;
+
+    if (pair > 0) {
+        attron(COLOR_PAIR(pair));
     }
-    if (op == 0x01) {
-        return "LD BC,nn";
+    while (row < h) {
+        col = 0;
+        while (col < w) {
+            mvaddch(y + row, x + col, ' ');
+            col++;
+        }
+        row++;
     }
-    if (op == 0x06) {
-        return "LD B,n";
+    if (pair > 0) {
+        attroff(COLOR_PAIR(pair));
     }
-    if (op == 0x0e) {
-        return "LD C,n";
+}
+
+static void draw_msx_screen(struct MSX* msx, int top, int left, int height, int width)
+{
+    int i;
+    int usable_h = height;
+    int usable_w = width - 2;
+    int visible;
+    int display_count;
+    int start = 0;
+    int line_y;
+    int cursor_x;
+    int cursor_y;
+
+    draw_fill(top, left, height, width, 1);
+    visible = usable_h;
+    if (visible > LOG_LINES) {
+        visible = LOG_LINES;
     }
-    if (op == 0x11) {
-        return "LD DE,nn";
+    display_count = msx->log_count;
+    if (display_count > visible) {
+        display_count = visible;
     }
-    if (op == 0x21) {
-        return "LD HL,nn";
+    start = msx->log_head - display_count + 1;
+    while (start < 0) {
+        start += LOG_LINES;
     }
-    if (op == 0x31) {
-        return "LD SP,nn";
+    i = 0;
+    while (i < display_count) {
+        int index = (start + i) % LOG_LINES;
+        line_y = top + i;
+        attron(COLOR_PAIR(1) | A_BOLD);
+        mvprintw(line_y, left + 1, "%-*.*s", usable_w, usable_w, msx->log[index]);
+        attroff(COLOR_PAIR(1) | A_BOLD);
+        i++;
     }
-    if (op == 0x32) {
-        return "LD (nn),A";
+    cursor_y = top + cursor_visible_row(msx, visible);
+    if (cursor_y < top) {
+        cursor_y = top;
     }
-    if (op == 0x3a) {
-        return "LD A,(nn)";
+    if (cursor_y >= top + height) {
+        cursor_y = top + height - 1;
     }
-    if (op == 0x3e) {
-        return "LD A,n";
+    cursor_x = left + 1 + msx->input_cursor;
+    if (cursor_x >= left + width - 1) {
+        cursor_x = left + width - 2;
     }
-    if (op == 0x76) {
-        return "HALT";
+    if (cursor_x < left + 1) {
+        cursor_x = left + 1;
     }
-    if (op == 0x77) {
-        return "LD (HL),A";
-    }
-    if (op == 0x7e) {
-        return "LD A,(HL)";
-    }
-    if (op == 0xaf) {
-        return "XOR A";
-    }
-    if (op == 0xc3) {
-        return "JP nn";
-    }
-    if (op == 0xc9) {
-        return "RET";
-    }
-    if (op == 0xcd) {
-        return "CALL nn";
-    }
-    if (op == 0xd3) {
-        return "OUT (n),A";
-    }
-    if (op == 0xdb) {
-        return "IN A,(n)";
-    }
-    if (op == 0xf3) {
-        return "DI";
-    }
-    if (op == 0xfb) {
-        return "EI";
-    }
-    if (op == 0xfe) {
-        return "CP n";
-    }
-    return "?";
+    wmove(stdscr, cursor_y, cursor_x);
 }
 
 static void draw_panel(struct MSX* msx)
 {
-    int row;
-    int i;
     erase();
-    mvprintw(0, 0, "c- MSX/Z80 IDE  q quit  s step  r run  p pause  R reset  h help");
-    mvprintw(2, 0, "PC:%04X SP:%04X AF:%02X%02X BC:%02X%02X DE:%02X%02X HL:%02X%02X cycles:%lu %s",
-             msx->cpu.pc, msx->cpu.sp, msx->cpu.a, msx->cpu.f, msx->cpu.b, msx->cpu.c,
-             msx->cpu.d, msx->cpu.e, msx->cpu.h, msx->cpu.l, msx->cpu.cycles,
-             msx->cpu.halted ? "HALT" : (msx->running ? "RUN" : "STOP"));
-    mvprintw(4, 0, "Disassembly");
-    row = 5;
-    {
-        unsigned short pc = msx->cpu.pc;
-        i = 0;
-        while (i < 12) {
-            unsigned char op = mem_read(msx, pc);
-            mvprintw(row + i, 0, "%04X: %02X  %-12s", pc, op, op_name(op));
-            pc++;
-            if (op == 0x01 || op == 0x11 || op == 0x21 || op == 0x31 || op == 0x32 ||
-                op == 0x3a || op == 0xc3 || op == 0xcd) {
-                pc += 2;
-            } else if (op == 0x06 || op == 0x0e || op == 0x16 || op == 0x1e ||
-                       op == 0x26 || op == 0x2e || op == 0x3e || op == 0xd3 ||
-                       op == 0xdb || op == 0xe6 || op == 0xfe) {
-                pc++;
-            }
-            i++;
-        }
-    }
-    mvprintw(4, 32, "Memory around PC");
-    i = 0;
-    while (i < 12) {
-        unsigned short addr = (msx->cpu.pc + i * 8) & 0xffff;
-        mvprintw(5 + i, 32, "%04X: %02X %02X %02X %02X %02X %02X %02X %02X",
-                 addr, mem_read(msx, addr), mem_read(msx, addr + 1), mem_read(msx, addr + 2),
-                 mem_read(msx, addr + 3), mem_read(msx, addr + 4), mem_read(msx, addr + 5),
-                 mem_read(msx, addr + 6), mem_read(msx, addr + 7));
-        i++;
-    }
-    mvprintw(18, 0, "Log");
-    i = 0;
-    while (i < LOG_LINES) {
-        int index = (msx->log_head + i) % LOG_LINES;
-        mvprintw(19 + i, 0, "%s", msx->log[index]);
-        i++;
-    }
-    if (msx->show_help) {
-        mvprintw(5, 62, "ROM files:");
-        mvprintw(6, 62, "roms/msx.rom");
-        mvprintw(7, 62, "roms/basic.rom");
-        mvprintw(9, 62, "This is an early MSX shell:");
-        mvprintw(10, 62, "Z80 core + IDE + ROM loader.");
-        mvprintw(11, 62, "Full MSX-BASIC boot needs");
-        mvprintw(12, 62, "more Z80 ops and VDP/PSG/PPI.");
-    }
+    bkgd(COLOR_PAIR(3));
+    draw_msx_screen(msx, 0, 0, LINES, COLS);
     refresh();
 }
 
@@ -1142,8 +1891,168 @@ static int self_test(void)
         fprintf(stderr, "self-test failed: cb-set\n");
         return 1;
     }
+
+    memset(&msx, 0, sizeof(msx));
+    z80_reset(&msx);
+    msx.mem[0] = 0xdd;
+    msx.mem[1] = 0x21;
+    msx.mem[2] = 0x00;
+    msx.mem[3] = 0xc1;
+    msx.mem[4] = 0xdd;
+    msx.mem[5] = 0x36;
+    msx.mem[6] = 0x05;
+    msx.mem[7] = 0x44;
+    msx.mem[8] = 0xdd;
+    msx.mem[9] = 0x7e;
+    msx.mem[10] = 0x05;
+    msx.mem[11] = 0x32;
+    msx.mem[12] = 0x03;
+    msx.mem[13] = 0xc0;
+    msx.mem[14] = 0x76;
+    if (!run_until_halt(&msx, 128) || msx.mem[0xc105] != 0x44 || msx.mem[0xc003] != 0x44) {
+        fprintf(stderr, "self-test failed: ix-index\n");
+        return 1;
+    }
+
+    memset(&msx, 0, sizeof(msx));
+    z80_reset(&msx);
+    msx.mem[0] = 0xfd;
+    msx.mem[1] = 0x21;
+    msx.mem[2] = 0x00;
+    msx.mem[3] = 0xc2;
+    msx.mem[4] = 0xfd;
+    msx.mem[5] = 0x36;
+    msx.mem[6] = 0xfe;
+    msx.mem[7] = 0x01;
+    msx.mem[8] = 0xfd;
+    msx.mem[9] = 0xcb;
+    msx.mem[10] = 0xfe;
+    msx.mem[11] = 0xf6;
+    msx.mem[12] = 0xfd;
+    msx.mem[13] = 0x7e;
+    msx.mem[14] = 0xfe;
+    msx.mem[15] = 0x32;
+    msx.mem[16] = 0x04;
+    msx.mem[17] = 0xc0;
+    msx.mem[18] = 0x76;
+    if (!run_until_halt(&msx, 128) || msx.mem[0xc1fe] != 0x41 || msx.mem[0xc004] != 0x41) {
+        fprintf(stderr, "self-test failed: iy-cb-index\n");
+        return 1;
+    }
     puts("self-test ok");
     return 0;
+}
+
+static int rom_test(void)
+{
+    struct MSX msx;
+    int i;
+
+    msx_init(&msx);
+    if (!run_until_halt(&msx, 4096)) {
+        fprintf(stderr, "rom-test failed: ROM did not halt\n");
+        return 1;
+    }
+    i = 0;
+    while (i < LOG_LINES) {
+        if (strstr(msx.log[i], "C- BASIC") != NULL) {
+            puts("rom-test ok");
+            return 0;
+        }
+        i++;
+    }
+    fprintf(stderr, "rom-test failed: C- BASIC banner not found\n");
+    return 1;
+}
+
+static int basic_test(void)
+{
+    struct MSX msx;
+    int i;
+
+    msx_init(&msx);
+    run_until_halt(&msx, 4096);
+    strncpy(msx.input, "PRINT \"HELLO\"", sizeof(msx.input) - 1);
+    msx.input[sizeof(msx.input) - 1] = '\0';
+    msx.input_len = (int)strlen(msx.input);
+    msx.input_cursor = msx.input_len;
+    msx.cursor_log = msx.log_head;
+    strncpy(msx.log[msx.cursor_log], msx.input, sizeof(msx.log[msx.cursor_log]) - 1);
+    msx.log[msx.cursor_log][sizeof(msx.log[msx.cursor_log]) - 1] = '\0';
+    input_enter(&msx);
+
+    i = 0;
+    while (i < LOG_LINES) {
+        if (strstr(msx.log[i], "HELLO") != NULL) {
+            puts("basic-test ok");
+            return 0;
+        }
+        i++;
+    }
+    fprintf(stderr, "basic-test failed: PRINT output not found\n");
+    return 1;
+}
+
+static int program_test(void)
+{
+    struct MSX msx;
+    int found_one = 0;
+    int found_two = 0;
+    int i;
+
+    msx_init(&msx);
+    run_until_halt(&msx, 4096);
+    basic_execute(&msx, "20 PRINT \"TWO\"");
+    basic_execute(&msx, "10 PRINT \"ONE\"");
+    basic_execute(&msx, "RUN");
+
+    i = 0;
+    while (i < LOG_LINES) {
+        if (strstr(msx.log[i], "ONE") != NULL) {
+            found_one = 1;
+        }
+        if (strstr(msx.log[i], "TWO") != NULL) {
+            found_two = 1;
+        }
+        i++;
+    }
+    if (found_one && found_two) {
+        puts("program-test ok");
+        return 0;
+    }
+    fprintf(stderr, "program-test failed: RUN output not found\n");
+    return 1;
+}
+
+static int list_test(void)
+{
+    struct MSX msx;
+    int found_ten = 0;
+    int found_twenty = 0;
+    int i;
+
+    msx_init(&msx);
+    run_until_halt(&msx, 4096);
+    basic_execute(&msx, "20 PRINT \"TWO\"");
+    basic_execute(&msx, "10 PRINT \"ONE\"");
+    basic_execute(&msx, "LIST");
+
+    i = 0;
+    while (i < LOG_LINES) {
+        if (strstr(msx.log[i], "10 PRINT \"ONE\"") != NULL) {
+            found_ten = 1;
+        }
+        if (strstr(msx.log[i], "20 PRINT \"TWO\"") != NULL) {
+            found_twenty = 1;
+        }
+        i++;
+    }
+    if (found_ten && found_twenty) {
+        puts("list-test ok");
+        return 0;
+    }
+    fprintf(stderr, "list-test failed: LIST output not found\n");
+    return 1;
 }
 
 int main(int argc, char** argv)
@@ -1154,37 +2063,77 @@ int main(int argc, char** argv)
     if (argc > 1 && strcmp(argv[1], "--self-test") == 0) {
         return self_test();
     }
+    if (argc > 1 && strcmp(argv[1], "--rom-test") == 0) {
+        return rom_test();
+    }
+    if (argc > 1 && strcmp(argv[1], "--basic-test") == 0) {
+        return basic_test();
+    }
+    if (argc > 1 && strcmp(argv[1], "--program-test") == 0) {
+        return program_test();
+    }
+    if (argc > 1 && strcmp(argv[1], "--list-test") == 0) {
+        return list_test();
+    }
     setlocale(LC_ALL, "");
     msx_init(&msx);
     initscr();
+    if (has_colors()) {
+        start_color();
+        use_default_colors();
+        init_pair(1, COLOR_WHITE, COLOR_BLUE);
+        init_pair(2, COLOR_YELLOW, COLOR_BLUE);
+        init_pair(3, COLOR_GREEN, COLOR_BLACK);
+        init_pair(4, COLOR_CYAN, COLOR_BLACK);
+        init_pair(5, COLOR_BLACK, COLOR_CYAN);
+    }
     cbreak();
     noecho();
     keypad(stdscr, 1);
     nodelay(stdscr, 1);
-    curs_set(0);
-    msx.show_help = 1;
+    curs_set(1);
+    msx.show_help = 0;
     for (;;) {
-        ch = getch();
-        if (ch == 'q') {
-            break;
-        } else if (ch == 's') {
-            z80_step(&msx);
-        } else if (ch == 'r') {
-            msx.running = 1;
-        } else if (ch == 'p') {
-            msx.running = 0;
-        } else if (ch == 'R') {
-            z80_reset(&msx);
-            log_msg(&msx, "reset");
-        } else if (ch == 'h') {
-            msx.show_help = !msx.show_help;
-        }
         if (msx.running) {
             int i = 0;
             while (i < 2000 && !msx.cpu.halted) {
                 z80_step(&msx);
                 i++;
             }
+        }
+        ch = getch();
+        if (ch == 27) {
+            break;
+        } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+            input_backspace(&msx);
+        } else if (ch == KEY_DC) {
+            input_delete(&msx);
+        } else if (ch == KEY_LEFT) {
+            input_left(&msx);
+        } else if (ch == KEY_RIGHT) {
+            input_right(&msx);
+        } else if (ch == KEY_UP) {
+            input_up(&msx);
+        } else if (ch == KEY_DOWN) {
+            input_down(&msx);
+        } else if (ch == KEY_HOME) {
+            input_home(&msx);
+        } else if (ch == KEY_END) {
+            input_end(&msx);
+        } else if (ch == '\n' || ch == '\r') {
+            input_enter(&msx);
+        } else if (ch == KEY_F(5)) {
+            msx.running = 1;
+        } else if (ch == KEY_F(6)) {
+            msx.running = 0;
+        } else if (ch == KEY_F(12)) {
+            z80_reset(&msx);
+            memset(msx.log, 0, sizeof(msx.log));
+            msx.log_head = 0;
+            msx.log_count = 1;
+            clear_input(&msx);
+        } else if (ch != ERR) {
+            input_char(&msx, ch);
         }
         draw_panel(&msx);
         napms(16);
