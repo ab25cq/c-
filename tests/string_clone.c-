@@ -4,13 +4,13 @@
 #include <string.h>
 
 struct Person {
-    string name;
+    owned char* name;
     int age;
 };
 
 int main(void)
 {
-    string source = s"Alice";
+    owned char* source = s"Alice";
     struct Person* person = new struct Person;
 
     person->name = clone source;

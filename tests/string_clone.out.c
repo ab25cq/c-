@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <execinfo.h>
-typedef char* string;
 
 void cminus_panic(const char* message, const char* file, int line)
 {
@@ -21,7 +20,7 @@ void cminus_panic(const char* message, const char* file, int line)
     abort();
 }
 struct Person {
-    string name;
+    char* name;
     int age;
 };
 
@@ -54,7 +53,7 @@ static __attribute__((unused)) struct Person* Person_clone(struct Person* self)
 
 int main(void)
 {
-    string source;
+    char* source;
     asprintf(&source, "Alice");
     struct Person* person = calloc(1, sizeof(struct Person));    void* __owned_old2 = person->name;
 

@@ -316,7 +316,7 @@ struct Person* person = new Person { name: strdup("aaa"), age: 48 };
 ```
 
 This is lowered to a `calloc(1, sizeof(struct Person))` temporary followed by
-field assignments. Owned fields such as `string name` are released by the
+field assignments. Owned fields such as `owned char* name` are released by the
 generated `Person_finalize` when `person` leaves scope.
 
 Pointer arithmetic on owned pointers is rejected, including `+`, `-`, `++`,
@@ -532,8 +532,7 @@ struct Pair pair = {0};
 memset(&pair, 0, sizeof(pair));
 ```
 
-Struct fields may use owned field types such as `string`, or the `owned`
-keyword for raw heap fields. Generated finalizers release owned fields when
+Struct fields should use the `owned` keyword for heap fields. Generated finalizers release owned fields when
 the struct value or owning struct pointer leaves scope.
 
 ```c
@@ -564,22 +563,15 @@ When a local struct value reaches the function exit, or when an owned struct
 pointer is released, the generated code calls the finalizer before the
 existing `free` operation.
 
-`string` is a built-in owned string alias. The output C receives a single
-plain C definition:
-
-```c
-typedef char* string;
-```
-
-Inside structs, `string` fields are treated like owned heap fields. The
-generated finalizer frees the field, and the generated `StructName_clone`
-function returns an owned `struct StructName*` allocated with `calloc`.
-String fields are deep-copied with `calloc(strlen(src) + 1, sizeof(char))`
-and `strncpy`, rather than copying the pointer:
+Owned `char*` fields are treated like owned heap fields. The generated
+finalizer frees the field, and the generated `StructName_clone` function
+returns an owned `struct StructName*` allocated with `calloc`. Owned `char*`
+fields are deep-copied with `calloc(strlen(src) + 1, sizeof(char))` and
+`strncpy`, rather than copying the pointer:
 
 ```c
 struct Person {
-    string name;
+    owned char* name;
     int age;
 };
 ```
@@ -596,6 +588,8 @@ if (self->name != NULL) {
     strncpy(copy->name, self->name, strlen(self->name) + 1);
 }
 ```
+
+The old built-in `string` alias has been removed. Use `owned char*` directly.
 
 Heap strings use the `s"..."` syntax. They must be assigned to a `char*`
 lvalue. For example:

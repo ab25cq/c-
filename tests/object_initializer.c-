@@ -1,10 +1,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-typedef char* string;
-
 struct Person {
-    string name;
+    owned char* name;
     int age;
 };
 

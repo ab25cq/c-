@@ -2,20 +2,14 @@
 #include <stdlib.h>
 #include <c-.h>
 
-struct data {
-    owned int* str;
-};
-
-struct data2 {
-    owned struct data* xxx;
-};
-
 int main(void)
 {
-    struct data2 d;
+    struct OwnedList<int*>* li = OwnedList<int*>.new();
     
-    d.xxx = new struct data;
-    d.xxx->str = new int;
+    int* n = new int;
+    
+    li.push(move n);
+    li.push(move n);
     
     return 0;
 }

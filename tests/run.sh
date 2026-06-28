@@ -275,7 +275,6 @@ cc -std=gnu99 -Wall -Wextra tests/clone.out.c -o tests/clone.out
 ./tests/clone.out
 
 ./c- tests/string_clone.c- > tests/string_clone.out.c
-grep 'typedef char\* string;' tests/string_clone.out.c >/dev/null
 grep 'free(self->name);' tests/string_clone.out.c >/dev/null
 grep 'struct Person\* Person_clone(struct Person\* self)' tests/string_clone.out.c >/dev/null
 grep 'strncpy(copy->name, self->name, strlen(self->name) + 1);' tests/string_clone.out.c >/dev/null
@@ -284,7 +283,10 @@ cc -std=gnu99 -Wall -Wextra tests/string_clone.out.c -o tests/string_clone.out
 ./tests/string_clone.out
 
 ./c- tests/string_typedef.c- > tests/string_typedef.out.c
-test "$(grep -c 'typedef char\* string;' tests/string_typedef.out.c)" = "1"
+if grep 'typedef char\* string;' tests/string_typedef.out.c >/dev/null; then
+    echo "string typedef unexpectedly emitted" >&2
+    exit 1
+fi
 grep 'free(self->name);' tests/string_typedef.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/string_typedef.out.c -o tests/string_typedef.out
 ./tests/string_typedef.out

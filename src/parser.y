@@ -237,7 +237,6 @@ static char g_current_struct_tag[NAME_MAX_LEN];
 static int g_right_value_id;
 static int g_need_string_h;
 static int g_need_stdlib_h;
-static int g_need_string_typedef;
 static int g_current_generic_kind;
 static int g_current_payload_enum;
 static int g_foreach_id;
@@ -1901,13 +1900,6 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
             *type = type_make(TY_STRUCT, 0, inst->concrete);
             return 1;
         }
-        if (strcmp(word, "string") == 0) {
-            *base_end = next;
-            *type = type_make(TY_CHAR, 1, NULL);
-            type->owned = 1;
-            g_need_string_typedef = 1;
-            return 1;
-        }
         kind = keyword_type(word);
         if (kind == TY_UNKNOWN) {
             return 0;
@@ -2094,20 +2086,6 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     }
     decl->is_decl = 1;
     return 1;
-}
-
-static int is_string_typedef_decl(const char *s)
-{
-    struct DeclInfo decl;
-    const char *p = skip_ws(s);
-
-    if (!starts_word(p, "typedef")) {
-        return 0;
-    }
-    if (!parse_decl(s, &decl)) {
-        return 0;
-    }
-    return strcmp(decl.name, "string") == 0;
 }
 
 static int extract_lhs_name(const char *s, int eq, char *name)
@@ -5945,12 +5923,6 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
         register_owned_function_signature(all->text);
         register_malloc_attribute_function(all->text);
     }
-    if (is_string_typedef_decl(all->text)) {
-        struct Text *out = text_new();
-        g_need_string_typedef = 1;
-        text_free(all);
-        return out;
-    }
     if (!is_func_sig && parse_decl(all->text, &info) && info.name[0] != '\0' && !info.is_function) {
         symbol_add_to(&g_globals, info.name, info.type);
     }
@@ -6927,7 +6899,6 @@ int main(int argc, char **argv)
     g_need_stdlib_h = 0;
     g_need_stdio_h = 0;
     g_need_execinfo_h = 0;
-    g_need_string_typedef = 0;
     {
         const char *emit_uniq = getenv("C_MINUS_EMIT_UNIQ");
         g_emit_uniq = emit_uniq == NULL || strcmp(emit_uniq, "0") != 0;
@@ -6982,9 +6953,6 @@ int main(int argc, char **argv)
             if (g_need_execinfo_h) {
                 fputs("#include <execinfo.h>\n", stdout);
             }
-        }
-        if (g_need_string_typedef) {
-            fputs("typedef char* string;\n", stdout);
         }
         close_generic_instances();
         emit_payload_enum_instances(stdout);

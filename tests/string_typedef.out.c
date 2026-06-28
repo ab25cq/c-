@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <execinfo.h>
-typedef char* string;
 
 void cminus_panic(const char* message, const char* file, int line)
 {
@@ -18,9 +17,8 @@ void cminus_panic(const char* message, const char* file, int line)
     backtrace_symbols_fd(frames, count, 2);
     abort();
 }
-
 struct Person {
-    string name;
+    char* name;
     int age;
 };
 
