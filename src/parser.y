@@ -291,9 +291,12 @@ static void owned_func_add_type(const char *name, struct Type ret);
 static void append_indent_from(const char *s, struct Text *out);
 static void append_leading_newlines(const char *s, struct Text *out);
 static int rhs_has_malloc_call(const char *rhs, char *func_name);
+static int rhs_is_single_owned_return_call(const char *rhs);
+static struct Text *rewrite_owned_return_rvalues(struct Text *in, const char *original);
 static int rhs_has_function_call(const char *rhs);
 static int rhs_has_new_expr(const char *rhs, struct Type *type);
 static int rhs_has_clone_expr(const char *rhs, struct Type *type);
+static struct Type expr_type(const char *s);
 static int decl_has_borrow(const char *s);
 static int extract_move_name(const char *s, char *name);
 static void remove_moved_locals(const char *s);
@@ -328,6 +331,7 @@ static const char *generic_template_body_start(const char *head, char *param);
 static void append_struct_clone_name(struct Text *out, const char *tag);
 static void append_struct_clone_definition(struct Text *out, struct StructFinalizer *clone);
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type);
+static void append_release_pointer(struct Text *out, const char *indent, const char *expr, struct Type type);
 static struct Text *prepend_owned_assignment_release(struct Text *stmt, const char *original, const char *lhs_expr, struct Type type);
 static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name);
 static int starts_word(const char *s, const char *word);
@@ -2194,6 +2198,15 @@ static struct Type lhs_type_before_eq(const char *s, int eq, char *name)
             while (owner_end > s && isspace((unsigned char)owner_end[-1])) {
                 owner_end--;
             }
+            if (owner_end > s) {
+                char *owner_expr = xstrndup(s, (size_t)(owner_end - s));
+                struct Type owner_type = expr_type(owner_expr);
+                free(owner_expr);
+                if (owner_type.kind == TY_STRUCT &&
+                    struct_field_type(owner_type.tag, name, &field_type)) {
+                    return field_type;
+                }
+            }
             owner_start = owner_end;
             while (owner_start > s && is_ident((unsigned char)owner_start[-1])) {
                 owner_start--;
@@ -3116,6 +3129,13 @@ static void owned_func_add_type(const char *name, struct Type ret)
     g_malloc_funcs.count++;
 }
 
+static void register_builtin_owned_functions(void)
+{
+    struct Type ret = type_make(TY_CHAR, 1, NULL);
+    ret.owned = 1;
+    owned_func_add_type("strdup", ret);
+}
+
 static int text_has_word(const char *s, const char *word)
 {
     size_t n = strlen(word);
@@ -3144,6 +3164,24 @@ static void register_owned_function_signature(const char *s)
         ret.owned = 1;
         owned_func_add_type(name, ret);
     }
+}
+
+static void register_malloc_attribute_function(const char *s)
+{
+    char name[NAME_MAX_LEN];
+    struct Type ret;
+
+    if (strstr(s, "__attribute__") == NULL || strstr(s, "malloc") == NULL) {
+        return;
+    }
+    if (!parse_function_signature(s, name, &ret)) {
+        return;
+    }
+    if (ret.ptr <= 0) {
+        ret = type_make(TY_VOID, 1, NULL);
+    }
+    ret.owned = 1;
+    owned_func_add_type(name, ret);
 }
 
 static int function_name_looks_owned(const char *name)
@@ -3570,6 +3608,204 @@ static int rhs_has_malloc_call(const char *rhs, char *func_name)
     }
     func_name[0] = '\0';
     return 0;
+}
+
+static const char *scan_call_end(const char *open)
+{
+    const char *p = open;
+    int depth = 0;
+
+    if (*p != '(') {
+        return NULL;
+    }
+    while (*p != '\0') {
+        if (*p == '"') {
+            p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '"') {
+                    break;
+                }
+                p++;
+            }
+        } else if (*p == '\'') {
+            p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p == '\'') {
+                    break;
+                }
+                p++;
+            }
+        } else if (*p == '(') {
+            depth++;
+        } else if (*p == ')') {
+            depth--;
+            if (depth == 0) {
+                return p + 1;
+            }
+        }
+        if (*p == '\0') {
+            break;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static int find_owned_return_call(const char *s, const char **call_start, const char **call_end,
+                                  struct Type *type)
+{
+    size_t i;
+    int f;
+
+    for (i = 0; s[i] != '\0'; i++) {
+        if (!is_ident_start((unsigned char)s[i])) {
+            continue;
+        }
+        for (f = 0; f < g_malloc_funcs.count; f++) {
+            size_t n = strlen(g_malloc_funcs.name[f]);
+            const char *q;
+            const char *end;
+
+            if (strncmp(s + i, g_malloc_funcs.name[f], n) != 0) {
+                continue;
+            }
+            if ((i > 0 && is_ident((unsigned char)s[i - 1])) || is_ident((unsigned char)s[i + n])) {
+                continue;
+            }
+            q = s + i + n;
+            while (isspace((unsigned char)*q)) {
+                q++;
+            }
+            if (*q != '(') {
+                continue;
+            }
+            end = scan_call_end(q);
+            if (end == NULL) {
+                continue;
+            }
+            if (call_start != NULL) {
+                *call_start = s + i;
+            }
+            if (call_end != NULL) {
+                *call_end = end;
+            }
+            if (type != NULL) {
+                *type = g_malloc_funcs.ret[f];
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int rhs_is_single_owned_return_call(const char *rhs)
+{
+    const char *start;
+    const char *end;
+    const char *p = skip_ws(rhs);
+    char name[NAME_MAX_LEN];
+    const char *name_end;
+    const char *q;
+
+    if (!find_owned_return_call(rhs, &start, &end, NULL) || start != p) {
+        if (!is_ident_start((unsigned char)*p)) {
+            return 0;
+        }
+        name_end = read_name(p, name);
+        if (!function_name_looks_owned(name)) {
+            return 0;
+        }
+        q = skip_ws(name_end);
+        if (*q != '(') {
+            return 0;
+        }
+        end = scan_call_end(q);
+        if (end == NULL) {
+            return 0;
+        }
+        end = skip_ws(end);
+        if (*end == ';') {
+            end = skip_ws(end + 1);
+        }
+        return *end == '\0';
+    }
+    end = skip_ws(end);
+    if (*end == ';') {
+        end = skip_ws(end + 1);
+    }
+    return *end == '\0';
+}
+
+static struct Text *rewrite_owned_return_rvalues(struct Text *in, const char *original)
+{
+    struct Text *prefix = text_new();
+    struct Text *body = text_new();
+    struct Text *suffix = text_new();
+    struct Text *out;
+    struct Text *indent = text_new();
+    const char *p = in->text;
+    int changed = 0;
+
+    append_indent_from(original, indent);
+    while (*p != '\0') {
+        const char *start;
+        const char *end;
+        struct Type type;
+        char tmp[NAME_MAX_LEN];
+
+        if (!find_owned_return_call(p, &start, &end, &type)) {
+            text_add(body, p);
+            break;
+        }
+        snprintf(tmp, sizeof(tmp), "__right_value%d", g_right_value_id++);
+        text_add_n(body, p, (size_t)(start - p));
+        text_add(body, tmp);
+
+        text_add(prefix, indent->text);
+        append_c_type(prefix, type);
+        text_add_ch(prefix, ' ');
+        text_add(prefix, tmp);
+        text_add(prefix, " = ");
+        text_add_n(prefix, start, (size_t)(end - start));
+        text_add(prefix, ";\n");
+
+        append_release_pointer(suffix, indent->text, tmp, type);
+
+        p = end;
+        changed = 1;
+    }
+
+    if (!changed) {
+        text_free(prefix);
+        text_free(body);
+        text_free(suffix);
+        text_free(indent);
+        return in;
+    }
+
+    out = text_new();
+    text_add_ch(out, '\n');
+    text_add(out, prefix->text);
+    text_add(out, body->text);
+    text_add_ch(out, '\n');
+    text_add(out, suffix->text);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+
+    text_free(prefix);
+    text_free(body);
+    text_free(suffix);
+    text_free(indent);
+    text_free(in);
+    return out;
 }
 
 static int rhs_has_function_call(const char *rhs)
@@ -5063,6 +5299,38 @@ static struct Text *build_condition_expr(const char *expr, size_t len)
         count++;
     }
     text_add_n(rewritten, cursor, (size_t)(end - cursor));
+    cursor = rewritten->text;
+    {
+        struct Text *owned_rewritten = text_new();
+        while (*cursor != '\0') {
+            const char *call_start;
+            const char *call_end;
+            struct Type type;
+            char tmp[NAME_MAX_LEN];
+
+            if (!find_owned_return_call(cursor, &call_start, &call_end, &type)) {
+                text_add(owned_rewritten, cursor);
+                break;
+            }
+            snprintf(tmp, sizeof(tmp), "__right_value%d", g_right_value_id++);
+            text_add_n(owned_rewritten, cursor, (size_t)(call_start - cursor));
+            text_add(owned_rewritten, tmp);
+
+            append_c_type(prefix, type);
+            text_add_ch(prefix, ' ');
+            text_add(prefix, tmp);
+            text_add(prefix, " = ");
+            text_add_n(prefix, call_start, (size_t)(call_end - call_start));
+            text_add(prefix, "; ");
+
+            append_release_pointer(suffix, "", tmp, type);
+
+            cursor = call_end;
+            count++;
+        }
+        text_free(rewritten);
+        rewritten = owned_rewritten;
+    }
     if (count == 0) {
         text_free(prefix);
         text_free(suffix);
@@ -5076,9 +5344,9 @@ static struct Text *build_condition_expr(const char *expr, size_t len)
     text_add(out, prefix->text);
     text_add(out, "int ");
     text_add(out, cond_name);
-    text_add(out, " = ");
+    text_add(out, " = (");
     text_add(out, rewritten->text);
-    text_add(out, "; ");
+    text_add(out, ") != 0; ");
     text_add(out, suffix->text);
     text_add(out, cond_name);
     text_add(out, "; })");
@@ -5096,8 +5364,9 @@ static struct Text *rewrite_control_condition(struct Text *head)
     const char *close;
     struct Text *cond;
     struct Text *out;
+    char func_name[NAME_MAX_LEN];
 
-    if (!text_has_s_string(head->text)) {
+    if (!text_has_s_string(head->text) && !rhs_has_malloc_call(head->text, func_name)) {
         return head;
     }
     kw = find_condition_keyword(head->text);
@@ -5674,6 +5943,7 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     if (is_func_sig) {
         register_function_params(all->text);
         register_owned_function_signature(all->text);
+        register_malloc_attribute_function(all->text);
     }
     if (is_string_typedef_decl(all->text)) {
         struct Text *out = text_new();
@@ -5709,6 +5979,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     int owned_assign = 0;
     struct Type owned_assign_type;
     char *owned_assign_lhs = NULL;
+    int owned_rvalue_call = 0;
     int is_borrowed = 0;
     char moved_name[NAME_MAX_LEN];
 
@@ -5728,6 +5999,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = try_rewrite_auto_payload_enum_decl(all);
     register_tags_in_text(all->text);
     all = rewrite_generics(all);
+    register_tags_in_text(all->text);
     all = rewrite_payload_enum_constructors(all);
     if (!g_in_function) {
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0' &&
@@ -5813,6 +6085,15 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                     decl.type.owned = 1;
                     owned_add(decl.name, decl.type);
                 }
+            } else if (rhs_has_malloc_call(decl.init, func_name) &&
+                       !rhs_is_single_owned_return_call(decl.init) &&
+                       !rhs_has_new_expr(decl.init, &new_type)) {
+                if (decl.type.owned) {
+                    fprintf(stderr, "c-: type error: owned declaration cannot bind an offset owned result for '%s'\n", decl.name);
+                    text_free(all);
+                    exit(1);
+                }
+                owned_rvalue_call = 1;
             } else if (rhs_has_malloc_call(decl.init, func_name) || rhs_has_new_expr(decl.init, &new_type)) {
                 if (decl.type.ptr <= 0) {
                     if (func_name[0] != '\0') {
@@ -5853,6 +6134,9 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all = rewrite_s_string_temporaries(all);
         all = rewrite_clone_expressions(all);
         all = rewrite_new_expressions(all);
+        if (owned_rvalue_call) {
+            all = rewrite_owned_return_rvalues(all, all->text);
+        }
         if (!decl.has_init) {
             all = add_zero_initializer(all);
             append_zero_clear_after_decl(all, all->text, decl.name);
@@ -5968,6 +6252,17 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (owned_name[0] != '\0') {
             owned_add(owned_name, lhs != NULL ? lhs->type : lhs_type);
         }
+    } else if (eq >= 0 && rhs_has_malloc_call(all->text + eq + 1, func_name) &&
+               !rhs_is_single_owned_return_call(all->text + eq + 1) &&
+               !rhs_has_new_expr(all->text + eq + 1, &new_type)) {
+        if (extract_lhs_name(all->text, eq, lhs_name)) {
+            lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
+            rhs_type = expr_type(all->text + eq + 1);
+            check_assignment_type(lhs_name, lhs_type, rhs_type);
+            owned_rvalue_call = 1;
+        } else {
+            owned_rvalue_call = 1;
+        }
     } else if (eq >= 0 && (rhs_has_malloc_call(all->text + eq + 1, func_name) ||
                            rhs_has_new_expr(all->text + eq + 1, &new_type))) {
         if (extract_owned_decl_name(all->text, owned_name)) {
@@ -6029,6 +6324,8 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             rhs_type = expr_type(all->text + eq + 1);
             check_assignment_type(lhs_name, lhs_type, rhs_type);
         }
+    } else if (eq < 0 && rhs_has_malloc_call(all->text, func_name)) {
+        owned_rvalue_call = 1;
     }
     all->tail_return = 0;
     all->ast = ast_raw(eq >= 0 ? ND_ASSIGN : ND_EXPR_STMT, all->text);
@@ -6041,6 +6338,9 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = rewrite_control_condition(all);
     all = rewrite_s_string_temporaries(all);
     all = rewrite_new_expressions(all);
+    if (owned_rvalue_call) {
+        all = rewrite_owned_return_rvalues(all, all->text);
+    }
     if (owned_assign) {
         all = prepend_owned_assignment_release(all, all->text, owned_assign_lhs, owned_assign_type);
         free(owned_assign_lhs);
@@ -6192,6 +6492,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
 
     register_function_params(head->text);
     register_owned_function_signature(head->text);
+    register_malloc_attribute_function(head->text);
     if (g_function_returns_move && parse_function_signature(head->text, name, &ret) && ret.ptr > 0) {
         ret.owned = 1;
         owned_func_add_type(name, ret);
@@ -6620,6 +6921,7 @@ int main(int argc, char **argv)
     g_output = text_new();
     g_defines = text_new();
     g_malloc_funcs.count = 0;
+    register_builtin_owned_functions();
     g_right_value_id = 0;
     g_need_string_h = 0;
     g_need_stdlib_h = 0;

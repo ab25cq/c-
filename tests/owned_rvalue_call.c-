@@ -1,0 +1,18 @@
+#include <stdlib.h>
+#include <string.h>
+
+owned char* x(void)
+{
+    return strdup("aaa");
+}
+
+int main(void)
+{
+    char* p = x() + 1;
+    (void)p;
+    (void)x();
+    if (x()) {
+        (void)0;
+    }
+    return 0;
+}

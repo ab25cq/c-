@@ -58,6 +58,7 @@ test -x /tmp/cpm-smoke/target/debug/cpm-smoke
 test -f /tmp/cpm-smoke/lib/c-.h
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" leak > leak.out 2> leak.err)
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" val > val.out 2> val.err)
+grep -- ' -g ' /tmp/cpm-smoke/val.out >/dev/null
 
 rm -rf /tmp/cpm-common-smoke
 ./cpm new /tmp/cpm-common-smoke
@@ -297,6 +298,31 @@ grep 'free(__owned_old' tests/owned_reassign.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/owned_reassign.out.c -o tests/owned_reassign.out
 ./tests/owned_reassign.out
 
+./c- tests/owned_field_finalizer_reassign.c- > tests/owned_field_finalizer_reassign.out.c
+grep 'Child_finalize(__owned_old' tests/owned_field_finalizer_reassign.out.c >/dev/null
+grep 'holder.child->value = calloc(1, sizeof(int));' tests/owned_field_finalizer_reassign.out.c >/dev/null
+grep 'free(__owned_old' tests/owned_field_finalizer_reassign.out.c >/dev/null
+cc -std=c99 -Wall -Wextra -pedantic tests/owned_field_finalizer_reassign.out.c -o tests/owned_field_finalizer_reassign.out
+./tests/owned_field_finalizer_reassign.out
+
+./c- tests/strdup_owned_reassign.c- > tests/strdup_owned_reassign.out.c
+grep 'data.text = strdup("bbb");' tests/strdup_owned_reassign.out.c >/dev/null
+grep 'free(__owned_old' tests/strdup_owned_reassign.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/strdup_owned_reassign.out.c -o tests/strdup_owned_reassign.out
+./tests/strdup_owned_reassign.out
+
+./c- tests/owned_rvalue_call.c- > tests/owned_rvalue_call.out.c
+grep 'char\* __right_value[0-9]* = x();' tests/owned_rvalue_call.out.c >/dev/null
+grep 'char\* p = __right_value[0-9]* + 1;' tests/owned_rvalue_call.out.c >/dev/null
+grep 'if (({ char\* __right_value[0-9]* = x(); int __right_value_cond[0-9]* = (__right_value[0-9]*) != 0;' tests/owned_rvalue_call.out.c >/dev/null
+grep 'free(__right_value' tests/owned_rvalue_call.out.c >/dev/null
+if grep 'free(p);' tests/owned_rvalue_call.out.c >/dev/null; then
+    echo "owned rvalue offset unexpectedly freed through borrowed lvalue" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/owned_rvalue_call.out.c -o tests/owned_rvalue_call.out
+./tests/owned_rvalue_call.out
+
 ./c- tests/method_calls.c- > tests/method_calls.out.c
 grep 'struct data\* p = calloc(1, sizeof(struct data));' tests/method_calls.out.c >/dev/null
 grep 'data_show(&d);' tests/method_calls.out.c >/dev/null
@@ -319,14 +345,18 @@ grep 'free(p);' tests/owned_return.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/owned_return.out.c -o tests/owned_return.out
 ./tests/owned_return.out
 
-./c- tests/attr_malloc_return.c- > tests/attr_malloc_return.out.c
-grep 'int\* p = raw_alloc(sizeof(int));' tests/attr_malloc_return.out.c >/dev/null
-if grep 'free(p);' tests/attr_malloc_return.out.c >/dev/null; then
-    echo "borrow raw_alloc unexpectedly became owned" >&2
+if ./c- tests/attr_malloc_return.c- > tests/attr_malloc_return.out.c 2> tests/attr_malloc_return.err; then
+    echo "borrow raw_alloc unexpectedly accepted owned malloc result" >&2
     exit 1
 fi
-cc -std=c99 -Wall -Wextra -pedantic tests/attr_malloc_return.out.c -o tests/attr_malloc_return.out
-./tests/attr_malloc_return.out
+grep "borrow declaration cannot take ownership of malloc result for 'p'" tests/attr_malloc_return.err >/dev/null
+
+./c- tests/attr_malloc_owned_reassign.c- > tests/attr_malloc_owned_reassign.out.c
+grep 'p = raw_alloc(sizeof(int));' tests/attr_malloc_owned_reassign.out.c >/dev/null
+grep 'holder.value = raw_alloc(sizeof(int));' tests/attr_malloc_owned_reassign.out.c >/dev/null
+grep 'free(__owned_old' tests/attr_malloc_owned_reassign.out.c >/dev/null
+cc -std=c99 -Wall -Wextra -pedantic tests/attr_malloc_owned_reassign.out.c -o tests/attr_malloc_owned_reassign.out
+./tests/attr_malloc_owned_reassign.out
 
 ./c- tests/s_string_owned.c- > tests/s_string_owned.out.c
 grep 'char\* text;' tests/s_string_owned.out.c >/dev/null

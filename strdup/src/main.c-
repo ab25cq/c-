@@ -1,0 +1,21 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <c-.h>
+
+struct data {
+    owned int* str;
+};
+
+struct data2 {
+    owned struct data* xxx;
+};
+
+int main(void)
+{
+    struct data2 d;
+    
+    d.xxx = new struct data;
+    d.xxx->str = new int;
+    
+    return 0;
+}

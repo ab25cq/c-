@@ -40,6 +40,7 @@
     "-fno-asynchronous-unwind-tables -fno-ident -ffunction-sections -fdata-sections"
 #define CPM_BARE_NO_RUNTIME_PROGRAM_FLAGS "-nostdlib -fno-stack-protector -Wl,-e,0"
 #define LEAK_CFLAGS "-g -fno-omit-frame-pointer -fsanitize=address,leak"
+#define VAL_CFLAGS "-g -fno-omit-frame-pointer"
 #define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
 #define LEAK_FALLBACK_TO_VALGRIND 1
 
@@ -1381,7 +1382,7 @@ static int cmd_val(int argc, char **argv)
     char prefix[PATH_MAX_LEN * 4];
 
     /* No -Os here: it could elide the unused allocations valgrind looks for. */
-    if (cmd_build_with_flags(NULL, 0) != 0) {
+    if (cmd_build_with_flags(VAL_CFLAGS, 0) != 0) {
         return 1;
     }
     if (valgrind == NULL || valgrind[0] == '\0') {

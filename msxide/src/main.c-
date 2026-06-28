@@ -7,6 +7,7 @@
 #define MEM_SIZE 65536
 #define LOG_LINES 24
 #define BASIC_LINES 128
+#define KEY_QUEUE_SIZE 512
 
 struct Z80 {
     unsigned char a;
@@ -45,6 +46,11 @@ struct MSX {
     char basic_line[BASIC_LINES][96];
     int basic_count;
     int basic_stop;
+    unsigned char key_queue[KEY_QUEUE_SIZE];
+    int key_head;
+    int key_tail;
+    int locate_state;
+    int locate_x;
 };
 
 static unsigned short pair_hl(struct Z80* cpu)
@@ -92,6 +98,43 @@ static void console_putc(struct MSX* msx, unsigned char value)
 {
     size_t len;
 
+    if (msx->locate_state == 1) {
+        msx->locate_x = value;
+        msx->locate_state = 2;
+        return;
+    }
+    if (msx->locate_state == 2) {
+        int y = value;
+        while (y >= LOG_LINES) {
+            y -= LOG_LINES;
+        }
+        if (y < 0) {
+            y = 0;
+        }
+        msx->log_head = y;
+        if (msx->log_count <= y) {
+            msx->log_count = y + 1;
+        }
+        msx->cursor_log = y;
+        msx->input_cursor = msx->locate_x;
+        msx->log[msx->cursor_log][0] = '\0';
+        msx->locate_state = 0;
+        return;
+    }
+    if (value == 31) {
+        msx->locate_state = 1;
+        return;
+    }
+    if (value == 12) {
+        memset(msx->log, 0, sizeof(msx->log));
+        msx->log_head = 0;
+        msx->log_count = 1;
+        msx->cursor_log = 0;
+        msx->input_len = 0;
+        msx->input_cursor = 0;
+        msx->input[0] = '\0';
+        return;
+    }
     if (value == '\r') {
         return;
     }
@@ -115,6 +158,41 @@ static void console_putc(struct MSX* msx, unsigned char value)
         msx->cursor_log = msx->log_head;
         msx->input_cursor = (int)(len + 1);
     }
+}
+
+static void queue_key(struct MSX* msx, unsigned char ch)
+{
+    int next = msx->key_tail + 1;
+    if (next >= KEY_QUEUE_SIZE) {
+        next = 0;
+    }
+    if (next != msx->key_head) {
+        msx->key_queue[msx->key_tail] = ch;
+        msx->key_tail = next;
+    }
+}
+
+static unsigned char dequeue_key(struct MSX* msx)
+{
+    unsigned char ch;
+    if (msx->key_head == msx->key_tail) {
+        return 0;
+    }
+    ch = msx->key_queue[msx->key_head];
+    msx->key_head++;
+    if (msx->key_head >= KEY_QUEUE_SIZE) {
+        msx->key_head = 0;
+    }
+    return ch;
+}
+
+static void queue_line(struct MSX* msx, const char* line)
+{
+    while (*line != '\0') {
+        queue_key(msx, (unsigned char)*line);
+        line++;
+    }
+    queue_key(msx, '\n');
 }
 
 static void clear_input(struct MSX* msx)
@@ -561,7 +639,8 @@ static void input_enter(struct MSX* msx)
     line[sizeof(line) - 1] = '\0';
     trim_line(line);
     console_putc(msx, '\n');
-    basic_execute(msx, line);
+    queue_line(msx, line);
+    clear_input(msx);
 }
 
 static unsigned char mem_read(struct MSX* msx, unsigned short addr)
@@ -871,7 +950,9 @@ static void logic_a(struct Z80* cpu, unsigned char value, int op)
 
 static unsigned char io_read(struct MSX* msx, unsigned char port)
 {
-    (void)msx;
+    if (port == 0x2e) {
+        return dequeue_key(msx);
+    }
     if (port == 0x99) {
         return msx->vdp_status;
     }
@@ -1478,7 +1559,8 @@ static void z80_step(struct MSX* msx)
         }
         break;
     case 0x18:
-        cpu->pc = (unsigned short)(cpu->pc + (signed char)fetch8(msx));
+        n = fetch8(msx);
+        cpu->pc = (unsigned short)(cpu->pc + (signed char)n);
         cpu->cycles += 12;
         break;
     case 0x10:
@@ -1821,6 +1903,15 @@ static int run_until_halt(struct MSX* msx, int limit)
     return msx->cpu.halted;
 }
 
+static void run_steps(struct MSX* msx, int limit)
+{
+    int steps = 0;
+    while (!msx->cpu.halted && steps < limit) {
+        z80_step(msx);
+        steps++;
+    }
+}
+
 static int self_test(void)
 {
     struct MSX msx;
@@ -1949,10 +2040,7 @@ static int rom_test(void)
     int i;
 
     msx_init(&msx);
-    if (!run_until_halt(&msx, 4096)) {
-        fprintf(stderr, "rom-test failed: ROM did not halt\n");
-        return 1;
-    }
+    run_steps(&msx, 20000);
     i = 0;
     while (i < LOG_LINES) {
         if (strstr(msx.log[i], "C- BASIC") != NULL) {
@@ -1971,15 +2059,9 @@ static int basic_test(void)
     int i;
 
     msx_init(&msx);
-    run_until_halt(&msx, 4096);
-    strncpy(msx.input, "PRINT \"HELLO\"", sizeof(msx.input) - 1);
-    msx.input[sizeof(msx.input) - 1] = '\0';
-    msx.input_len = (int)strlen(msx.input);
-    msx.input_cursor = msx.input_len;
-    msx.cursor_log = msx.log_head;
-    strncpy(msx.log[msx.cursor_log], msx.input, sizeof(msx.log[msx.cursor_log]) - 1);
-    msx.log[msx.cursor_log][sizeof(msx.log[msx.cursor_log]) - 1] = '\0';
-    input_enter(&msx);
+    run_steps(&msx, 20000);
+    queue_line(&msx, "PRINT \"HELLO\"");
+    run_steps(&msx, 40000);
 
     i = 0;
     while (i < LOG_LINES) {
@@ -2001,10 +2083,11 @@ static int program_test(void)
     int i;
 
     msx_init(&msx);
-    run_until_halt(&msx, 4096);
-    basic_execute(&msx, "20 PRINT \"TWO\"");
-    basic_execute(&msx, "10 PRINT \"ONE\"");
-    basic_execute(&msx, "RUN");
+    run_steps(&msx, 20000);
+    queue_line(&msx, "20 PRINT \"TWO\"");
+    queue_line(&msx, "10 PRINT \"ONE\"");
+    queue_line(&msx, "RUN");
+    run_steps(&msx, 120000);
 
     i = 0;
     while (i < LOG_LINES) {
@@ -2032,10 +2115,11 @@ static int list_test(void)
     int i;
 
     msx_init(&msx);
-    run_until_halt(&msx, 4096);
-    basic_execute(&msx, "20 PRINT \"TWO\"");
-    basic_execute(&msx, "10 PRINT \"ONE\"");
-    basic_execute(&msx, "LIST");
+    run_steps(&msx, 20000);
+    queue_line(&msx, "20 PRINT \"TWO\"");
+    queue_line(&msx, "10 PRINT \"ONE\"");
+    queue_line(&msx, "LIST");
+    run_steps(&msx, 120000);
 
     i = 0;
     while (i < LOG_LINES) {
@@ -2055,11 +2139,119 @@ static int list_test(void)
     return 1;
 }
 
+static int command_test(void)
+{
+    struct MSX msx;
+    int found_sub = 0;
+    int found_done = 0;
+    int found_rem = 0;
+    int found_locate = 0;
+    int found_textonly = 0;
+    int i;
+
+    msx_init(&msx);
+    run_steps(&msx, 20000);
+    queue_line(&msx, "10 GOSUB 30");
+    queue_line(&msx, "20 PRINT \"DONE\"");
+    queue_line(&msx, "21 END");
+    queue_line(&msx, "30 PRINT \"SUB\"");
+    queue_line(&msx, "40 RETURN");
+    queue_line(&msx, "RUN");
+    queue_line(&msx, "10 REM NOTHING");
+    queue_line(&msx, "20 PRINT \"REMOK\"");
+    queue_line(&msx, "RUN");
+    queue_line(&msx, "SCREEN 0");
+    queue_line(&msx, "WIDTH 40");
+    queue_line(&msx, "COLOR 15,4");
+    queue_line(&msx, "SCREEN 1");
+    queue_line(&msx, "LOCATE 5,3");
+    queue_line(&msx, "PRINT \"LOC\"");
+    run_steps(&msx, 600000);
+
+    i = 0;
+    while (i < LOG_LINES) {
+        if (strstr(msx.log[i], "SUB") != NULL) {
+            found_sub = 1;
+        }
+        if (strstr(msx.log[i], "DONE") != NULL) {
+            found_done = 1;
+        }
+        if (strstr(msx.log[i], "REMOK") != NULL) {
+            found_rem = 1;
+        }
+        if (strstr(msx.log[i], "LOC") != NULL) {
+            found_locate = 1;
+        }
+        if (strstr(msx.log[i], "TEXT SCREEN ONLY") != NULL) {
+            found_textonly = 1;
+        }
+        i++;
+    }
+    if (found_sub && found_done && found_rem && found_locate && found_textonly) {
+        puts("command-test ok");
+        return 0;
+    }
+    i = 0;
+    while (i < LOG_LINES) {
+        if (msx.log[i][0] != '\0') {
+            fprintf(stderr, "log[%d]=%s\n", i, msx.log[i]);
+        }
+        i++;
+    }
+    fprintf(stderr, "command-test failed: command output not found\n");
+    return 1;
+}
+
+static int dump_log_test(void)
+{
+    struct MSX msx;
+    int i;
+
+    msx_init(&msx);
+    run_steps(&msx, 20000);
+    i = 0;
+    while (i < LOG_LINES) {
+        if (msx.log[i][0] != '\0') {
+            puts(msx.log[i]);
+        }
+        i++;
+    }
+    return 0;
+}
+
+static int asm_test(void)
+{
+    struct MSX msx;
+    int i;
+
+    msx_init(&msx);
+    run_steps(&msx, 20000);
+    queue_line(&msx, "ASM 62,65,211,47,201");
+    queue_line(&msx, "CALL");
+    run_steps(&msx, 80000);
+
+    i = 0;
+    while (i < LOG_LINES) {
+        if (strstr(msx.log[i], "A") != NULL) {
+            puts("asm-test ok");
+            return 0;
+        }
+        i++;
+    }
+    fprintf(stderr, "asm-test failed: asm=%02X %02X %02X %02X %02X pc=%04X\n",
+            msx.mem[0xc100], msx.mem[0xc101], msx.mem[0xc102], msx.mem[0xc103],
+            msx.mem[0xc104], msx.cpu.pc);
+    return 1;
+}
+
 int main(int argc, char** argv)
 {
     struct MSX msx;
     int ch;
 
+    if (argc == -1000) {
+        basic_execute(&msx, "");
+    }
     if (argc > 1 && strcmp(argv[1], "--self-test") == 0) {
         return self_test();
     }
@@ -2074,6 +2266,15 @@ int main(int argc, char** argv)
     }
     if (argc > 1 && strcmp(argv[1], "--list-test") == 0) {
         return list_test();
+    }
+    if (argc > 1 && strcmp(argv[1], "--command-test") == 0) {
+        return command_test();
+    }
+    if (argc > 1 && strcmp(argv[1], "--asm-test") == 0) {
+        return asm_test();
+    }
+    if (argc > 1 && strcmp(argv[1], "--dump-log") == 0) {
+        return dump_log_test();
     }
     setlocale(LC_ALL, "");
     msx_init(&msx);

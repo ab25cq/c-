@@ -1,0 +1,23 @@
+#include <stdlib.h>
+
+struct Child {
+    owned int* value;
+};
+
+struct Holder {
+    owned struct Child* child;
+};
+
+int main(void)
+{
+    struct Holder holder;
+
+    holder.child = new struct Child;
+    holder.child->value = new int;
+    holder.child = new struct Child;
+
+    if (holder.child == NULL) {
+        return 1;
+    }
+    return 0;
+}

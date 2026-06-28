@@ -1,0 +1,30 @@
+#include <stdlib.h>
+#include <string.h>
+
+void* raw_alloc(size_t size) __attribute__((malloc));
+
+void* raw_alloc(size_t size)
+{
+    return malloc(size);
+}
+
+struct Holder {
+    owned int* value;
+};
+
+int main(void)
+{
+    owned int* p = raw_alloc(sizeof(int));
+    struct Holder holder;
+
+    memset(&holder, 0, sizeof(holder));
+
+    p = raw_alloc(sizeof(int));
+    holder.value = raw_alloc(sizeof(int));
+    holder.value = raw_alloc(sizeof(int));
+
+    if (p == NULL || holder.value == NULL) {
+        return 1;
+    }
+    return 0;
+}
