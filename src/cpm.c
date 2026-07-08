@@ -556,7 +556,7 @@ static void manifest_defaults(struct Manifest *m)
 {
     memset(m, 0, sizeof(*m));
     strcpy(m->name, "app");
-    strcpy(m->version, "0.2.0");
+    strcpy(m->version, "0.4.0");
     strcpy(m->src, "src/main.c-");
     strcpy(m->compiler, "cc");
     strcpy(m->cflags, "-std=gnu99 -Wall -Wextra");
@@ -650,7 +650,7 @@ static void write_manifest(const char *name)
     snprintf(text, sizeof(text),
              "[package]\n"
              "name = \"%s\"\n"
-             "version = \"0.2.0\"\n"
+             "version = \"0.4.0\"\n"
              "edition = \"2026\"\n"
              "\n"
              "[build]\n"
@@ -665,15 +665,15 @@ static void write_manifest(const char *name)
 static void write_main_source(void)
 {
     write_file("src/main.c-",
+               "unsafe {\n"
                "#include <stdio.h>\n"
-               "#include <stdlib.h>\n"
+               "}\n"
                "#include <c-.h>\n"
                "\n"
                "int main(void)\n"
                "{\n"
-               "    int* value = new int;\n"
-               "    *value = 123;\n"
-               "    if (*value == 123) {\n"
+               "    int value = 123;\n"
+               "    if (value == 123) {\n"
                "        puts(\"value 123\");\n"
                "    }\n"
                "    return 0;\n"

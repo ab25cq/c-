@@ -1,20 +1,23 @@
+unsafe {
 #include <stdlib.h>
-
-struct Holder {
-    owned int* value;
-};
+}
 
 int main(void)
 {
-    int* owned_value = new int;
-    struct Holder holder;
+    unsafe {
+        int* owned_value = calloc(1, sizeof(int));
+        int* value = calloc(1, sizeof(int));
 
-    owned_value = new int;
-    holder.value = new int;
-    holder.value = new int;
+        free(owned_value);
+        owned_value = calloc(1, sizeof(int));
+        free(value);
+        value = calloc(1, sizeof(int));
 
-    if (owned_value == NULL || holder.value == NULL) {
-        return 1;
+        if (owned_value == NULL || value == NULL) {
+            return 1;
+        }
+        free(owned_value);
+        free(value);
     }
     return 0;
 }

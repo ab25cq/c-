@@ -1,18 +1,18 @@
 #include <stdlib.h>
 
+struct Child {
+    int value;
+};
+
 struct Holder {
-    owned int* value;
+    Child child;
 };
 
 int main(void)
 {
-    struct Holder stack;
-    stack.value = new int;
-    *stack.value = 10;
+    Holder stack = new Holder;
 
-    struct Holder* heap = new struct Holder;
-    heap->value = new int;
-    *heap->value = 20;
+    Holder heap = new Holder;
 
-    return 0;
+    return stack != NULL && heap != NULL ? 0 : 1;
 }

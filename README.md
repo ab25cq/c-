@@ -2,7 +2,7 @@
 
 Small C-to-C translator experiment.
 
-Current language/package format version: `0.2.0`.
+Current language/package format version: `0.4.0`.
 
 ## Dependencies
 
@@ -70,7 +70,7 @@ The manifest is intentionally close to Cargo's shape:
 ```toml
 [package]
 name = "hello"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2026"
 
 [build]
@@ -107,6 +107,38 @@ file. `.c-` source files do not need to write either include explicitly.
 be emitted only once in a multi-source `cpm` build. The source file containing
 `main` receives the definition; other source files receive an `extern`
 declaration.
+
+Managed allocations are explicit:
+
+- `new` creates managed heap objects.
+- `clone` is also managed.
+- Raw C allocations such as `malloc`, `calloc`, and `strdup` stay outside the
+  managed heap unless they are wrapped by an owning language feature.
+- The managed heap is swept incrementally through `cminus_gc_step()`, and leak
+  reports come from `cminus_gc_report_leaks()`.
+- `cpm leak` prefers AddressSanitizer where available and falls back to
+  Valgrind; `cpm val` always runs Valgrind.
+
+## Safety Model
+
+`c-` is moving toward safe C by default. Raw C compatibility is restricted to
+explicit unsafe blocks:
+
+```c
+unsafe {
+    p++;
+}
+```
+
+Outside `unsafe`, pointer arithmetic on pointer variables is a compile-time
+error. This applies to borrowed and owned pointers. Use field access on structs,
+checked collection indexing, `Span<T>` views, checked `/` and `%`, and
+higher-level library types instead of pointer arithmetic in safe code. Division
+or modulo by zero calls `cminus_panic` with the source file and line number.
+
+Safe code uses `Span` for contiguous views, `Ref` for non-owning references, and
+`Optional` for nullable/absent values. Raw pointers and C-compatible memory
+operations remain available inside `unsafe`.
 
 ```c
 uniq int gGlobalVar = 777;
@@ -230,7 +262,7 @@ them after linking:
 
 ```toml
 [package]
-version = "0.2.0"
+version = "0.4.0"
 
 [build]
 compiler = "clang"
@@ -257,16 +289,19 @@ so the source file and line are still reported but the frame dump is omitted.
 
 `s"..."` heap strings still rely on `asprintf`, which the bare runtime provides.
 
-Local pointer ownership is automatic for owning expressions:
+Local pointer ownership is automatic for owning expressions. Heap allocation
+with `new` is limited to structs:
 
 ```c
-int* a = new int;
+struct Item* item = new struct Item;
 ```
 
-`new`, `clone`, `s"..."`, `*_new()` functions, and pointer-returning function
-calls assigned to local pointer declarations are treated as owning values. The
+`new`, `clone`, `s"..."`, `*_new()` functions, and owned-return function calls
+assigned to local pointer declarations are treated as owning values. The
 compiler tracks the local and emits cleanup at every function exit path,
-including before `return`.
+including before `return`. Primitive heap allocations such as `new int` are no
+longer valid; use an explicit allocator call only where raw heap use is
+intended.
 
 Use `borrow` when the pointer is not owned by the current function:
 
@@ -274,23 +309,23 @@ Use `borrow` when the pointer is not owned by the current function:
 borrow char* home = getenv("HOME");
 ```
 
-`borrow` declarations are not freed. Assigning an owning expression such as
-`new int` to a `borrow` declaration is a compile-time error.
+`borrow` declarations are not freed. Assigning an owning expression such as a
+struct `new` expression to a `borrow` declaration is a compile-time error.
 
-The `new` operator allocates one zeroed object with `calloc` and returns an
-owning pointer:
+The `new` operator allocates one zeroed struct object with `calloc` and returns
+an owning pointer:
 
 ```c
-int* value = new int;
+struct Item* item = new struct Item;
 ```
 
 is lowered to:
 
 ```c
-int* value = calloc(1, sizeof(int));
+struct Item* item = calloc(1, sizeof(struct Item));
 ```
 
-The generated cleanup releases `value` at the end of the current function.
+The generated cleanup releases `item` at the end of the current function.
 On an early `return`, other tracked locals are released before the return.
 
 Use `move` to transfer ownership out of a variable:
@@ -298,7 +333,7 @@ Use `move` to transfer ownership out of a variable:
 ```c
 int* make_value(void)
 {
-    int* value = new int;
+    int* value = calloc(1, sizeof(int));
     return move value;
 }
 ```
@@ -452,7 +487,20 @@ int first = ptr->first();
 
 Generic method blocks are intentionally not part of this feature.
 
-The standard library currently provides `Vec<T>`, `List<T>`, and `Map<K,V>`.
+The standard library currently provides `Ref<T>`, `Span<T>`, `Vec<T>`,
+`List<T>`, and `Map<K,V>`.
+`Ref<T>` is a non-owning one-value reference with `from`, `is_null`, `get`, and
+`set`.
+`Span<T>` is a non-owning contiguous view with `from`, `empty`, `len`,
+`is_empty`, `get`, `get_opt`, checked indexed access, and `foreach`.
+`Span<T>` also supports checked pointer-like operators: `span + n` and
+`span - n` return shifted spans, `*span` reads `span[0]`, and `span[i]` can be
+read or assigned through a bounds-checked pointer.
+`Vec<T>.as_span()` returns a non-owning view of the vector storage.
+`List<T>.to_span(buffer, cap)` serializes list elements into caller-owned
+storage and returns a `Span<T>` view. `Map<K,V>.keys_to_span(buffer, cap)` and
+`Map<K,V>.values_to_span(buffer, cap)` serialize active keys or values into a
+caller-owned buffer and return `Span<K>` or `Span<V>`.
 `Vec<T>` and `List<T>` support `new`, `push`, `len`, `is_empty`, `clear`,
 `first`, `last`, `get`, `set`, checked indexed access, automatic deletion for
 owning local variables, and `foreach`. `Vec<T>` also supports `capacity`,
@@ -469,7 +517,7 @@ owns values and treats keys as value or borrowed data.
 
 ```c
 struct OwnedVec<int*>* xs = OwnedVec_new<int*>();
-int* value = new int;
+int* value = calloc(1, sizeof(int));
 xs.push(move value);
 xs.clear();
 ```
@@ -516,6 +564,19 @@ if (some.is_Some() && none.is_None()) {
 `new Type<T>.Variant(...)` creates a value of that variant. `is_Variant()` is
 generated for every variant. `get_Variant()` is generated for variants with
 one payload value.
+
+`Optional<T>` is built in as the standard nullable/absent value type. It is a
+payload enum with `Some(T)` and `None`, and can be written without a leading
+`struct`:
+
+```c
+Optional<int> value = new Optional<int>.Some(123);
+Optional<int> empty = new Optional<int>.None();
+
+if (value.is_Some() && empty.is_None()) {
+    return value.get_Some();
+}
+```
 
 Local variable declarations without initializers receive a zero initializer and
 are then zero-cleared immediately after the declaration with `memset`,

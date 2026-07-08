@@ -1,0 +1,22 @@
+unsafe {
+#include <stdio.h>
+}
+
+int main(void)
+{
+    int value = 10;
+    Ref<int> ref = Ref<int>.from(&value);
+
+    if (ref.is_null()) {
+        return 1;
+    }
+    if (ref.get() != 10) {
+        return 2;
+    }
+    ref.set(25);
+    if (value != 25 || ref.get() != 25) {
+        return 3;
+    }
+    printf("%d\n", ref.get());
+    return 0;
+}

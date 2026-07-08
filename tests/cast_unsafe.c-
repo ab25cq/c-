@@ -1,0 +1,13 @@
+#include <stdio.h>
+
+int main(void)
+{
+    int value = 7;
+    int out;
+
+    unsafe {
+        out = (int)value + 1;
+    }
+    printf("%d\n", out);
+    return 0;
+}

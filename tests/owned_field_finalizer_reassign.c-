@@ -1,22 +1,15 @@
-#include <stdlib.h>
-
-struct Child {
-    owned int* value;
-};
-
 struct Holder {
-    owned struct Child* child;
+    string text;
 };
 
 int main(void)
 {
-    struct Holder holder;
+    Holder holder = new Holder;
 
-    holder.child = new struct Child;
-    holder.child->value = new int;
-    holder.child = new struct Child;
+    holder->text = s"aaa";
+    holder->text = s"bbb";
 
-    if (holder.child == NULL) {
+    if (holder->text == NULL) {
         return 1;
     }
     return 0;

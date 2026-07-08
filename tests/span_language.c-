@@ -1,0 +1,35 @@
+unsafe {
+#include <stdio.h>
+}
+
+int main(void)
+{
+    int data[3];
+    Span<int> values = Span<int>.from(data, 3);
+    Span<int> empty = Span<int>.empty();
+    struct __CMinusIndex<int> third;
+    int sum = 0;
+
+    data[0] = 10;
+    data[1] = 20;
+    data[2] = 30;
+    third = values.get_opt(2);
+
+    if (values.len() != 3 || values.is_empty()) {
+        return 1;
+    }
+    if (!empty.is_empty()) {
+        return 2;
+    }
+    if (values[1] != 20) {
+        return 3;
+    }
+    if (!third.is_Some() || third.get_Some() != 30) {
+        return 4;
+    }
+    foreach (int value in values) {
+        sum += value;
+    }
+    printf("%d\n", sum);
+    return sum == 60 ? 0 : 5;
+}

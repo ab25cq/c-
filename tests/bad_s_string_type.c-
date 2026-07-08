@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
+unsafe {
 #include <stdio.h>
+}
 
 int main(void)
 {

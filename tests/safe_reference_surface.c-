@@ -1,0 +1,26 @@
+unsafe {
+#include <stdio.h>
+}
+
+struct Data {
+    int value;
+};
+
+Data make_data(void)
+{
+    Data data = new Data;
+    data->value = 42;
+    return data;
+}
+
+int main(void)
+{
+    string text = s"ok";
+    Vec<int> values = Vec<int>.new();
+    Data data = make_data();
+
+    values.push(10);
+    values.push(32);
+    printf("%s %d %d\n", text, values[0] + values[1], data->value);
+    return 0;
+}

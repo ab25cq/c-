@@ -1,0 +1,59 @@
+#include <stdio.h>
+
+int sum_span(Span<int> values)
+{
+    int sum = 0;
+
+    foreach (int value in values) {
+        sum += value;
+    }
+    return sum;
+}
+
+int main(void)
+{
+    Vec<int> vec = Vec<int>.new();
+    List<int> list = List<int>.new();
+    Map<int,int> map = Map<int,int>.new();
+    List<int> from_vec;
+    Vec<int> from_list;
+    Vec<int> roundtrip;
+    Vec<int> keys;
+    Vec<int> values_vec;
+    List<int> values;
+    Vec<int> values_roundtrip;
+
+    vec.push(1);
+    vec.push(2);
+    list.push(3);
+    list.push(4);
+    map.set(10, 100);
+    map.set(20, 200);
+
+    from_vec = vec.to_list();
+    from_list = list.to_vec();
+    roundtrip = from_vec.to_vec();
+    keys = map.keys_to_vec();
+    values = map.values_to_list();
+    values_vec = values.to_vec();
+    values_roundtrip = values_vec;
+
+    if (sum_span(roundtrip.as_span()) != 3) {
+        return 1;
+    }
+    if (sum_span(from_list.as_span()) != 7) {
+        return 2;
+    }
+    if (sum_span(keys.as_span()) != 30) {
+        return 3;
+    }
+    if (sum_span(values_roundtrip.as_span()) != 300) {
+        return 4;
+    }
+
+    printf("%d\n", sum_span(roundtrip.as_span()) +
+                   sum_span(from_list.as_span()) +
+                   sum_span(keys.as_span()) +
+                   sum_span(values_roundtrip.as_span()));
+    return 0;
+}

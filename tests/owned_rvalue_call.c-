@@ -1,18 +1,27 @@
-#include <stdlib.h>
+unsafe {
 #include <string.h>
+}
 
-owned char* x(void)
+string x(void)
 {
-    return strdup("aaa");
+    string out = s"aaa";
+    return move out;
 }
 
 int main(void)
 {
-    char* p = x() + 1;
-    (void)p;
-    (void)x();
+    unsafe {
+        char* p = x() + 1;
+        if (p == NULL) {
+            return 1;
+        }
+    }
+    string text = x();
+    if (text == NULL) {
+        return 1;
+    }
     if (x()) {
-        (void)0;
+        return 0;
     }
     return 0;
 }

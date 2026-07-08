@@ -1,0 +1,32 @@
+unsafe {
+#include <stdio.h>
+}
+
+Optional<int> make_some(int value)
+{
+    return new Optional<int>.Some(value);
+}
+
+Optional<int> make_none(void)
+{
+    return new Optional<int>.None();
+}
+
+int main(void)
+{
+    Optional<int> some = make_some(42);
+    Optional<int> none = make_none();
+    auto inferred = new Optional<int>.Some(7);
+
+    if (!some.is_Some() || some.get_Some() != 42) {
+        return 1;
+    }
+    if (!none.is_None()) {
+        return 2;
+    }
+    if (!inferred.is_Some() || inferred.get_Some() != 7) {
+        return 3;
+    }
+    printf("%d %d\n", some.get_Some(), inferred.get_Some());
+    return 0;
+}

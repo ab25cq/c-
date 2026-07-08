@@ -1,8 +1,6 @@
-#include <c-.h>
-
 int main(void)
 {
-    Vec<int>* values = Vec<int>.new();
+    Vec<int> values = Vec<int>.new();
 
     values.push(1);
     return values[3];

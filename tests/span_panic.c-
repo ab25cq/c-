@@ -1,0 +1,8 @@
+int main(void)
+{
+    int data[1];
+    Span<int> values = Span<int>.from(data, 1);
+
+    data[0] = 1;
+    return values[2];
+}

@@ -1,3 +1,4 @@
+unsafe {
 #include <stdlib.h>
 #include <string.h>
 
@@ -8,23 +9,21 @@ void* raw_alloc(size_t size)
     return malloc(size);
 }
 
-struct Holder {
-    owned int* value;
-};
-
 int main(void)
 {
-    owned int* p = raw_alloc(sizeof(int));
-    struct Holder holder;
+    int* p = raw_alloc(sizeof(int));
+    int* value = raw_alloc(sizeof(int));
 
-    memset(&holder, 0, sizeof(holder));
-
+    free(p);
     p = raw_alloc(sizeof(int));
-    holder.value = raw_alloc(sizeof(int));
-    holder.value = raw_alloc(sizeof(int));
+    free(value);
+    value = raw_alloc(sizeof(int));
 
-    if (p == NULL || holder.value == NULL) {
+    if (p == NULL || value == NULL) {
         return 1;
     }
+    free(p);
+    free(value);
     return 0;
+}
 }

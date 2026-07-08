@@ -313,15 +313,19 @@ static int g_foreach_id;
 static int g_index_id;
 static int g_need_stdio_h;
 static int g_need_execinfo_h;
+static int g_unsafe_depth;
 static int g_bare_metal;
 static int g_emit_uniq;
 static int g_function_returns_move;
 static char g_current_function_name[NAME_MAX_LEN];
 static struct Type g_current_function_ret;
+static int g_current_function_stack_guard;
 static const char *g_input_path;
 
 int yylex(void);
-void cminus_push_include(FILE *fp);
+void cminus_push_include(FILE *fp, int unsafe);
+void cminus_unsafe_push(void);
+void cminus_unsafe_pop(void);
 static void yyerror(const char *msg);
 
 static void die(const char *msg);
@@ -343,6 +347,8 @@ static struct Type type_make(enum TypeKind kind, int ptr, const char *tag);
 static struct Obj *obj_new(const char *name, struct Type type, int is_local, int is_function);
 static void tag_add(enum TypeKind kind, const char *name);
 static void symbol_add(const char *name, struct Type type);
+static void register_function_params(const char *s);
+static void register_function_param_symbols(const char *s);
 static void begin_function(void);
 static void begin_top_block(struct Text *head);
 static int source_has_cminus_include(FILE *fp);
@@ -362,9 +368,15 @@ static void append_leading_newlines(const char *s, struct Text *out);
 static int rhs_has_malloc_call(const char *rhs, char *func_name);
 static int rhs_is_single_owned_return_call(const char *rhs);
 static struct Text *rewrite_owned_return_rvalues(struct Text *in, const char *original);
+static int text_has_s_string(const char *text);
 static int rhs_has_function_call(const char *rhs);
+static enum TypeKind keyword_type(const char *word);
 static int rhs_has_new_expr(const char *rhs, struct Type *type);
 static int rhs_has_clone_expr(const char *rhs, struct Type *type);
+static int head_function_name(const char *head, char *name);
+static int function_needs_stack_guard(const char *name);
+static int function_signature_is_internal(const char *head);
+static void check_casts(const char *text);
 static struct Type expr_type(const char *s);
 static int decl_has_borrow(const char *s);
 static int extract_move_name(const char *s, char *name);
@@ -372,6 +384,9 @@ static void remove_moved_locals(const char *s);
 static struct Text *strip_attributes(struct Text *in);
 static struct Text *remove_percent(struct Text *in);
 static void check_owned_pointer_arithmetic(const char *stmt);
+static int is_unsafe_head(const char *s);
+static void begin_stmt_block(struct Text *head);
+static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
 static int struct_field_type(const char *tag, const char *field, struct Type *type);
 static struct StructFinalizer *struct_clone_find(const char *tag);
 static struct StructFinalizer *struct_clone_get(const char *tag);
@@ -380,10 +395,15 @@ static struct Text *rewrite_new_expressions(struct Text *in);
 static struct Text *rewrite_clone_expressions(struct Text *in);
 static struct Text *rewrite_method_calls(struct Text *in);
 static struct Text *rewrite_index_access(struct Text *in);
+static struct Text *rewrite_span_operators(struct Text *in);
+static struct Text *rewrite_division_checks(struct Text *in);
 static struct Text *rewrite_parameter_calls(struct Text *in);
+static struct Text *rewrite_safe_reference_decl(struct Text *in);
+static void check_safe_pointer_decl(const char *s);
 static struct Text *rewrite_generics(struct Text *in);
 static struct Text *rewrite_foreach_head(struct Text *head);
 static const char *matching_paren(const char *open);
+static const char *skip_divisor_expr(const char *p);
 static int is_generic_decl_head(const char *s);
 static int parse_generic_struct_head(const char *s, char *param, char *name);
 static int parse_generic_function_head(const char *s, char *param, char *name);
@@ -397,6 +417,7 @@ static int is_uniq_decl(const char *s);
 static struct Text *strip_uniq(struct Text *in);
 static struct Text *uniq_extern_decl(struct Text *in);
 static const char *generic_template_body_start(const char *head, char *param);
+static int clone_uses_managed_heap(const char *tag);
 static void append_struct_clone_name(struct Text *out, const char *tag);
 static void append_struct_clone_definition(struct Text *out, struct StructFinalizer *clone);
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type);
@@ -406,7 +427,7 @@ static void append_zero_clear_after_decl(struct Text *stmt, const char *original
 static int starts_word(const char *s, const char *word);
 static const char *skip_ws(const char *s);
 
-#line 410 "src/parser.c"
+#line 431 "src/parser.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -469,20 +490,21 @@ enum yysymbol_kind_t
   YYSYMBOL_top_part = 32,                  /* top_part  */
   YYSYMBOL_compound_items = 33,            /* compound_items  */
   YYSYMBOL_compound_item = 34,             /* compound_item  */
-  YYSYMBOL_return_statement = 35,          /* return_statement  */
-  YYSYMBOL_stmt_seq = 36,                  /* stmt_seq  */
-  YYSYMBOL_stmt_part = 37,                 /* stmt_part  */
-  YYSYMBOL_paren_group = 38,               /* paren_group  */
-  YYSYMBOL_paren_items = 39,               /* paren_items  */
-  YYSYMBOL_paren_part = 40,                /* paren_part  */
-  YYSYMBOL_bracket_group = 41,             /* bracket_group  */
-  YYSYMBOL_bracket_items = 42,             /* bracket_items  */
-  YYSYMBOL_bracket_part = 43,              /* bracket_part  */
-  YYSYMBOL_angle_group = 44,               /* angle_group  */
-  YYSYMBOL_angle_items = 45,               /* angle_items  */
-  YYSYMBOL_angle_part = 46,                /* angle_part  */
-  YYSYMBOL_token = 47,                     /* token  */
-  YYSYMBOL_token_no_comma = 48             /* token_no_comma  */
+  YYSYMBOL_35_2 = 35,                      /* $@2  */
+  YYSYMBOL_return_statement = 36,          /* return_statement  */
+  YYSYMBOL_stmt_seq = 37,                  /* stmt_seq  */
+  YYSYMBOL_stmt_part = 38,                 /* stmt_part  */
+  YYSYMBOL_paren_group = 39,               /* paren_group  */
+  YYSYMBOL_paren_items = 40,               /* paren_items  */
+  YYSYMBOL_paren_part = 41,                /* paren_part  */
+  YYSYMBOL_bracket_group = 42,             /* bracket_group  */
+  YYSYMBOL_bracket_items = 43,             /* bracket_items  */
+  YYSYMBOL_bracket_part = 44,              /* bracket_part  */
+  YYSYMBOL_angle_group = 45,               /* angle_group  */
+  YYSYMBOL_angle_items = 46,               /* angle_items  */
+  YYSYMBOL_angle_part = 47,                /* angle_part  */
+  YYSYMBOL_token = 48,                     /* token  */
+  YYSYMBOL_token_no_comma = 49             /* token_no_comma  */
 };
 typedef enum yysymbol_kind_t yysymbol_kind_t;
 
@@ -815,11 +837,11 @@ union yyalloc
 /* YYNTOKENS -- Number of terminals.  */
 #define YYNTOKENS  27
 /* YYNNTS -- Number of nonterminals.  */
-#define YYNNTS  22
+#define YYNNTS  23
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  83
+#define YYNRULES  84
 /* YYNSTATES -- Number of states.  */
-#define YYNSTATES  99
+#define YYNSTATES  100
 
 /* YYMAXUTOK -- Last valid token kind.  */
 #define YYMAXUTOK   281
@@ -871,15 +893,15 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   362,   362,   363,   368,   370,   372,   375,   374,   381,
-     383,   388,   390,   392,   394,   400,   401,   406,   408,   410,
-     412,   414,   416,   418,   420,   422,   424,   429,   431,   436,
-     438,   443,   445,   447,   449,   454,   460,   461,   466,   468,
-     470,   472,   474,   479,   485,   486,   491,   493,   495,   497,
-     499,   504,   510,   511,   516,   518,   520,   522,   524,   529,
-     531,   533,   535,   537,   539,   541,   543,   545,   547,   549,
-     551,   553,   558,   560,   562,   564,   566,   568,   570,   572,
-     574,   576,   578,   580
+       0,   383,   383,   384,   389,   391,   393,   396,   395,   402,
+     404,   409,   411,   413,   415,   421,   422,   427,   429,   431,
+     433,   435,   437,   439,   441,   443,   446,   445,   452,   454,
+     459,   461,   466,   468,   470,   472,   477,   483,   484,   489,
+     491,   493,   495,   497,   502,   508,   509,   514,   516,   518,
+     520,   522,   527,   533,   534,   539,   541,   543,   545,   547,
+     552,   554,   556,   558,   560,   562,   564,   566,   568,   570,
+     572,   574,   576,   581,   583,   585,   587,   589,   591,   593,
+     595,   597,   599,   601,   603
 };
 #endif
 
@@ -900,7 +922,7 @@ static const char *const yytname[] =
   "KEYWORD", "OP", "LBRACE", "RBRACE", "LPAREN", "RPAREN", "LBRACKET",
   "RBRACKET", "LT", "GT", "SEMI", "COMMA", "COLON", "EQUAL", "PERCENT",
   "OTHER", "$accept", "translation_unit", "external_item", "$@1",
-  "top_seq", "top_part", "compound_items", "compound_item",
+  "top_seq", "top_part", "compound_items", "compound_item", "$@2",
   "return_statement", "stmt_seq", "stmt_part", "paren_group",
   "paren_items", "paren_part", "bracket_group", "bracket_items",
   "bracket_part", "angle_group", "angle_items", "angle_part", "token",
@@ -919,7 +941,7 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 #define yypact_value_is_default(Yyn) \
   ((Yyn) == YYPACT_NINF)
 
-#define YYTABLE_NINF (-79)
+#define YYTABLE_NINF (-80)
 
 #define yytable_value_is_error(Yyn) \
   0
@@ -929,15 +951,15 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 static const yytype_int16 yypact[] =
 {
      -77,    40,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
-     -77,   -77,    -7,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
+     -77,   -77,    -8,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
      208,   -77,   -77,   -77,   -77,   -77,   136,   160,   232,   -77,
-     -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -11,
+     -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -12,
      -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
      -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
-     -77,   -77,   -77,   -77,   -77,   -77,   -77,    64,    -8,   -77,
-     256,   304,    -6,   -77,   -77,   -77,   -77,   -77,   184,   -77,
+     -77,   -77,   -77,   -77,   -77,   -77,   -77,    64,   -16,   -77,
+     256,   304,   -14,   -77,   -77,   -77,   -77,   -77,   184,   -77,
      -77,   -77,   -77,   -77,   -77,   -77,   280,   328,   -77,    88,
-     -77,   -77,   -77,   -77,   -77,   -77,   -77,   112,   -77
+     -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   112,   -77
 };
 
 /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
@@ -945,32 +967,32 @@ static const yytype_int16 yypact[] =
    means the default is an error.  */
 static const yytype_int8 yydefact[] =
 {
-       2,     0,     1,    72,    73,    74,    75,     4,    76,    77,
-      36,    44,    52,    79,     5,    80,    81,    82,    83,     3,
+       2,     0,     1,    73,    74,    75,    76,     4,    77,    78,
+      37,    45,    53,    80,     5,    81,    82,    83,    84,     3,
        0,     9,    12,    13,    14,    11,     0,     0,     0,     7,
-       6,    10,    59,    60,    61,    62,    63,    64,    35,    52,
-      66,    39,    67,    68,    69,    70,    71,    40,    37,    41,
-      42,    38,    43,    47,    48,    49,    45,    50,    46,    51,
-      55,    56,    57,    58,    53,    54,    15,     0,    72,    17,
-       0,     0,     0,    15,     8,    18,    16,    19,     0,    29,
-      32,    33,    34,    31,    22,    27,     0,     0,    23,     0,
-      15,    20,    21,    30,    28,    24,    25,     0,    26
+       6,    10,    60,    61,    62,    63,    64,    65,    36,    53,
+      67,    40,    68,    69,    70,    71,    72,    41,    38,    42,
+      43,    39,    44,    48,    49,    50,    46,    51,    47,    52,
+      56,    57,    58,    59,    54,    55,    15,     0,    73,    17,
+       0,     0,     0,    15,     8,    18,    16,    19,     0,    30,
+      33,    34,    35,    32,    22,    28,     0,     0,    23,     0,
+      26,    20,    21,    31,    29,    24,    25,    15,     0,    27
 };
 
 /* YYPGOTO[NTERM-NUM].  */
 static const yytype_int8 yypgoto[] =
 {
-     -77,   -77,   -77,   -77,   -77,    -4,   -69,   -77,   -77,   -62,
-     -76,    -1,   -77,   -77,     2,   -77,   -77,    11,   -77,   -77,
-     -14,     0
+     -77,   -77,   -77,   -77,   -77,    -5,   -65,   -77,   -77,   -77,
+     -57,   -76,    -1,   -77,   -77,     2,   -77,   -77,    11,   -77,
+     -77,   -11,     0
 };
 
 /* YYDEFGOTO[NTERM-NUM].  */
 static const yytype_int8 yydefgoto[] =
 {
-       0,     1,    19,    66,    20,    21,    67,    76,    77,    78,
-      79,    80,    26,    48,    81,    27,    56,    82,    28,    64,
-      51,    83
+       0,     1,    19,    66,    20,    21,    67,    76,    97,    77,
+      78,    79,    80,    26,    48,    81,    27,    56,    82,    28,
+      64,    51,    83
 };
 
 /* YYTABLE[YYPACT[STATE-NUM]] -- What to do in state STATE-NUM.  If
@@ -978,10 +1000,10 @@ static const yytype_int8 yydefgoto[] =
    number is the opposite.  If YYTABLE_NINF, syntax error.  */
 static const yytype_int8 yytable[] =
 {
-      22,    25,    93,    23,    89,   -65,   -78,   -65,    86,    87,
-      93,    93,    24,    58,    65,    84,    31,    88,     0,    22,
-      25,    97,    23,     0,     0,    47,    54,    61,    49,    55,
-      62,    24,     0,     0,     0,     0,     0,    50,    57,    63,
+      22,    25,    93,    23,   -66,   -79,   -66,    84,    89,    88,
+      93,    93,    24,    86,    87,    31,    58,    65,     0,    22,
+      25,     0,    23,     0,     0,    47,    54,    61,    49,    55,
+      62,    24,    98,     0,     0,     0,     0,    50,    57,    63,
        2,     0,     0,     3,     4,     5,     6,     7,     0,     0,
        0,     8,     9,     0,     0,    10,     0,    11,     0,    12,
       13,    14,     0,    15,    16,    17,    18,    68,     4,     5,
@@ -990,7 +1012,7 @@ static const yytype_int8 yytable[] =
       18,    68,     4,     5,     6,    69,    70,    71,    72,     8,
        9,    73,    96,    10,     0,    11,     0,    12,    13,    75,
        0,    15,    16,    17,    18,    68,     4,     5,     6,    69,
-      70,    71,    72,     8,     9,    73,    98,    10,     0,    11,
+      70,    71,    72,     8,     9,    73,    99,    10,     0,    11,
        0,    12,    13,    75,     0,    15,    16,    17,    18,    32,
       33,    34,    35,     0,     0,     0,     0,    36,    37,     0,
        0,    10,    38,    11,     0,    39,    40,    41,    42,    43,
@@ -1018,10 +1040,10 @@ static const yytype_int8 yytable[] =
 
 static const yytype_int8 yycheck[] =
 {
-       1,     1,    78,     1,    73,    16,    13,    18,    70,    71,
-      86,    87,     1,    27,    28,    23,    20,    23,    -1,    20,
-      20,    90,    20,    -1,    -1,    26,    27,    28,    26,    27,
-      28,    20,    -1,    -1,    -1,    -1,    -1,    26,    27,    28,
+       1,     1,    78,     1,    16,    13,    18,    23,    73,    23,
+      86,    87,     1,    70,    71,    20,    27,    28,    -1,    20,
+      20,    -1,    20,    -1,    -1,    26,    27,    28,    26,    27,
+      28,    20,    97,    -1,    -1,    -1,    -1,    26,    27,    28,
        0,    -1,    -1,     3,     4,     5,     6,     7,    -1,    -1,
       -1,    11,    12,    -1,    -1,    15,    -1,    17,    -1,    19,
       20,    21,    -1,    23,    24,    25,    26,     3,     4,     5,
@@ -1062,14 +1084,14 @@ static const yytype_int8 yystos[] =
 {
        0,    28,     0,     3,     4,     5,     6,     7,    11,    12,
       15,    17,    19,    20,    21,    23,    24,    25,    26,    29,
-      31,    32,    38,    41,    44,    48,    39,    42,    45,    13,
+      31,    32,    39,    42,    45,    49,    40,    43,    46,    13,
       21,    32,     3,     4,     5,     6,    11,    12,    16,    19,
-      20,    21,    22,    23,    24,    25,    26,    38,    40,    41,
-      44,    47,    18,    21,    38,    41,    43,    44,    47,    20,
-      21,    38,    41,    44,    46,    47,    30,    33,     3,     7,
-       8,     9,    10,    13,    14,    21,    34,    35,    36,    37,
-      38,    41,    44,    48,    23,    21,    36,    36,    23,    33,
-      13,    21,    22,    37,    21,    23,    14,    33,    14
+      20,    21,    22,    23,    24,    25,    26,    39,    41,    42,
+      45,    48,    18,    21,    39,    42,    44,    45,    48,    20,
+      21,    39,    42,    45,    47,    48,    30,    33,     3,     7,
+       8,     9,    10,    13,    14,    21,    34,    36,    37,    38,
+      39,    42,    45,    49,    23,    21,    37,    37,    23,    33,
+      13,    21,    22,    38,    21,    23,    14,    35,    33,    14
 };
 
 /* YYR1[RULE-NUM] -- Symbol kind of the left-hand side of rule RULE-NUM.  */
@@ -1077,13 +1099,13 @@ static const yytype_int8 yyr1[] =
 {
        0,    27,    28,    28,    29,    29,    29,    30,    29,    31,
       31,    32,    32,    32,    32,    33,    33,    34,    34,    34,
-      34,    34,    34,    34,    34,    34,    34,    35,    35,    36,
-      36,    37,    37,    37,    37,    38,    39,    39,    40,    40,
-      40,    40,    40,    41,    42,    42,    43,    43,    43,    43,
-      43,    44,    45,    45,    46,    46,    46,    46,    46,    47,
-      47,    47,    47,    47,    47,    47,    47,    47,    47,    47,
-      47,    47,    48,    48,    48,    48,    48,    48,    48,    48,
-      48,    48,    48,    48
+      34,    34,    34,    34,    34,    34,    35,    34,    36,    36,
+      37,    37,    38,    38,    38,    38,    39,    40,    40,    41,
+      41,    41,    41,    41,    42,    43,    43,    44,    44,    44,
+      44,    44,    45,    46,    46,    47,    47,    47,    47,    47,
+      48,    48,    48,    48,    48,    48,    48,    48,    48,    48,
+      48,    48,    48,    49,    49,    49,    49,    49,    49,    49,
+      49,    49,    49,    49,    49
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
@@ -1091,13 +1113,13 @@ static const yytype_int8 yyr2[] =
 {
        0,     2,     0,     2,     1,     1,     2,     0,     5,     1,
        2,     1,     1,     1,     1,     0,     2,     1,     1,     1,
-       2,     2,     2,     2,     3,     3,     4,     2,     3,     1,
-       2,     1,     1,     1,     1,     3,     0,     2,     1,     1,
-       1,     1,     1,     3,     0,     2,     1,     1,     1,     1,
-       1,     3,     0,     2,     1,     1,     1,     1,     1,     1,
+       2,     2,     2,     2,     3,     3,     0,     5,     2,     3,
+       1,     2,     1,     1,     1,     1,     3,     0,     2,     1,
+       1,     1,     1,     1,     3,     0,     2,     1,     1,     1,
+       1,     1,     3,     0,     2,     1,     1,     1,     1,     1,
        1,     1,     1,     1,     1,     1,     1,     1,     1,     1,
        1,     1,     1,     1,     1,     1,     1,     1,     1,     1,
-       1,     1,     1,     1
+       1,     1,     1,     1,     1
 };
 
 
@@ -1561,499 +1583,505 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* translation_unit: %empty  */
-#line 362 "src/parser.y"
+#line 383 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1567 "src/parser.c"
+#line 1589 "src/parser.c"
     break;
 
   case 3: /* translation_unit: translation_unit external_item  */
-#line 364 "src/parser.y"
+#line 385 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); g_output = (yyval.node); }
-#line 1573 "src/parser.c"
+#line 1595 "src/parser.c"
     break;
 
   case 4: /* external_item: PP_LINE  */
-#line 369 "src/parser.y"
+#line 390 "src/parser.y"
         { (yyval.node) = process_pp_line((yyvsp[0].node)); }
-#line 1579 "src/parser.c"
+#line 1601 "src/parser.c"
     break;
 
   case 5: /* external_item: SEMI  */
-#line 371 "src/parser.y"
+#line 392 "src/parser.y"
         { (yyval.node) = process_standalone_semi((yyvsp[0].node)); }
-#line 1585 "src/parser.c"
+#line 1607 "src/parser.c"
     break;
 
   case 6: /* external_item: top_seq SEMI  */
-#line 373 "src/parser.y"
+#line 394 "src/parser.y"
         { (yyval.node) = process_external_decl((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1591 "src/parser.c"
+#line 1613 "src/parser.c"
     break;
 
   case 7: /* $@1: %empty  */
-#line 375 "src/parser.y"
+#line 396 "src/parser.y"
         { begin_top_block((yyvsp[-1].node)); }
-#line 1597 "src/parser.c"
+#line 1619 "src/parser.c"
     break;
 
   case 8: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
-#line 377 "src/parser.y"
+#line 398 "src/parser.y"
         { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1603 "src/parser.c"
+#line 1625 "src/parser.c"
     break;
 
   case 9: /* top_seq: top_part  */
-#line 382 "src/parser.y"
+#line 403 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1609 "src/parser.c"
+#line 1631 "src/parser.c"
     break;
 
   case 10: /* top_seq: top_seq top_part  */
-#line 384 "src/parser.y"
+#line 405 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1615 "src/parser.c"
+#line 1637 "src/parser.c"
     break;
 
   case 11: /* top_part: token_no_comma  */
-#line 389 "src/parser.y"
+#line 410 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1621 "src/parser.c"
+#line 1643 "src/parser.c"
     break;
 
   case 12: /* top_part: paren_group  */
-#line 391 "src/parser.y"
+#line 412 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1627 "src/parser.c"
+#line 1649 "src/parser.c"
     break;
 
   case 13: /* top_part: bracket_group  */
-#line 393 "src/parser.y"
+#line 414 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1633 "src/parser.c"
+#line 1655 "src/parser.c"
     break;
 
   case 14: /* top_part: angle_group  */
-#line 395 "src/parser.y"
+#line 416 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1639 "src/parser.c"
+#line 1661 "src/parser.c"
     break;
 
   case 15: /* compound_items: %empty  */
-#line 400 "src/parser.y"
+#line 421 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1645 "src/parser.c"
+#line 1667 "src/parser.c"
     break;
 
   case 16: /* compound_items: compound_items compound_item  */
-#line 402 "src/parser.y"
+#line 423 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1651 "src/parser.c"
+#line 1673 "src/parser.c"
     break;
 
   case 17: /* compound_item: PP_LINE  */
-#line 407 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1657 "src/parser.c"
+#line 428 "src/parser.y"
+        { (yyval.node) = process_pp_line((yyvsp[0].node)); }
+#line 1679 "src/parser.c"
     break;
 
   case 18: /* compound_item: SEMI  */
-#line 409 "src/parser.y"
+#line 430 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1663 "src/parser.c"
+#line 1685 "src/parser.c"
     break;
 
   case 19: /* compound_item: return_statement  */
-#line 411 "src/parser.y"
+#line 432 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1669 "src/parser.c"
+#line 1691 "src/parser.c"
     break;
 
   case 20: /* compound_item: stmt_seq SEMI  */
-#line 413 "src/parser.y"
+#line 434 "src/parser.y"
         { (yyval.node) = process_statement((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1675 "src/parser.c"
+#line 1697 "src/parser.c"
     break;
 
   case 21: /* compound_item: stmt_seq COMMA  */
-#line 415 "src/parser.y"
+#line 436 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1681 "src/parser.c"
+#line 1703 "src/parser.c"
     break;
 
   case 22: /* compound_item: IDENT COLON  */
-#line 417 "src/parser.y"
+#line 438 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1687 "src/parser.c"
+#line 1709 "src/parser.c"
     break;
 
   case 23: /* compound_item: DEFAULT COLON  */
-#line 419 "src/parser.y"
+#line 440 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1693 "src/parser.c"
+#line 1715 "src/parser.c"
     break;
 
   case 24: /* compound_item: CASE stmt_seq COLON  */
-#line 421 "src/parser.y"
+#line 442 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1699 "src/parser.c"
+#line 1721 "src/parser.c"
     break;
 
   case 25: /* compound_item: LBRACE compound_items RBRACE  */
-#line 423 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1705 "src/parser.c"
-    break;
-
-  case 26: /* compound_item: stmt_seq LBRACE compound_items RBRACE  */
-#line 425 "src/parser.y"
-        { (yyval.node) = text_join4(process_control_head((yyvsp[-3].node)), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1711 "src/parser.c"
-    break;
-
-  case 27: /* return_statement: RETURN SEMI  */
-#line 430 "src/parser.y"
-        { (yyval.node) = process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)); }
-#line 1717 "src/parser.c"
-    break;
-
-  case 28: /* return_statement: RETURN stmt_seq SEMI  */
-#line 432 "src/parser.y"
-        { (yyval.node) = process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1723 "src/parser.c"
-    break;
-
-  case 29: /* stmt_seq: stmt_part  */
-#line 437 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1729 "src/parser.c"
-    break;
-
-  case 30: /* stmt_seq: stmt_seq stmt_part  */
-#line 439 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1735 "src/parser.c"
-    break;
-
-  case 31: /* stmt_part: token_no_comma  */
 #line 444 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1741 "src/parser.c"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1727 "src/parser.c"
     break;
 
-  case 32: /* stmt_part: paren_group  */
+  case 26: /* $@2: %empty  */
 #line 446 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1747 "src/parser.c"
+        { begin_stmt_block((yyvsp[-1].node)); }
+#line 1733 "src/parser.c"
     break;
 
-  case 33: /* stmt_part: bracket_group  */
+  case 27: /* compound_item: stmt_seq LBRACE $@2 compound_items RBRACE  */
 #line 448 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1753 "src/parser.c"
+        { (yyval.node) = finish_stmt_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1739 "src/parser.c"
     break;
 
-  case 34: /* stmt_part: angle_group  */
-#line 450 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1759 "src/parser.c"
+  case 28: /* return_statement: RETURN SEMI  */
+#line 453 "src/parser.y"
+        { (yyval.node) = process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)); }
+#line 1745 "src/parser.c"
     break;
 
-  case 35: /* paren_group: LPAREN paren_items RPAREN  */
+  case 29: /* return_statement: RETURN stmt_seq SEMI  */
 #line 455 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1765 "src/parser.c"
+        { (yyval.node) = process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1751 "src/parser.c"
     break;
 
-  case 36: /* paren_items: %empty  */
+  case 30: /* stmt_seq: stmt_part  */
 #line 460 "src/parser.y"
-        { (yyval.node) = text_new(); }
-#line 1771 "src/parser.c"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1757 "src/parser.c"
     break;
 
-  case 37: /* paren_items: paren_items paren_part  */
+  case 31: /* stmt_seq: stmt_seq stmt_part  */
 #line 462 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1777 "src/parser.c"
+#line 1763 "src/parser.c"
     break;
 
-  case 38: /* paren_part: token  */
+  case 32: /* stmt_part: token_no_comma  */
 #line 467 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1783 "src/parser.c"
+#line 1769 "src/parser.c"
     break;
 
-  case 39: /* paren_part: SEMI  */
+  case 33: /* stmt_part: paren_group  */
 #line 469 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1789 "src/parser.c"
+#line 1775 "src/parser.c"
     break;
 
-  case 40: /* paren_part: paren_group  */
+  case 34: /* stmt_part: bracket_group  */
 #line 471 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1795 "src/parser.c"
+#line 1781 "src/parser.c"
     break;
 
-  case 41: /* paren_part: bracket_group  */
+  case 35: /* stmt_part: angle_group  */
 #line 473 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1801 "src/parser.c"
+#line 1787 "src/parser.c"
     break;
 
-  case 42: /* paren_part: angle_group  */
-#line 475 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1807 "src/parser.c"
-    break;
-
-  case 43: /* bracket_group: LBRACKET bracket_items RBRACKET  */
-#line 480 "src/parser.y"
+  case 36: /* paren_group: LPAREN paren_items RPAREN  */
+#line 478 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1813 "src/parser.c"
+#line 1793 "src/parser.c"
     break;
 
-  case 44: /* bracket_items: %empty  */
-#line 485 "src/parser.y"
+  case 37: /* paren_items: %empty  */
+#line 483 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1819 "src/parser.c"
+#line 1799 "src/parser.c"
     break;
 
-  case 45: /* bracket_items: bracket_items bracket_part  */
-#line 487 "src/parser.y"
+  case 38: /* paren_items: paren_items paren_part  */
+#line 485 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1825 "src/parser.c"
+#line 1805 "src/parser.c"
     break;
 
-  case 46: /* bracket_part: token  */
+  case 39: /* paren_part: token  */
+#line 490 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1811 "src/parser.c"
+    break;
+
+  case 40: /* paren_part: SEMI  */
 #line 492 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1831 "src/parser.c"
+#line 1817 "src/parser.c"
     break;
 
-  case 47: /* bracket_part: SEMI  */
+  case 41: /* paren_part: paren_group  */
 #line 494 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1837 "src/parser.c"
+#line 1823 "src/parser.c"
     break;
 
-  case 48: /* bracket_part: paren_group  */
+  case 42: /* paren_part: bracket_group  */
 #line 496 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1843 "src/parser.c"
+#line 1829 "src/parser.c"
     break;
 
-  case 49: /* bracket_part: bracket_group  */
+  case 43: /* paren_part: angle_group  */
 #line 498 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1849 "src/parser.c"
+#line 1835 "src/parser.c"
     break;
 
-  case 50: /* bracket_part: angle_group  */
-#line 500 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1855 "src/parser.c"
-    break;
-
-  case 51: /* angle_group: LT angle_items GT  */
-#line 505 "src/parser.y"
+  case 44: /* bracket_group: LBRACKET bracket_items RBRACKET  */
+#line 503 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1861 "src/parser.c"
+#line 1841 "src/parser.c"
     break;
 
-  case 52: /* angle_items: %empty  */
-#line 510 "src/parser.y"
+  case 45: /* bracket_items: %empty  */
+#line 508 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1867 "src/parser.c"
+#line 1847 "src/parser.c"
     break;
 
-  case 53: /* angle_items: angle_items angle_part  */
-#line 512 "src/parser.y"
+  case 46: /* bracket_items: bracket_items bracket_part  */
+#line 510 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1873 "src/parser.c"
+#line 1853 "src/parser.c"
     break;
 
-  case 54: /* angle_part: token  */
+  case 47: /* bracket_part: token  */
+#line 515 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1859 "src/parser.c"
+    break;
+
+  case 48: /* bracket_part: SEMI  */
 #line 517 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1879 "src/parser.c"
+#line 1865 "src/parser.c"
     break;
 
-  case 55: /* angle_part: SEMI  */
+  case 49: /* bracket_part: paren_group  */
 #line 519 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1885 "src/parser.c"
+#line 1871 "src/parser.c"
     break;
 
-  case 56: /* angle_part: paren_group  */
+  case 50: /* bracket_part: bracket_group  */
 #line 521 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1891 "src/parser.c"
+#line 1877 "src/parser.c"
     break;
 
-  case 57: /* angle_part: bracket_group  */
+  case 51: /* bracket_part: angle_group  */
 #line 523 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1897 "src/parser.c"
+#line 1883 "src/parser.c"
     break;
 
-  case 58: /* angle_part: angle_group  */
-#line 525 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1903 "src/parser.c"
+  case 52: /* angle_group: LT angle_items GT  */
+#line 528 "src/parser.y"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1889 "src/parser.c"
     break;
 
-  case 59: /* token: IDENT  */
-#line 530 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1909 "src/parser.c"
+  case 53: /* angle_items: %empty  */
+#line 533 "src/parser.y"
+        { (yyval.node) = text_new(); }
+#line 1895 "src/parser.c"
     break;
 
-  case 60: /* token: NUMBER  */
-#line 532 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1915 "src/parser.c"
+  case 54: /* angle_items: angle_items angle_part  */
+#line 535 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1901 "src/parser.c"
     break;
 
-  case 61: /* token: STRING_LITERAL  */
-#line 534 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1921 "src/parser.c"
-    break;
-
-  case 62: /* token: CHAR_LITERAL  */
-#line 536 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1927 "src/parser.c"
-    break;
-
-  case 63: /* token: KEYWORD  */
-#line 538 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1933 "src/parser.c"
-    break;
-
-  case 64: /* token: OP  */
+  case 55: /* angle_part: token  */
 #line 540 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1939 "src/parser.c"
+#line 1907 "src/parser.c"
     break;
 
-  case 65: /* token: LT  */
+  case 56: /* angle_part: SEMI  */
 #line 542 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1945 "src/parser.c"
+#line 1913 "src/parser.c"
     break;
 
-  case 66: /* token: GT  */
+  case 57: /* angle_part: paren_group  */
 #line 544 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1951 "src/parser.c"
+#line 1919 "src/parser.c"
     break;
 
-  case 67: /* token: COMMA  */
+  case 58: /* angle_part: bracket_group  */
 #line 546 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1957 "src/parser.c"
+#line 1925 "src/parser.c"
     break;
 
-  case 68: /* token: COLON  */
+  case 59: /* angle_part: angle_group  */
 #line 548 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1963 "src/parser.c"
+#line 1931 "src/parser.c"
     break;
 
-  case 69: /* token: EQUAL  */
-#line 550 "src/parser.y"
+  case 60: /* token: IDENT  */
+#line 553 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1969 "src/parser.c"
+#line 1937 "src/parser.c"
     break;
 
-  case 70: /* token: PERCENT  */
-#line 552 "src/parser.y"
+  case 61: /* token: NUMBER  */
+#line 555 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1975 "src/parser.c"
+#line 1943 "src/parser.c"
     break;
 
-  case 71: /* token: OTHER  */
-#line 554 "src/parser.y"
+  case 62: /* token: STRING_LITERAL  */
+#line 557 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1981 "src/parser.c"
+#line 1949 "src/parser.c"
     break;
 
-  case 72: /* token_no_comma: IDENT  */
+  case 63: /* token: CHAR_LITERAL  */
 #line 559 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1987 "src/parser.c"
+#line 1955 "src/parser.c"
     break;
 
-  case 73: /* token_no_comma: NUMBER  */
+  case 64: /* token: KEYWORD  */
 #line 561 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1993 "src/parser.c"
+#line 1961 "src/parser.c"
     break;
 
-  case 74: /* token_no_comma: STRING_LITERAL  */
+  case 65: /* token: OP  */
 #line 563 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1999 "src/parser.c"
+#line 1967 "src/parser.c"
     break;
 
-  case 75: /* token_no_comma: CHAR_LITERAL  */
+  case 66: /* token: LT  */
 #line 565 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2005 "src/parser.c"
+#line 1973 "src/parser.c"
     break;
 
-  case 76: /* token_no_comma: KEYWORD  */
+  case 67: /* token: GT  */
 #line 567 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2011 "src/parser.c"
+#line 1979 "src/parser.c"
     break;
 
-  case 77: /* token_no_comma: OP  */
+  case 68: /* token: COMMA  */
 #line 569 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2017 "src/parser.c"
+#line 1985 "src/parser.c"
     break;
 
-  case 78: /* token_no_comma: LT  */
+  case 69: /* token: COLON  */
 #line 571 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2023 "src/parser.c"
+#line 1991 "src/parser.c"
     break;
 
-  case 79: /* token_no_comma: GT  */
+  case 70: /* token: EQUAL  */
 #line 573 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2029 "src/parser.c"
+#line 1997 "src/parser.c"
     break;
 
-  case 80: /* token_no_comma: COLON  */
+  case 71: /* token: PERCENT  */
 #line 575 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2035 "src/parser.c"
+#line 2003 "src/parser.c"
     break;
 
-  case 81: /* token_no_comma: EQUAL  */
+  case 72: /* token: OTHER  */
 #line 577 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2041 "src/parser.c"
+#line 2009 "src/parser.c"
     break;
 
-  case 82: /* token_no_comma: PERCENT  */
-#line 579 "src/parser.y"
+  case 73: /* token_no_comma: IDENT  */
+#line 582 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2047 "src/parser.c"
+#line 2015 "src/parser.c"
     break;
 
-  case 83: /* token_no_comma: OTHER  */
-#line 581 "src/parser.y"
+  case 74: /* token_no_comma: NUMBER  */
+#line 584 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2053 "src/parser.c"
+#line 2021 "src/parser.c"
     break;
 
+  case 75: /* token_no_comma: STRING_LITERAL  */
+#line 586 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2027 "src/parser.c"
+    break;
 
+  case 76: /* token_no_comma: CHAR_LITERAL  */
+#line 588 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2033 "src/parser.c"
+    break;
+
+  case 77: /* token_no_comma: KEYWORD  */
+#line 590 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2039 "src/parser.c"
+    break;
+
+  case 78: /* token_no_comma: OP  */
+#line 592 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2045 "src/parser.c"
+    break;
+
+  case 79: /* token_no_comma: LT  */
+#line 594 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2051 "src/parser.c"
+    break;
+
+  case 80: /* token_no_comma: GT  */
+#line 596 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
 #line 2057 "src/parser.c"
+    break;
+
+  case 81: /* token_no_comma: COLON  */
+#line 598 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2063 "src/parser.c"
+    break;
+
+  case 82: /* token_no_comma: EQUAL  */
+#line 600 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2069 "src/parser.c"
+    break;
+
+  case 83: /* token_no_comma: PERCENT  */
+#line 602 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2075 "src/parser.c"
+    break;
+
+  case 84: /* token_no_comma: OTHER  */
+#line 604 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2081 "src/parser.c"
+    break;
+
+
+#line 2085 "src/parser.c"
 
       default: break;
     }
@@ -2246,7 +2274,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 584 "src/parser.y"
+#line 607 "src/parser.y"
 
 
 static void die(const char *msg)
@@ -2951,7 +2979,7 @@ static struct Text *try_rewrite_auto_payload_enum_decl(struct Text *in)
     out->ast = in->ast;
 
     type = type_make(TY_STRUCT, 0, inst->concrete);
-    symbol_add(var, type);
+    (void)type;
     tag_add(TY_STRUCT, inst->concrete);
 
     text_free(rhs);
@@ -3055,6 +3083,7 @@ static int parse_generic_angle_arg(const char *p, char *arg, const char **after)
 {
     const char *start;
     int depth = 1;
+    int i;
 
     p = skip_ws(p);
     if (*p != '<') {
@@ -3068,6 +3097,20 @@ static int parse_generic_angle_arg(const char *p, char *arg, const char **after)
             depth--;
             if (depth == 0) {
                 copy_trimmed(arg, NAME_MAX_LEN, start, p);
+                if (is_ident_start((unsigned char)arg[0]) &&
+                    strchr(arg, '*') == NULL && strchr(arg, ' ') == NULL &&
+                    strchr(arg, '<') == NULL && strchr(arg, ',') == NULL &&
+                    keyword_type(arg) == TY_UNKNOWN) {
+                    for (i = 0; i < g_tags.count; i++) {
+                        if (g_tags.tag[i].kind == TY_STRUCT && strcmp(g_tags.tag[i].name, arg) == 0) {
+                            char normalized[NAME_MAX_LEN];
+                            snprintf(normalized, sizeof(normalized), "struct %s*", arg);
+                            strncpy(arg, normalized, NAME_MAX_LEN - 1);
+                            arg[NAME_MAX_LEN - 1] = '\0';
+                            break;
+                        }
+                    }
+                }
                 *after = p + 1;
                 return arg[0] != '\0';
             }
@@ -3560,14 +3603,37 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
         const char *next = read_name(p, word);
         const char *after;
         struct GenericTemplate *tmpl = generic_find(&g_generic_structs, word);
+        if (strcmp(word, "string") == 0) {
+            *base_end = next;
+            *type = type_make(TY_CHAR, 1, NULL);
+            type->owned = 1;
+            return 1;
+        }
         if (tmpl != NULL && parse_generic_angle_arg(next, arg, &after)) {
             struct GenericInstance *inst = generic_instance_get(tmpl, arg);
             *base_end = after;
             *type = type_make(TY_STRUCT, 0, inst->concrete);
             return 1;
         }
+        {
+            struct PayloadEnum *payload_en = payload_enum_find(word);
+            if (payload_en != NULL && parse_generic_angle_arg(next, arg, &after)) {
+                struct GenericInstance *inst = payload_enum_instance_get(payload_en, arg);
+                *base_end = after;
+                *type = type_make(TY_STRUCT, 0, inst->concrete);
+                return 1;
+            }
+        }
         kind = keyword_type(word);
         if (kind == TY_UNKNOWN) {
+            int i;
+            for (i = 0; i < g_tags.count; i++) {
+                if (strcmp(g_tags.tag[i].name, word) == 0) {
+                    *base_end = next;
+                    *type = type_make(g_tags.tag[i].kind, 0, word);
+                    return 1;
+                }
+            }
             return 0;
         }
         p = next;
@@ -3752,6 +3818,232 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     }
     decl->is_decl = 1;
     return 1;
+}
+
+static const char *find_decl_name_pos(const char *s, const char *name)
+{
+    const char *p = s;
+    size_t n = strlen(name);
+
+    while ((p = strstr(p, name)) != NULL) {
+        if ((p == s || !is_ident((unsigned char)p[-1])) &&
+            !is_ident((unsigned char)p[n])) {
+            return p;
+        }
+        p += n;
+    }
+    return NULL;
+}
+
+static int pointer_token_before(const char *start, const char *end)
+{
+    const char *p;
+
+    for (p = start; p < end && *p != '\0'; p++) {
+        if (*p == '*' || *p == '%') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int is_safe_reference_type(struct Type type)
+{
+    if (type.tag[0] != '\0' && strncmp(type.tag, "__CMinusIndex", 13) == 0) {
+        return 0;
+    }
+    return type.kind == TY_STRUCT;
+}
+
+static struct Text *rewrite_string_decl_text(struct Text *in, const char *base_start)
+{
+    struct Text *out = text_new();
+    const char *p = base_start;
+
+    text_add_n(out, in->text, (size_t)(base_start - in->text));
+    while (isspace((unsigned char)*p)) {
+        text_add_ch(out, *p++);
+    }
+    text_add(out, "owned char*");
+    p += 6;
+    text_add(out, p);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *insert_pointer_before_name(struct Text *in, const char *name_pos)
+{
+    struct Text *out = text_new();
+
+    text_add_n(out, in->text, (size_t)(name_pos - in->text));
+    text_add_ch(out, '*');
+    text_add(out, name_pos);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_bare_struct_reference_decl(struct Text *in, const char *base_start, const char *base_end, const char *name_pos, struct Type type)
+{
+    struct Text *out = text_new();
+    const char *kind = type_kind_name(type.kind);
+
+    text_add_n(out, in->text, (size_t)(base_start - in->text));
+    text_add(out, kind);
+    text_add_ch(out, ' ');
+    text_add(out, type.tag);
+    text_add_n(out, base_end, (size_t)(name_pos - base_end));
+    text_add_ch(out, '*');
+    text_add(out, name_pos);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_safe_reference_params(struct Text *in)
+{
+    const char *open = strchr(in->text, '(');
+    const char *close;
+    const char *cursor;
+    struct Text *out;
+
+    if (open == NULL) {
+        return in;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return in;
+    }
+    out = text_new();
+    text_add_n(out, in->text, (size_t)(open + 1 - in->text));
+    cursor = open + 1;
+    while (cursor < close) {
+        const char *part_start = cursor;
+        const char *part_end = cursor;
+        int depth = 0;
+        struct Text *part;
+
+        while (part_end < close) {
+            if (*part_end == '(' || *part_end == '[' || *part_end == '<') {
+                depth++;
+            } else if ((*part_end == ')' || *part_end == ']' || *part_end == '>') && depth > 0) {
+                depth--;
+            } else if (*part_end == ',' && depth == 0) {
+                break;
+            }
+            part_end++;
+        }
+        part = text_new();
+        text_add_n(part, part_start, (size_t)(part_end - part_start));
+        part = rewrite_safe_reference_decl(part);
+        text_add(out, part->text);
+        text_free(part);
+        if (part_end < close && *part_end == ',') {
+            text_add_ch(out, ',');
+            part_end++;
+        }
+        cursor = part_end;
+    }
+    text_add(out, close);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static void check_safe_pointer_decl(const char *s)
+{
+    struct DeclInfo decl;
+    const char *name_pos;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    if (!parse_decl(s, &decl) || !decl.is_decl || decl.name[0] == '\0') {
+        return;
+    }
+    name_pos = find_decl_name_pos(s, decl.name);
+    if (name_pos == NULL) {
+        return;
+    }
+    if (pointer_token_before(s, name_pos)) {
+        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+        exit(1);
+    }
+}
+
+static struct Text *rewrite_safe_reference_decl(struct Text *in)
+{
+    struct DeclInfo decl;
+    const char *base = skip_ws(in->text);
+    const char *base_end;
+    struct Type base_type;
+    const char *name_pos;
+    char func_name[NAME_MAX_LEN];
+    struct Type ret_type;
+
+    if (g_unsafe_depth > 0) {
+        return in;
+    }
+    if (parse_function_signature(in->text, func_name, &ret_type)) {
+        if (strncmp(base, "string", 6) == 0 && !is_ident((unsigned char)base[6])) {
+            in = rewrite_string_decl_text(in, base);
+            return rewrite_safe_reference_params(in);
+        }
+        if (ret_type.ptr == 0 && is_safe_reference_type(ret_type)) {
+            name_pos = find_decl_name_pos(in->text, func_name);
+            if (name_pos == NULL) {
+                return in;
+            }
+            if (pointer_token_before(in->text, name_pos)) {
+                fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+                exit(1);
+            }
+            if (parse_base_type_prefix(base, &base_end, &base_type) &&
+                base_type.tag[0] != '\0' &&
+                !starts_word(base, "struct") &&
+                !starts_word(base, "union") &&
+                !starts_word(base, "enum")) {
+                in = rewrite_bare_struct_reference_decl(in, base, base_end, name_pos, base_type);
+            } else {
+                in = insert_pointer_before_name(in, name_pos);
+            }
+        }
+        return rewrite_safe_reference_params(in);
+    }
+    if (!parse_decl(in->text, &decl) || !decl.is_decl || decl.name[0] == '\0' || decl.is_array) {
+        return in;
+    }
+    name_pos = find_decl_name_pos(in->text, decl.name);
+    if (name_pos == NULL) {
+        return in;
+    }
+    if (pointer_token_before(in->text, name_pos)) {
+        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+        exit(1);
+    }
+    if (strncmp(base, "string", 6) == 0 && !is_ident((unsigned char)base[6])) {
+        return rewrite_string_decl_text(in, base);
+    }
+    if (decl.type.ptr == 0 && is_safe_reference_type(decl.type)) {
+        if (parse_base_type_prefix(base, &base_end, &base_type) &&
+            base_type.tag[0] != '\0' &&
+            !starts_word(base, "struct") &&
+            !starts_word(base, "union") &&
+            !starts_word(base, "enum")) {
+            return rewrite_bare_struct_reference_decl(in, base, base_end, name_pos, base_type);
+        }
+        return insert_pointer_before_name(in, name_pos);
+    }
+    return in;
 }
 
 static int extract_lhs_name(const char *s, int eq, char *name)
@@ -4035,6 +4327,7 @@ static struct Text *rewrite_generics(struct Text *in)
             const char *after;
             const char *member;
             struct GenericTemplate *struct_tmpl = generic_find(&g_generic_structs, name);
+            struct PayloadEnum *payload_en = payload_enum_find(name);
 
             if (struct_tmpl != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
                 if (strcmp(arg, struct_tmpl->param) == 0) {
@@ -4090,6 +4383,16 @@ static struct Text *rewrite_generics(struct Text *in)
                 }
                 p = after;
                 continue;
+            }
+            if (payload_en != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
+                member = skip_ws(after);
+                if (*member != '.') {
+                    struct GenericInstance *inst = payload_enum_instance_get(payload_en, arg);
+                    text_add(out, "struct ");
+                    text_add(out, inst->concrete);
+                    p = after;
+                    continue;
+                }
             }
         }
         if (starts_word(p, "struct")) {
@@ -4206,6 +4509,20 @@ static struct Text *rewrite_foreach_head(struct Text *head)
     type_text = text_new();
     text_add(type_text, type);
     type_text = rewrite_generics(type_text);
+    {
+        const char *type_end;
+        struct Type foreach_type;
+
+        if (parse_base_type_prefix(type_text->text, &type_end, &foreach_type) &&
+            *skip_ws(type_end) == '\0' &&
+            foreach_type.ptr == 0 && is_safe_reference_type(foreach_type)) {
+            struct Text *normalized = text_new();
+            foreach_type.ptr++;
+            append_c_type(normalized, foreach_type);
+            text_free(type_text);
+            type_text = normalized;
+        }
+    }
 
     id = g_foreach_id++;
     strcpy(data_op, ".");
@@ -4446,6 +4763,7 @@ static void begin_function(void)
     g_function_returns_move = 0;
     g_current_function_name[0] = '\0';
     g_current_function_ret = type_unknown();
+    g_current_function_stack_guard = 0;
     g_in_function = 1;
 }
 
@@ -4457,6 +4775,14 @@ static void begin_top_block(struct Text *head)
     register_tags_in_text(head->text);
     g_current_generic_kind = 0;
     g_current_payload_enum = 0;
+    if (is_unsafe_head(head->text)) {
+        cminus_unsafe_push();
+        g_top_block_is_function = 0;
+        g_in_function = 0;
+        g_in_aggregate_struct = 0;
+        g_current_struct_tag[0] = '\0';
+        return;
+    }
     if (parse_payload_enum_head(head->text, param, name)) {
         g_current_payload_enum = 1;
         g_top_block_is_function = 0;
@@ -4479,10 +4805,24 @@ static void begin_top_block(struct Text *head)
     } else if (g_top_block_is_function) {
         begin_function();
         if (parse_function_signature(head->text, name, &ret)) {
+            struct Text *normalized_head = text_new();
+            text_add(normalized_head, head->text);
+            normalized_head = rewrite_generics(normalized_head);
+            normalized_head = rewrite_safe_reference_decl(normalized_head);
             strncpy(g_current_function_name, name, NAME_MAX_LEN - 1);
             g_current_function_name[NAME_MAX_LEN - 1] = '\0';
-            g_current_function_ret = ret;
+            if (parse_function_signature(normalized_head->text, name, &ret)) {
+                g_current_function_ret = ret;
+            } else {
+                g_current_function_ret = type_unknown();
+            }
+            register_function_params(normalized_head->text);
+            if (head_function_name(normalized_head->text, name) && function_needs_stack_guard(name)) {
+                register_function_param_symbols(normalized_head->text);
+            }
+            text_free(normalized_head);
         }
+        g_current_function_stack_guard = !function_signature_is_internal(head->text);
     } else if (parse_struct_head(head->text, name)) {
         g_in_aggregate_struct = 1;
         strncpy(g_current_struct_tag, name, NAME_MAX_LEN - 1);
@@ -4672,7 +5012,7 @@ static struct Text *process_pp_line(struct Text *line)
         text_free(line);
         exit(1);
     }
-    cminus_push_include(fp);
+    cminus_push_include(fp, 1);
     out = text_new();
     text_free(line);
     return out;
@@ -4775,9 +5115,7 @@ static void owned_func_add_type(const char *name, struct Type ret)
 
 static void register_builtin_owned_functions(void)
 {
-    struct Type ret = type_make(TY_CHAR, 1, NULL);
-    ret.owned = 1;
-    owned_func_add_type("strdup", ret);
+    return;
 }
 
 static int text_has_word(const char *s, const char *word)
@@ -5099,6 +5437,61 @@ static void register_function_params(const char *s)
                 fn->param[fn->count].def[def_len] = '\0';
                 fn->count++;
             }
+        }
+        p = arg_end;
+        if (p < close && *p == ',') {
+            p++;
+        }
+    }
+}
+
+static void register_function_param_symbols(const char *s)
+{
+    char name[NAME_MAX_LEN];
+    struct Type ret;
+    const char *open;
+    const char *close;
+    const char *p;
+
+    if (!parse_function_signature(s, name, &ret)) {
+        return;
+    }
+    open = strchr(s, '(');
+    if (open == NULL) {
+        return;
+    }
+    close = find_matching_paren(open);
+    if (close == NULL) {
+        return;
+    }
+    p = open + 1;
+    while (p < close) {
+        const char *arg_end = find_top_level_char(p, close, ',');
+        const char *param_end;
+        const char *eq;
+        struct DeclInfo decl;
+        char *tmp;
+
+        if (arg_end == NULL) {
+            arg_end = close;
+        }
+        while (p < arg_end && isspace((unsigned char)*p)) {
+            p++;
+        }
+        param_end = arg_end;
+        while (param_end > p && isspace((unsigned char)param_end[-1])) {
+            param_end--;
+        }
+        if (param_end > p && !(param_end - p == 4 && strncmp(p, "void", 4) == 0)) {
+            eq = find_top_level_char(p, param_end, '=');
+            if (eq == NULL) {
+                eq = param_end;
+            }
+            tmp = xstrndup(p, (size_t)(eq - p));
+            if (parse_decl(tmp, &decl) && decl.name[0] != '\0') {
+                symbol_add_to(&g_locals, decl.name, decl.type);
+            }
+            free(tmp);
         }
         p = arg_end;
         if (p < close && *p == ',') {
@@ -5559,6 +5952,10 @@ static int parse_new_expr(const char *rhs, const char **new_start, const char **
             end++;
         }
     }
+    if (base.kind != TY_STRUCT || ptr != 0) {
+        fprintf(stderr, "c-: type error: new is only allowed for struct types\n");
+        exit(1);
+    }
     *type = base;
     type->ptr += ptr + 1;
     type->owned = 1;
@@ -5720,7 +6117,7 @@ static struct Text *build_clone_expression(const char *source, struct Type sourc
             text_add(out, "); ");
         } else if (type_is_string(source_type)) {
             g_need_string_h = 1;
-            text_add(out, " = calloc(strlen(");
+            text_add(out, clone_uses_managed_heap(base.tag) ? " = cminus_gc_calloc(strlen(" : " = calloc(strlen(");
             text_add(out, src_tmp);
             text_add(out, ") + 1, sizeof(char)); ");
             text_add(out, "strncpy(");
@@ -5731,7 +6128,7 @@ static struct Text *build_clone_expression(const char *source, struct Type sourc
             text_add(out, src_tmp);
             text_add(out, ") + 1); ");
         } else {
-            text_add(out, " = calloc(1, sizeof(");
+            text_add(out, clone_uses_managed_heap(base.tag) ? " = cminus_gc_calloc(1, sizeof(" : " = calloc(1, sizeof(");
             append_c_type(out, base);
             text_add(out, ")); ");
             text_add(out, "*");
@@ -5949,6 +6346,9 @@ static void append_object_initializer_assignments(struct Text *out, const char *
         text_add(out, "->");
         text_add(out, field);
         text_add(out, " = ");
+        if (text_has_s_string(value)) {
+            text_add(out, "move ");
+        }
         text_add_n(out, value_start, (size_t)(value_end - value_start));
         text_add(out, "; ");
         free(value);
@@ -6041,7 +6441,7 @@ static struct Text *rewrite_new_expressions(struct Text *in)
         append_c_type(out, type);
         text_add(out, " ");
         text_add(out, tmp);
-        text_add(out, " = calloc(1, sizeof(");
+        text_add(out, " = cminus_gc_calloc(1, sizeof(");
         text_add(out, sizeof_type->text);
         text_add(out, ")); ");
         text_add(out, "if (");
@@ -6052,7 +6452,7 @@ static struct Text *rewrite_new_expressions(struct Text *in)
         text_add(out, tmp);
         text_add(out, "; })");
     } else {
-        text_add(out, "calloc(1, sizeof(");
+        text_add(out, "cminus_gc_calloc(1, sizeof(");
         text_add(out, sizeof_type->text);
         text_add(out, "))");
     }
@@ -6155,6 +6555,44 @@ static int text_has_s_string(const char *text)
     const char *quote_start;
     const char *after;
     return find_next_s_string(text, &s_start, &quote_start, &after);
+}
+
+static int s_string_is_in_new_initializer(const char *stmt_start, const char *s_start)
+{
+    const char *p;
+    const char *last_new = NULL;
+    const char *last_lbrace = NULL;
+    const char *last_rbrace = NULL;
+    int paren = 0;
+    int bracket = 0;
+
+    for (p = stmt_start; p < s_start; p++) {
+        if (*p == '(') {
+            paren++;
+        } else if (*p == ')' && paren > 0) {
+            paren--;
+        } else if (*p == '[') {
+            bracket++;
+        } else if (*p == ']' && bracket > 0) {
+            bracket--;
+        }
+        if (paren != 0 || bracket != 0) {
+            continue;
+        }
+        if (starts_word(p, "new")) {
+            last_new = p;
+        } else if (*p == '{') {
+            last_lbrace = p;
+        } else if (*p == '}') {
+            last_rbrace = p;
+        } else if (*p == ';') {
+            last_new = NULL;
+            last_lbrace = NULL;
+            last_rbrace = NULL;
+        }
+    }
+    return last_new != NULL && last_lbrace != NULL && last_new < last_lbrace &&
+        (last_rbrace == NULL || last_rbrace < last_lbrace);
 }
 
 static void node_add_escaped_format_char(struct Text *fmt, char c)
@@ -6306,8 +6744,28 @@ static struct Text *rewrite_s_string_temporaries(struct Text *stmt)
     text_add(rewritten, indent->text);
     while (find_next_s_string(cursor, &s_start, &quote_start, &after)) {
         char tmp[NAME_MAX_LEN];
+        int moved = 0;
+        int escapes_to_object_initializer = s_string_is_in_new_initializer(leading_end, s_start);
+        const char *move_end = s_start;
+        const char *move_start;
+
+        while (move_end > cursor && isspace((unsigned char)move_end[-1])) {
+            move_end--;
+        }
+        move_start = move_end;
+        while (move_start > cursor && is_ident((unsigned char)move_start[-1])) {
+            move_start--;
+        }
+        if (move_end - move_start == 4 && strncmp(move_start, "move", 4) == 0 &&
+            (move_start == cursor || !is_ident((unsigned char)move_start[-1]))) {
+            moved = 1;
+        }
         snprintf(tmp, sizeof(tmp), "__right_value%d", g_right_value_id++);
-        text_add_n(rewritten, cursor, (size_t)(s_start - cursor));
+        if (moved) {
+            text_add_n(rewritten, cursor, (size_t)(move_start - cursor));
+        } else {
+            text_add_n(rewritten, cursor, (size_t)(s_start - cursor));
+        }
         text_add(rewritten, tmp);
 
         text_add(prefix, indent->text);
@@ -6316,11 +6774,13 @@ static struct Text *rewrite_s_string_temporaries(struct Text *stmt)
         text_add(prefix, " = NULL;\n");
         append_asprintf_for_quote(prefix, tmp, quote_start, indent->text);
 
-        text_add(suffix, "\n");
-        text_add(suffix, indent->text);
-        text_add(suffix, "free(");
-        text_add(suffix, tmp);
-        text_add(suffix, ");");
+        if (!moved && !escapes_to_object_initializer) {
+            text_add(suffix, "\n");
+            text_add(suffix, indent->text);
+            text_add(suffix, "cminus_gc_free(");
+            text_add(suffix, tmp);
+            text_add(suffix, ");");
+        }
 
         cursor = after;
         count++;
@@ -6620,6 +7080,31 @@ static int collection_index_call(const char *name,
     if (struct_tmpl == NULL || struct_inst == NULL) {
         return 0;
     }
+    if (strcmp(struct_tmpl->name, "Span") == 0) {
+        struct GenericTemplate *ptr_tmpl = generic_find(&g_generic_funcs, "Span_ptr_at");
+        struct GenericInstance *ptr_inst;
+
+        if (ptr_tmpl == NULL) {
+            return 0;
+        }
+        ptr_inst = generic_instance_get(ptr_tmpl, struct_inst->arg);
+        text_add(replacement, "(*");
+        text_add(replacement, ptr_inst->concrete);
+        text_add_ch(replacement, '(');
+        if (sym->type.ptr > 0) {
+            text_add(replacement, name);
+        } else {
+            text_add_ch(replacement, '&');
+            text_add(replacement, name);
+        }
+        text_add(replacement, ", ");
+        text_add_n(replacement, index_start, (size_t)(index_end - index_start));
+        text_add(replacement, ", \"");
+        text_add(replacement, g_input_path == NULL ? "<unknown>" : g_input_path);
+        snprintf(tmp, sizeof(tmp), "\", %d))", yylineno);
+        text_add(replacement, tmp);
+        return 1;
+    }
     if (strcmp(struct_tmpl->name, "Vec") != 0 &&
         strcmp(struct_tmpl->name, "List") != 0 &&
         strcmp(struct_tmpl->name, "OwnedVec") != 0 &&
@@ -6738,6 +7223,346 @@ static struct Text *rewrite_index_access(struct Text *in)
             p = close + 1;
         }
         text_free(replacement);
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static int span_symbol_info(const char *name,
+                            struct Symbol **sym_out,
+                            struct GenericInstance **inst_out)
+{
+    struct Symbol *sym = symbol_find(name);
+    struct GenericInstance *inst = NULL;
+    struct GenericTemplate *tmpl;
+
+    if (sym == NULL || sym->type.kind != TY_STRUCT) {
+        return 0;
+    }
+    tmpl = generic_struct_find_by_concrete(sym->type.tag, &inst);
+    if (tmpl == NULL || inst == NULL || strcmp(tmpl->name, "Span") != 0) {
+        return 0;
+    }
+    if (sym_out != NULL) {
+        *sym_out = sym;
+    }
+    if (inst_out != NULL) {
+        *inst_out = inst;
+    }
+    return 1;
+}
+
+static int previous_allows_unary(const char *start, const char *p)
+{
+    while (p > start && isspace((unsigned char)p[-1])) {
+        p--;
+    }
+    if (p == start) {
+        return 1;
+    }
+    return strchr("(=,{[!?:;+-*/%&|^~<>", p[-1]) != NULL;
+}
+
+static void append_span_receiver(struct Text *out, const char *name, struct Symbol *sym)
+{
+    if (sym->type.ptr > 0) {
+        text_add(out, name);
+    } else {
+        text_add_ch(out, '&');
+        text_add(out, name);
+    }
+}
+
+static int span_offset_replacement(const char *name,
+                                   const char *expr_start,
+                                   const char *expr_end,
+                                   int negative,
+                                   struct Text *replacement)
+{
+    struct Symbol *sym = NULL;
+    struct GenericInstance *inst = NULL;
+    struct GenericTemplate *func_tmpl;
+    struct GenericInstance *func_inst;
+    char tmp[128];
+
+    if (!span_symbol_info(name, &sym, &inst)) {
+        return 0;
+    }
+    func_tmpl = generic_find(&g_generic_funcs, "Span_offset");
+    if (func_tmpl == NULL) {
+        return 0;
+    }
+    func_inst = generic_instance_get(func_tmpl, inst->arg);
+    text_add(replacement, func_inst->concrete);
+    text_add_ch(replacement, '(');
+    append_span_receiver(replacement, name, sym);
+    text_add(replacement, ", ");
+    if (negative) {
+        text_add(replacement, "-(");
+        text_add_n(replacement, expr_start, (size_t)(expr_end - expr_start));
+        text_add_ch(replacement, ')');
+    } else {
+        text_add_n(replacement, expr_start, (size_t)(expr_end - expr_start));
+    }
+    text_add(replacement, ", \"");
+    text_add(replacement, g_input_path == NULL ? "<unknown>" : g_input_path);
+    snprintf(tmp, sizeof(tmp), "\", %d)", yylineno);
+    text_add(replacement, tmp);
+    return 1;
+}
+
+static int span_deref_replacement(const char *name, struct Text *replacement)
+{
+    return collection_index_call(name, "0", "0" + 1, replacement);
+}
+
+static struct Text *rewrite_span_operators(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                if (*p == quote) {
+                    text_add_ch(out, *p++);
+                    break;
+                }
+                text_add_ch(out, *p++);
+            }
+            continue;
+        }
+        if (*p == '*' && previous_allows_unary(in->text, p)) {
+            const char *name_start = skip_ws(p + 1);
+            if (is_ident_start((unsigned char)*name_start)) {
+                char name[NAME_MAX_LEN];
+                const char *name_end = read_name(name_start, name);
+                struct Text *replacement = text_new();
+
+                if (span_deref_replacement(name, replacement)) {
+                    text_add(out, replacement->text);
+                    p = name_end;
+                    changed = 1;
+                    text_free(replacement);
+                    continue;
+                }
+                text_free(replacement);
+            }
+        }
+        if (is_ident_start((unsigned char)*p)) {
+            char name[NAME_MAX_LEN];
+            const char *name_end = read_name(p, name);
+            const char *op = skip_ws(name_end);
+
+            if ((*op == '+' || *op == '-') && op[1] != *op && !(op[0] == '-' && op[1] == '>')) {
+                const char *expr_start = skip_ws(op + 1);
+                const char *expr_end = skip_divisor_expr(expr_start);
+                struct Text *replacement = text_new();
+
+                if (expr_end > expr_start &&
+                    span_offset_replacement(name, expr_start, expr_end, *op == '-', replacement)) {
+                    text_add(out, replacement->text);
+                    p = expr_end;
+                    changed = 1;
+                    text_free(replacement);
+                    continue;
+                }
+                text_free(replacement);
+            }
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        text_add_ch(out, *p++);
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static const char *skip_divisor_primary(const char *p)
+{
+    const char *start;
+
+    p = skip_ws(p);
+    while (*p == '+' || *p == '-' || *p == '!' || *p == '~' || *p == '*' || *p == '&') {
+        p++;
+        p = skip_ws(p);
+    }
+    if (*p == '(') {
+        const char *close = matching_paren(p);
+        return close == NULL ? p + 1 : close + 1;
+    }
+    start = p;
+    if (is_ident_start((unsigned char)*p)) {
+        char name[NAME_MAX_LEN];
+        p = read_name(p, name);
+        if (*skip_ws(p) == '(') {
+            const char *open = skip_ws(p);
+            const char *close = matching_paren(open);
+            if (close != NULL) {
+                p = close + 1;
+            }
+        }
+    } else if (isdigit((unsigned char)*p) || *p == '.') {
+        while (isalnum((unsigned char)*p) || *p == '.' || *p == '_' || *p == 'x' || *p == 'X') {
+            p++;
+        }
+    } else if (*p != '\0') {
+        p++;
+    }
+    if (p == start && *p != '\0') {
+        p++;
+    }
+    return p;
+}
+
+static const char *skip_divisor_expr(const char *p)
+{
+    p = skip_divisor_primary(p);
+    for (;;) {
+        const char *q = skip_ws(p);
+        if (q[0] == '-' && q[1] == '>' && is_ident_start((unsigned char)q[2])) {
+            char name[NAME_MAX_LEN];
+            p = read_name(q + 2, name);
+            continue;
+        }
+        if (*q == '.' && is_ident_start((unsigned char)q[1])) {
+            char name[NAME_MAX_LEN];
+            p = read_name(q + 1, name);
+            continue;
+        }
+        if (*q == '[') {
+            int depth = 1;
+            q++;
+            while (*q != '\0' && depth > 0) {
+                if (*q == '"' || *q == '\'') {
+                    char quote = *q++;
+                    while (*q != '\0') {
+                        if (*q == '\\' && q[1] != '\0') {
+                            q += 2;
+                            continue;
+                        }
+                        if (*q++ == quote) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if (*q == '[') {
+                    depth++;
+                } else if (*q == ']') {
+                    depth--;
+                }
+                q++;
+            }
+            p = q;
+            continue;
+        }
+        if (*q == '(') {
+            const char *close = matching_paren(q);
+            if (close == NULL) {
+                return p;
+            }
+            p = close + 1;
+            continue;
+        }
+        return p;
+    }
+}
+
+static struct Text *rewrite_division_checks(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                if (*p == quote) {
+                    text_add_ch(out, *p++);
+                    break;
+                }
+                text_add_ch(out, *p++);
+            }
+            continue;
+        }
+        if (*p == '/' && p[1] == '/') {
+            text_add(out, p);
+            break;
+        }
+        if (*p == '/' && p[1] == '*') {
+            text_add_ch(out, *p++);
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '*' && p[1] == '/') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    break;
+                }
+                text_add_ch(out, *p++);
+            }
+            continue;
+        }
+        if ((*p == '/' || *p == '%') && p[1] != '=') {
+            const char *divisor_start = skip_ws(p + 1);
+            const char *divisor_end = skip_divisor_expr(divisor_start);
+            int id;
+            char tmp[128];
+
+            if (divisor_end <= divisor_start) {
+                text_add_ch(out, *p++);
+                continue;
+            }
+            id = g_right_value_id++;
+            text_add_ch(out, *p);
+            text_add(out, " ({ __auto_type ");
+            snprintf(tmp, sizeof(tmp), "__divisor%d", id);
+            text_add(out, tmp);
+            text_add(out, " = (");
+            text_add_n(out, divisor_start, (size_t)(divisor_end - divisor_start));
+            text_add(out, "); if (");
+            text_add(out, tmp);
+            text_add(out, " == 0) { cminus_panic(\"division by zero\", \"");
+            text_add(out, g_input_path == NULL ? "<unknown>" : g_input_path);
+            snprintf(tmp, sizeof(tmp), "\", %d); } __divisor%d; })", yylineno, id);
+            text_add(out, tmp);
+            p = divisor_end;
+            changed = 1;
+            continue;
+        }
+        text_add_ch(out, *p++);
     }
 
     if (!changed) {
@@ -6936,7 +7761,7 @@ static struct Text *build_condition_expr(const char *expr, size_t len)
             prefix->text[--prefix->len] = '\0';
             text_add_ch(prefix, ' ');
         }
-        text_add(suffix, "free(");
+        text_add(suffix, "cminus_gc_free(");
         text_add(suffix, tmp);
         text_add(suffix, "); ");
         cursor = after;
@@ -7054,10 +7879,14 @@ static struct Text *process_control_head(struct Text *head)
         kind = ND_DO;
     }
     check_owned_pointer_arithmetic(head->text);
+    check_casts(head->text);
     head = rewrite_generics(head);
+    check_safe_pointer_decl(head->text);
     head = rewrite_method_calls(head);
+    head = rewrite_span_operators(head);
     head = rewrite_index_access(head);
     head = rewrite_parameter_calls(head);
+    head = rewrite_division_checks(head);
     head = rewrite_control_condition(head);
     head->ast = ast_raw(kind, head->text);
     return head;
@@ -7200,6 +8029,222 @@ static void append_struct_clone_name(struct Text *out, const char *tag)
     text_add(out, "_clone");
 }
 
+static void append_stack_leave(struct Text *out, const char *indent)
+{
+    text_add(out, indent);
+    text_add(out, "cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);\n");
+}
+
+static void append_stack_enter(struct Text *out, const char *indent)
+{
+    text_add(out, indent);
+    text_add(out, "char __cminus_stack_anchor;\n");
+    text_add(out, indent);
+    text_add(out, "size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);\n");
+}
+
+static int clone_uses_managed_heap(const char *tag)
+{
+    return strncmp(tag, "__CMinus", 8) != 0;
+}
+
+static int payload_type_has_pointer(const char *payload)
+{
+    return payload != NULL && strchr(payload, '*') != NULL;
+}
+
+static int head_function_name(const char *head, char *name)
+{
+    const char *open = strrchr(head, '(');
+    const char *p;
+    const char *end;
+
+    if (open == NULL) {
+        return 0;
+    }
+    p = open;
+    while (p > head && isspace((unsigned char)p[-1])) {
+        p--;
+    }
+    end = p;
+    while (p > head && is_ident((unsigned char)p[-1])) {
+        p--;
+    }
+    if (p == end) {
+        return 0;
+    }
+    if ((size_t)(end - p) >= NAME_MAX_LEN) {
+        return 0;
+    }
+    memcpy(name, p, (size_t)(end - p));
+    name[end - p] = '\0';
+    return 1;
+}
+
+static int function_signature_is_internal(const char *head)
+{
+    static const char *needles[] = {
+        "__cminus_",
+        "__CMinus",
+        "cminus_",
+        "Ref_",
+        "Span_",
+        "Vec_",
+        "List_",
+        "Map_",
+        "OwnedVec_",
+        "OwnedList_",
+        "OwnedMap_",
+        "__CMinusIndex_",
+        "Optional_",
+        NULL
+    };
+    int i;
+
+    for (i = 0; needles[i] != NULL; i++) {
+        if (strstr(head, needles[i]) != NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int parse_cast_type_prefix(const char *s, const char *end, const char **after)
+{
+    const char *p = skip_ws(s);
+    const char *base_end;
+    struct Type type;
+
+    if (!parse_new_type_prefix(p, &base_end, &type)) {
+        return 0;
+    }
+    p = base_end;
+    while (p < end && (*p == '*' || *p == '%')) {
+        p++;
+    }
+    while (p < end && isspace((unsigned char)*p)) {
+        p++;
+    }
+    if (after != NULL) {
+        *after = p;
+    }
+    return p == end;
+}
+
+static void check_casts(const char *text)
+{
+    const char *p = text;
+    int in_str = 0;
+    int in_chr = 0;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    while (*p != '\0') {
+        if (in_str) {
+            if (*p == '\\' && p[1] != '\0') {
+                p += 2;
+                continue;
+            }
+            if (*p == '"') {
+                in_str = 0;
+            }
+            p++;
+            continue;
+        }
+        if (in_chr) {
+            if (*p == '\\' && p[1] != '\0') {
+                p += 2;
+                continue;
+            }
+            if (*p == '\'') {
+                in_chr = 0;
+            }
+            p++;
+            continue;
+        }
+        if (*p == '"') {
+            in_str = 1;
+            p++;
+            continue;
+        }
+        if (*p == '\'') {
+            in_chr = 1;
+            p++;
+            continue;
+        }
+        if (*p == '/' && p[1] == '/') {
+            break;
+        }
+        if (*p == '/' && p[1] == '*') {
+            p += 2;
+            while (*p != '\0' && !(*p == '*' && p[1] == '/')) {
+                p++;
+            }
+            if (*p != '\0') {
+                p += 2;
+            }
+            continue;
+        }
+        if (*p == '(') {
+            const char *close = matching_paren(p);
+            const char *after;
+            const char *q;
+            int reject = 0;
+
+            if (close != NULL) {
+                q = p + 1;
+                while (q < close) {
+                    if (*q == '.' || *q == '[' || *q == ']' || *q == '{' || *q == '}' || *q == ';') {
+                        reject = 1;
+                        break;
+                    }
+                    q++;
+                }
+            }
+            if (close != NULL && !reject &&
+                parse_cast_type_prefix(p + 1, close, &after) && after == close) {
+                fprintf(stderr, "c-: type error: cast is only allowed inside unsafe near `");
+                fwrite(p, 1, (size_t)(close - p + 1), stderr);
+                fprintf(stderr, "`\n");
+                exit(1);
+            }
+        }
+        p++;
+    }
+}
+
+static int function_needs_stack_guard(const char *name)
+{
+    static const char *skip_prefixes[] = {
+        "__cminus_",
+        "cminus_",
+        "Ref_",
+        "Span_",
+        "Vec_",
+        "List_",
+        "Map_",
+        "OwnedVec_",
+        "OwnedList_",
+        "OwnedMap_",
+        "__CMinusIndex_",
+        "Optional_",
+        NULL
+    };
+    int i;
+
+    if (name == NULL || name[0] == '\0') {
+        return 1;
+    }
+    for (i = 0; skip_prefixes[i] != NULL; i++) {
+        size_t n = strlen(skip_prefixes[i]);
+        if (strncmp(name, skip_prefixes[i], n) == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type)
 {
     if (!type_has_finalizer(type)) {
@@ -7238,7 +8283,7 @@ static void append_release_pointer(struct Text *out, const char *indent, const c
         text_add(out, ");\n");
     }
     text_add(out, inner->text);
-    text_add(out, "free(");
+    text_add(out, "cminus_gc_free(");
     text_add(out, expr);
     text_add(out, ");\n");
     text_add(out, indent);
@@ -7314,7 +8359,7 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
         text_add(out, " = *");
         text_add(out, tmp);
         text_add(out, ";\n");
-        text_add(out, "            free(");
+            text_add(out, clone_uses_managed_heap(type.tag) ? "            cminus_gc_free(" : "            free(");
         text_add(out, tmp);
         text_add(out, ");\n");
         text_add(out, "        }\n");
@@ -7330,7 +8375,7 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
             text_add(out, " != NULL) {\n");
             text_add(out, "        copy->");
             text_add(out, field_name);
-            text_add(out, " = calloc(strlen(");
+            text_add(out, clone_uses_managed_heap(type.tag) ? " = cminus_gc_calloc(strlen(" : " = calloc(strlen(");
             text_add(out, expr->text);
             text_add(out, ") + 1, sizeof(char));\n");
             text_add(out, "        strncpy(copy->");
@@ -7347,16 +8392,16 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
         text_add(out, "    if (");
         text_add(out, expr->text);
         text_add(out, " != NULL) {\n");
-        text_add(out, "        copy->");
-        text_add(out, field_name);
-        text_add(out, " = ");
+            text_add(out, "        copy->");
+            text_add(out, field_name);
+            text_add(out, " = ");
         if (base.kind == TY_STRUCT) {
             append_struct_clone_name(out, base.tag);
             text_add(out, "(");
             text_add(out, expr->text);
             text_add(out, ");\n");
         } else {
-            text_add(out, "calloc(1, sizeof(");
+            text_add(out, clone_uses_managed_heap(type.tag) ? "cminus_gc_calloc(1, sizeof(" : "calloc(1, sizeof(");
             append_c_type(out, base);
             text_add(out, "));\n");
             text_add(out, "        ");
@@ -7400,7 +8445,8 @@ static void append_struct_clone_definition(struct Text *out, struct StructFinali
     text_add(out, "* self)\n{\n");
     text_add(out, "    struct ");
     text_add(out, clone->tag);
-    text_add(out, "* copy = calloc(1, sizeof(struct ");
+    text_add(out, "* copy = ");
+    text_add(out, clone_uses_managed_heap(clone->tag) ? "cminus_gc_calloc(1, sizeof(struct " : "calloc(1, sizeof(struct ");
     text_add(out, clone->tag);
     text_add(out, "));\n");
     text_add(out, "    if (copy == NULL || self == NULL) {\n");
@@ -7493,23 +8539,81 @@ static int next_is_owned_arith(const char *p)
 static void check_owned_pointer_arithmetic(const char *stmt)
 {
     int i;
+    if (g_unsafe_depth > 0) {
+        return;
+    }
     for (i = 0; i < g_locals.count; i++) {
         const char *p = stmt;
         const char *name = g_locals.sym[i].name;
         size_t n = strlen(name);
-        if (!g_locals.sym[i].type.owned || g_locals.sym[i].type.ptr <= 0) {
+        struct GenericInstance *inst = NULL;
+        struct GenericTemplate *tmpl = NULL;
+        if (g_locals.sym[i].type.ptr <= 0) {
             continue;
+        }
+        if (g_locals.sym[i].type.kind == TY_STRUCT) {
+            tmpl = generic_struct_find_by_concrete(g_locals.sym[i].type.tag, &inst);
+            if (tmpl != NULL && strcmp(tmpl->name, "Span") == 0) {
+                continue;
+            }
         }
         while ((p = strstr(p, name)) != NULL) {
             if ((p == stmt || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[n])) {
+                const char *after_name = skip_ws(p + n);
+                if (*after_name == '[') {
+                    p += n;
+                    continue;
+                }
                 if (prev_nonspace_is_plus_or_minus(stmt, p) || next_is_owned_arith(p + n)) {
-                    fprintf(stderr, "c-: type error: pointer arithmetic is forbidden for owned pointer '%s'\n", name);
+                    fprintf(stderr, "c-: type error: pointer arithmetic is only allowed inside unsafe for pointer '%s'\n", name);
                     exit(1);
                 }
             }
             p += n;
         }
     }
+}
+
+static int is_unsafe_head(const char *s)
+{
+    const char *p = skip_ws(s);
+
+    return strncmp(p, "unsafe", 6) == 0 && !is_ident((unsigned char)p[6]) &&
+        *skip_ws(p + 6) == '\0';
+}
+
+void cminus_unsafe_push(void)
+{
+    g_unsafe_depth++;
+}
+
+void cminus_unsafe_pop(void)
+{
+    if (g_unsafe_depth > 0) {
+        g_unsafe_depth--;
+    }
+}
+
+static void begin_stmt_block(struct Text *head)
+{
+    if (is_unsafe_head(head->text)) {
+        g_unsafe_depth++;
+    }
+}
+
+static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb)
+{
+    struct Text *out;
+
+    if (is_unsafe_head(head->text)) {
+        out = text_join3(lb, body, rb);
+        if (g_unsafe_depth > 0) {
+            g_unsafe_depth--;
+        }
+        text_free(head);
+        return out;
+    }
+    return text_join4(process_control_head(head), lb, body, rb);
 }
 
 static void append_indent_from(const char *s, struct Text *out)
@@ -7582,6 +8686,7 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     register_tags_in_text(all->text);
     if (!is_generic_decl_head(all->text)) {
         all = rewrite_generics(all);
+        all = rewrite_safe_reference_decl(all);
     }
     is_func_sig = parse_function_signature(all->text, func_name, &ret);
     if (is_func_sig) {
@@ -7637,6 +8742,8 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = try_rewrite_auto_payload_enum_decl(all);
     register_tags_in_text(all->text);
     all = rewrite_generics(all);
+    all = rewrite_safe_reference_decl(all);
+    eq = find_assignment(all->text);
     register_tags_in_text(all->text);
     all = rewrite_payload_enum_constructors(all);
     if (!g_in_function) {
@@ -7653,6 +8760,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         return remove_percent(strip_attributes(all));
     }
     check_owned_pointer_arithmetic(all->text);
+    check_casts(all->text);
     if (text_has_word(all->text, "move")) {
         g_function_returns_move = 1;
         if (g_current_function_name[0] != '\0' && g_current_function_ret.ptr > 0) {
@@ -7753,9 +8861,6 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 }
                 decl.type.owned = 1;
                 owned_add(decl.name, decl.type);
-            } else if (!is_borrowed && decl.type.ptr > 0 && rhs_has_function_call(decl.init)) {
-                decl.type.owned = 1;
-                owned_add(decl.name, decl.type);
             }
             check_assignment_type(decl.name, decl.type, rhs_type);
         }
@@ -7768,6 +8873,9 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all = remove_percent(strip_attributes(all));
         all = rewrite_method_calls(all);
         all = rewrite_parameter_calls(all);
+        all = rewrite_span_operators(all);
+        all = rewrite_index_access(all);
+        all = rewrite_division_checks(all);
         all = rewrite_control_condition(all);
         all = rewrite_s_string_temporaries(all);
         all = rewrite_clone_expressions(all);
@@ -7809,16 +8917,20 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             }
         }
     } else if (eq >= 0 && rhs_has_s_string(all->text + eq + 1)) {
-        if (!extract_lhs_name(all->text, eq, lhs_name) || !lhs_is_plain_name(all->text, eq, lhs_name)) {
-            fprintf(stderr, "c-: type error: s string requires a plain char pointer lvalue\n");
+        char *lhs_expr;
+
+        if (!extract_lhs_name(all->text, eq, lhs_name)) {
+            fprintf(stderr, "c-: type error: s string requires a char pointer lvalue\n");
             text_free(all);
             exit(1);
         }
+        lhs_expr = slice_lhs_expr(all->text, eq);
         lhs = symbol_find(lhs_name);
         lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
         rhs_type = expr_type(all->text + eq + 1);
-        if (lhs == NULL || lhs_type.ptr <= 0 || lhs_type.kind != TY_CHAR) {
+        if (!type_is_known(lhs_type) || lhs_type.ptr <= 0 || lhs_type.kind != TY_CHAR) {
             fprintf(stderr, "c-: type error: s string requires a char pointer lvalue for '%s'\n", lhs_name);
+            free(lhs_expr);
             text_free(all);
             exit(1);
         }
@@ -7827,17 +8939,23 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             owned_add(lhs_name, lhs->type);
             owned_assign = 1;
             owned_assign_type = lhs->type;
-            owned_assign_lhs = slice_lhs_expr(all->text, eq);
+            owned_assign_lhs = xstrdup(lhs_expr);
         } else if (lhs_type.owned) {
             owned_assign = 1;
             owned_assign_type = lhs_type;
-            owned_assign_lhs = slice_lhs_expr(all->text, eq);
+            owned_assign_lhs = xstrdup(lhs_expr);
         } else {
             post_free = 1;
             strcpy(post_free_name, lhs_name);
             post_free_type = lhs_type;
         }
-        all = build_asprintf_statement(lhs_name, all->text + eq + 1, all->text);
+        all = build_asprintf_statement(lhs_expr, all->text + eq + 1, all->text);
+        free(lhs_expr);
+        if (owned_assign) {
+            all = prepend_owned_assignment_release(all, all->text, owned_assign_lhs, owned_assign_type);
+            free(owned_assign_lhs);
+            owned_assign_lhs = NULL;
+        }
         if (post_free) {
             append_free_after_statement(all, all->text, post_free_name, post_free_type);
         }
@@ -7970,8 +9088,10 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = remove_percent(strip_attributes(all));
     all = rewrite_payload_enum_constructors(all);
     all = rewrite_method_calls(all);
+    all = rewrite_span_operators(all);
     all = rewrite_index_access(all);
     all = rewrite_parameter_calls(all);
+    all = rewrite_division_checks(all);
     all = rewrite_clone_expressions(all);
     all = rewrite_control_condition(all);
     all = rewrite_s_string_temporaries(all);
@@ -8010,11 +9130,15 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
         return all;
     }
     check_owned_pointer_arithmetic(all->text);
+    check_casts(all->text);
     remove_moved_locals(all->text);
     all = rewrite_generics(all);
+    all = rewrite_payload_enum_constructors(all);
     all = rewrite_method_calls(all);
+    all = rewrite_span_operators(all);
     all = rewrite_index_access(all);
     all = rewrite_parameter_calls(all);
+    all = rewrite_division_checks(all);
     all = remove_percent(strip_attributes(all));
     if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
         struct Text *out = text_new();
@@ -8022,6 +9146,9 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
         append_leading_newlines(all->text, out);
         append_indent_from(all->text, indent);
         emit_frees(out, indent->text);
+        if (g_current_function_stack_guard) {
+            append_stack_leave(out, indent->text);
+        }
         text_add(out, indent->text);
         text_add(out, skip_leading_space(all->text));
         out->tail_return = 1;
@@ -8030,8 +9157,23 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
         text_free(all);
         return out;
     }
-    all->tail_return = 1;
-    return all;
+    {
+        struct Text *out = text_new();
+        struct Text *indent = text_new();
+
+        append_leading_newlines(all->text, out);
+        append_indent_from(all->text, indent);
+        if (g_current_function_stack_guard) {
+            append_stack_leave(out, indent->text);
+        }
+        text_add(out, indent->text);
+        text_add(out, skip_leading_space(all->text));
+        out->tail_return = 1;
+        out->ast = ast_raw(ND_RETURN, out->text);
+        text_free(indent);
+        text_free(all);
+        return out;
+    }
 }
 
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb)
@@ -8041,6 +9183,17 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     char name[NAME_MAX_LEN];
     char param[NAME_MAX_LEN];
     struct Type ret;
+
+    if (is_unsafe_head(head->text)) {
+        cminus_unsafe_pop();
+        out = body;
+        text_free(head);
+        text_free(lb);
+        text_free(rb);
+        g_top_block_is_function = 0;
+        g_in_function = 0;
+        return out;
+    }
 
     if (g_current_payload_enum) {
         if (!parse_payload_enum_head(head->text, param, name)) {
@@ -8128,6 +9281,8 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         return out;
     }
 
+    head = rewrite_generics(head);
+    head = rewrite_safe_reference_decl(head);
     register_function_params(head->text);
     register_owned_function_signature(head->text);
     register_malloc_attribute_function(head->text);
@@ -8138,14 +9293,22 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     head = strip_default_parameters(head);
     head = remove_percent(strip_attributes(head));
     {
+        struct Text *prologue = text_new();
         int body_tail_return = body->tail_return;
-        out = text_join3(head, lb, body);
+        if (g_current_function_stack_guard) {
+            append_stack_enter(prologue, "    ");
+        }
+        out = text_join3(head, lb, prologue);
+        out = text_join(out, body);
         if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !body_tail_return) {
             const char *last = out->len > 0 ? out->text + out->len - 1 : out->text;
             if (out->len == 0 || *last != '\n') {
                 text_add_ch(out, '\n');
             }
             emit_frees(out, "    ");
+        }
+        if (!body_tail_return && g_current_function_stack_guard) {
+            append_stack_leave(out, "    ");
         }
     }
     out = text_join(out, rb);
@@ -8221,6 +9384,7 @@ static void emit_generic_function_instances(FILE *out)
         int j;
         for (j = 0; j < tmpl->inst_count; j++) {
             char param[NAME_MAX_LEN];
+            char func_name[NAME_MAX_LEN];
             const char *head = generic_template_body_start(tmpl->head, param);
             struct Text *concrete_head = replace_param_and_generics(head,
                                                                     tmpl->param,
@@ -8237,7 +9401,16 @@ static void emit_generic_function_instances(FILE *out)
             concrete_body = rewrite_payload_enum_constructors(concrete_body);
             fputs(concrete_head->text, out);
             fputs("{", out);
+            if (head_function_name(concrete_head->text, func_name) &&
+                function_needs_stack_guard(func_name)) {
+                fputs("    char __cminus_stack_anchor;\n    size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);\n", out);
+            } else {
+                func_name[0] = '\0';
+            }
             fputs_with_trailing_newline(concrete_body->text, out);
+            if (func_name[0] != '\0') {
+                fputs("    cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);\n", out);
+            }
             fputs("}\n", out);
             text_free(concrete_head);
             text_free(concrete_body);
@@ -8347,7 +9520,7 @@ static void emit_payload_enum_instances(FILE *out)
 
             fputs("struct ", out);
             fputs(inst->concrete, out);
-            fputs("{\n    int tag;\n    union {\n", out);
+            fputs("{\n    int tag;\n    unsigned long origin_kind;\n    unsigned long origin_stack_id;\n    union {\n", out);
             for (v = 0; v < en->variant_count; v++) {
                 if (en->variant[v].has_payload) {
                     struct Text *payload = replace_param_and_generics(en->variant[v].payload,
@@ -8378,9 +9551,13 @@ static void emit_payload_enum_instances(FILE *out)
 
             for (v = 0; v < en->variant_count; v++) {
                 struct PayloadVariant *variant = &en->variant[v];
+                int pointer_enum = strcmp(en->name, "__CMinusIndex") != 0;
 
                 fputs("static __attribute__((unused)) struct ", out);
                 fputs(inst->concrete, out);
+                if (pointer_enum) {
+                    fputc('*', out);
+                }
                 fputc(' ', out);
                 fputs(inst->concrete, out);
                 fputc('_', out);
@@ -8401,15 +9578,47 @@ static void emit_payload_enum_instances(FILE *out)
                 }
                 fputs(")\n{\n    struct ", out);
                 fputs(inst->concrete, out);
-                fputs(" out = {0};\n    out.tag = ", out);
+                if (pointer_enum) {
+                    fputs("* out = cminus_gc_calloc(1, sizeof(struct ", out);
+                    fputs(inst->concrete, out);
+                    fputs("));\n    out->tag = ", out);
+                } else {
+                    fputs(" out = {0};\n    out.tag = ", out);
+                }
                 fputs(inst->concrete, out);
                 fputs("_TAG_", out);
                 fputs(variant->name, out);
                 fputs(";\n", out);
                 if (variant->has_payload) {
-                    fputs("    out.payload.", out);
+                    struct Text *payload = replace_param_and_generics(variant->payload,
+                                                                      en->param,
+                                                                      inst->arg,
+                                                                      en->name,
+                                                                      inst->concrete);
+                    payload = remove_percent(strip_attributes(payload));
+                    if (payload_type_has_pointer(payload->text)) {
+                        if (pointer_enum) {
+                            fputs("    out->origin_kind = cminus_ptr_classify((void*)value, &out->origin_stack_id);\n", out);
+                        } else {
+                            fputs("    out.origin_kind = cminus_ptr_classify((void*)value, &out.origin_stack_id);\n", out);
+                        }
+                    } else {
+                        if (pointer_enum) {
+                            fputs("    out->origin_kind = 0UL;\n    out->origin_stack_id = 0UL;\n", out);
+                        } else {
+                            fputs("    out.origin_kind = 0UL;\n    out.origin_stack_id = 0UL;\n", out);
+                        }
+                    }
+                    text_free(payload);
+                    fputs(pointer_enum ? "    out->payload." : "    out.payload.", out);
                     fputs(variant->name, out);
                     fputs(" = value;\n", out);
+                } else {
+                    if (pointer_enum) {
+                        fputs("    out->origin_kind = 0UL;\n    out->origin_stack_id = 0UL;\n", out);
+                    } else {
+                        fputs("    out.origin_kind = 0UL;\n    out.origin_stack_id = 0UL;\n", out);
+                    }
                 }
                 fputs("    return out;\n}\n", out);
 
@@ -8440,7 +9649,13 @@ static void emit_payload_enum_instances(FILE *out)
                     fputs(variant->name, out);
                     fputs("(struct ", out);
                     fputs(inst->concrete, out);
-                    fputs("* self)\n{\n    return self->payload.", out);
+                    fputs("* self)\n{\n", out);
+                    if (payload_type_has_pointer(payload->text)) {
+                        fputs("    cminus_ptr_require_alive((void*)self->payload.", out);
+                        fputs(variant->name, out);
+                        fputs(", self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);\n", out);
+                    }
+                    fputs("    return self->payload.", out);
                     fputs(variant->name, out);
                     fputs(";\n}\n", out);
                     text_free(payload);
@@ -8558,6 +9773,10 @@ int main(int argc, char **argv)
     yylineno = 1;
     g_output = text_new();
     g_defines = text_new();
+    text_add(g_defines, "void cminus_panic(const char* message, const char* file, int line);\n");
+    text_add(g_defines, "int cminus_ptr_classify(void* mem, unsigned long* stack_id_out);\n");
+    text_add(g_defines, "void cminus_ptr_require_alive(void* mem, unsigned long kind, unsigned long stack_id, const char* file, int line);\n");
+    text_add(g_defines, "void* cminus_gc_calloc_impl(unsigned long count, unsigned long size, const char* file, int line);\n");
     g_malloc_funcs.count = 0;
     register_builtin_owned_functions();
     g_right_value_id = 0;
@@ -8576,6 +9795,7 @@ int main(int argc, char **argv)
     g_current_payload_enum = 0;
     g_foreach_id = 0;
     g_index_id = 0;
+    g_unsafe_depth = 0;
     if (!source_has_cminus_include(yyin)) {
         FILE *stdlib_fp = open_cminus_include("c-.h");
         if (stdlib_fp == NULL) {
@@ -8583,7 +9803,7 @@ int main(int argc, char **argv)
             fclose(yyin);
             return 1;
         }
-        cminus_push_include(stdlib_fp);
+        cminus_push_include(stdlib_fp, 1);
     }
 
     rc = yyparse();
@@ -8621,6 +9841,14 @@ int main(int argc, char **argv)
             }
         }
         close_generic_instances();
+        {
+            struct GenericTemplate *span_ptr_at = generic_find(&g_generic_funcs, "Span_ptr_at");
+            struct GenericTemplate *span_offset = generic_find(&g_generic_funcs, "Span_offset");
+            if ((span_ptr_at != NULL && span_ptr_at->inst_count > 0) ||
+                (span_offset != NULL && span_offset->inst_count > 0)) {
+                fputs("void cminus_panic(const char* message, const char* file, int line);\n", stdout);
+            }
+        }
         emit_payload_enum_instances(stdout);
         emit_generic_instances(stdout);
         fputs(p, stdout);

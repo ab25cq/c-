@@ -1,0 +1,14 @@
+#include <stdlib.h>
+
+int* get_ptr(void)
+{
+    return NULL;
+}
+
+int main(void)
+{
+    borrow int* p = get_ptr();
+
+    p++;
+    return 0;
+}

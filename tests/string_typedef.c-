@@ -1,14 +1,14 @@
-#include <stdlib.h>
+unsafe {
 #include <string.h>
+}
 
 struct Person {
-    owned char* name;
+    string name;
     int age;
 };
 
 int main(void)
 {
-    struct Person* person = new struct Person;
-    (void)person;
-    return 0;
+    Person person = new Person;
+    return person == NULL ? 1 : 0;
 }

@@ -1,10 +1,10 @@
+unsafe {
 #include <stdio.h>
-#include <stdlib.h>
-#include <c-.h>
+}
 
 int main(void)
 {
-    struct Vec<int> nums;
+    Vec<int> nums = Vec<int>.new();
 
     nums.push(10);
     nums.push(20);

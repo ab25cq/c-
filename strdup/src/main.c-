@@ -6,10 +6,11 @@ int main(void)
 {
     struct OwnedList<int*>* li = OwnedList<int*>.new();
     
-    int* n = new int;
+    int* n = calloc(1, sizeof(int));
+    int* n2 = calloc(1, sizeof(int));
     
     li.push(move n);
-    li.push(move n);
+    li.push(move n2);
     
     return 0;
 }

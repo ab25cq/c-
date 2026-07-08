@@ -1,0 +1,12 @@
+int main(void)
+{
+    int data[2];
+    Span<int> values;
+    Span<int> bad;
+
+    data[0] = 1;
+    data[1] = 2;
+    values = Span<int>.from(data, 2);
+    bad = values + 3;
+    return bad.len();
+}

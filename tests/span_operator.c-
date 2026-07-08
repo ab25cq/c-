@@ -1,0 +1,30 @@
+#include <stdio.h>
+
+int main(void)
+{
+    int data[3];
+    Span<int> values;
+    Span<int> tail;
+    Span<int> again;
+
+    data[0] = 10;
+    data[1] = 20;
+    data[2] = 30;
+
+    values = Span<int>.from(data, 3);
+    tail = values + 1;
+    again = tail - 1;
+
+    if (*tail != 20) {
+        return 1;
+    }
+    tail[1] = 35;
+    if (data[2] != 35 || values[2] != 35) {
+        return 2;
+    }
+    if (*again != 10 || again.len() != 3) {
+        return 3;
+    }
+    printf("%d\n", *tail + values[2]);
+    return 0;
+}

@@ -1,17 +1,18 @@
-#include <stdlib.h>
+unsafe {
 #include <string.h>
+}
 
 struct Data {
-    owned char* text;
+    string text;
 };
 
 int main(void)
 {
-    struct Data data;
+    Data data = new Data;
 
-    data.text = strdup("aaa");
-    data.text = strdup("bbb");
-    if (strcmp(data.text, "bbb") != 0) {
+    data->text = s"aaa";
+    data->text = s"bbb";
+    if (strcmp(data->text, "bbb") != 0) {
         return 1;
     }
     return 0;

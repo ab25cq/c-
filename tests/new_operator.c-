@@ -6,15 +6,17 @@ struct Item {
 
 int main(void)
 {
-    int* owned_value = new int;
-    struct Item* item = new struct Item;
+    Item item = new Item;
 
-    if (owned_value == NULL || item == NULL) {
-        return 1;
-    }
-    *owned_value = 3;
-    if (*owned_value != 3 || item->value != 0) {
-        return 2;
+    unsafe {
+        int* owned_value = calloc(1, sizeof(int));
+        if (owned_value == NULL || item == NULL) {
+            return 1;
+        }
+        *owned_value = 3;
+        if (*owned_value != 3 || item->value != 0) {
+            return 2;
+        }
     }
     return 0;
 }

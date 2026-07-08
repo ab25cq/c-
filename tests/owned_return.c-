@@ -1,19 +1,17 @@
-#include <stdlib.h>
-
 struct Pair {
     int x;
 };
 
-struct Pair* make_pair(void);
+Pair make_pair(void);
 
-struct Pair* make_pair(void)
+Pair make_pair(void)
 {
-    struct Pair* p = malloc(sizeof(struct Pair));
-    return move p;
+    Pair p = new Pair;
+    return p;
 }
 
 int main(void)
 {
-    struct Pair* p = make_pair();
-    return 0;
+    Pair p = make_pair();
+    return p == NULL ? 1 : 0;
 }

@@ -1,14 +1,15 @@
+unsafe {
 #include <string.h>
-#include <stdlib.h>
+}
 
 struct Person {
-    owned char* name;
+    string name;
     int age;
 };
 
 int main(void)
 {
-    struct Person* person = new Person { name: strdup("aaa"), age: 48 };
+    Person person = new Person { name: s"aaa", age: 48 };
 
     if (strcmp(person->name, "aaa") != 0) {
         return 1;

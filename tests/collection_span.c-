@@ -1,0 +1,58 @@
+#include <stdio.h>
+
+int sum_span(Span<int> values)
+{
+    int sum = 0;
+
+    foreach (int value in values) {
+        sum += value;
+    }
+    return sum;
+}
+
+int main(void)
+{
+    Vec<int> vec = Vec<int>.new();
+    List<int> list = List<int>.new();
+    Map<int,int> map = Map<int,int>.new();
+    int list_buf[4];
+    int key_buf[4];
+    int value_buf[4];
+    Span<int> vec_span;
+    Span<int> list_span;
+    Span<int> key_span;
+    Span<int> value_span;
+
+    vec.push(1);
+    vec.push(2);
+    vec.push(3);
+
+    list.push(4);
+    list.push(5);
+    list.push(6);
+
+    map.set(10, 100);
+    map.set(20, 200);
+    map.set(30, 300);
+
+    vec_span = vec.as_span();
+    list_span = list.to_span(list_buf, 4);
+    key_span = map.keys_to_span(key_buf, 4);
+    value_span = map.values_to_span(value_buf, 4);
+
+    if (vec_span.len() != 3 || sum_span(vec_span) != 6) {
+        return 1;
+    }
+    if (list_span.len() != 3 || sum_span(list_span) != 15) {
+        return 2;
+    }
+    if (key_span.len() != 3 || sum_span(key_span) != 60) {
+        return 3;
+    }
+    if (value_span.len() != 3 || sum_span(value_span) != 600) {
+        return 4;
+    }
+
+    printf("%d\n", sum_span(value_span));
+    return 0;
+}

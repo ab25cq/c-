@@ -2,7 +2,9 @@
 
 int main(void)
 {
-    int* a = new int;
-    *a = 123;
+    unsafe {
+        int* a = calloc(1, sizeof(int));
+        *a = 123;
+    }
     return 0;
 }

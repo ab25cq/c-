@@ -20,6 +20,9 @@ struct Text {
 
 #include "parser.h"
 
+void cminus_unsafe_push(void);
+void cminus_unsafe_pop(void);
+
 static char *pending;
 static size_t pending_len;
 static size_t pending_cap;
@@ -27,9 +30,10 @@ static int new_type_scan;
 static int object_init_depth;
 static FILE *include_files[16];
 static int include_lines[16];
+static int include_unsafe[16];
 static int include_depth;
 
-void cminus_push_include(FILE *fp)
+void cminus_push_include(FILE *fp, int unsafe)
 {
     if (include_depth >= 16) {
         fputs("c-: include depth exceeded\n", stderr);
@@ -40,7 +44,11 @@ void cminus_push_include(FILE *fp)
     }
     include_files[include_depth] = fp;
     include_lines[include_depth] = yylineno;
+    include_unsafe[include_depth] = unsafe ? 1 : 0;
     include_depth++;
+    if (unsafe) {
+        cminus_unsafe_push();
+    }
     yypush_buffer_state(yy_create_buffer(fp, YY_BUF_SIZE));
     yylineno = 1;
 }
@@ -176,6 +184,9 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
                 if (include_depth > 0) {
                     include_depth--;
                     fclose(include_files[include_depth]);
+                    if (include_unsafe[include_depth]) {
+                        cminus_unsafe_pop();
+                    }
                     yypop_buffer_state();
                     yylineno = include_lines[include_depth];
                     if (YY_CURRENT_BUFFER != NULL) {
