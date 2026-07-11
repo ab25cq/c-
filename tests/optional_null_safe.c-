@@ -1,0 +1,36 @@
+Optional<int> maybe_value(int flag)
+{
+    if (flag) {
+        return new Optional<int>.Some(7);
+    }
+    return NULL;
+}
+
+int take_optional(Optional<int> value)
+{
+    if (value.is_Some()) {
+        return value.get_Some();
+    }
+    return 0;
+}
+
+int main(void)
+{
+    Optional<int> value = NULL;
+    Optional<int> none = maybe_value(0);
+
+    if (value.is_Some()) {
+        return 1;
+    }
+    if (none.is_Some()) {
+        return 2;
+    }
+    if (take_optional(NULL) != 0) {
+        return 3;
+    }
+    Optional<int> some = new Optional<int>.Some(5);
+    if (take_optional(some) != 5) {
+        return 4;
+    }
+    return 0;
+}

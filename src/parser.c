@@ -128,6 +128,11 @@ struct Owned {
     int count;
 };
 
+struct MovedLocals {
+    char name[MAX_OWNED][NAME_MAX_LEN];
+    int count;
+};
+
 struct OwnedField {
     char name[NAME_MAX_LEN];
     struct Type type;
@@ -208,12 +213,14 @@ struct Funcs {
 struct ParamInfo {
     char name[NAME_MAX_LEN];
     char def[DEFAULT_EXPR_MAX];
+    struct Type type;
 };
 
 struct FunctionParams {
     char name[NAME_MAX_LEN];
     struct ParamInfo param[MAX_PARAMS];
     int count;
+    int has_defaults;
 };
 
 struct FunctionParamTable {
@@ -286,6 +293,7 @@ static struct Text *g_output;
 static struct Text *g_defines;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
+static struct MovedLocals g_moved_locals;
 static struct Funcs g_malloc_funcs;
 static struct FunctionParamTable g_param_funcs;
 static struct Symbols g_globals;
@@ -381,9 +389,18 @@ static struct Type expr_type(const char *s);
 static int decl_has_borrow(const char *s);
 static int extract_move_name(const char *s, char *name);
 static void remove_moved_locals(const char *s);
+static const char *find_top_level_char(const char *start, const char *end, char ch);
+static void moved_local_add(const char *name);
+static void moved_local_remove(const char *name);
+static void check_moved_local_use(const char *stmt);
+static void check_null_assignment(const char *stmt);
+static struct Text *rewrite_optional_null_assignment(struct Text *in);
+static struct Text *rewrite_optional_null_return(struct Text *in);
+static void check_null_arguments(const char *stmt);
+static int range_contains_text(const char *start, const char *end, const char *needle);
 static struct Text *strip_attributes(struct Text *in);
 static struct Text *remove_percent(struct Text *in);
-static void check_owned_pointer_arithmetic(const char *stmt);
+static void check_safe_pointer_deref(const char *stmt);
 static int is_unsafe_head(const char *s);
 static void begin_stmt_block(struct Text *head);
 static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
@@ -394,13 +411,17 @@ static struct Text *add_zero_initializer(struct Text *in);
 static struct Text *rewrite_new_expressions(struct Text *in);
 static struct Text *rewrite_clone_expressions(struct Text *in);
 static struct Text *rewrite_method_calls(struct Text *in);
+static struct Text *rewrite_auto_field_access(struct Text *in);
 static struct Text *rewrite_index_access(struct Text *in);
 static struct Text *rewrite_span_operators(struct Text *in);
+static struct Text *rewrite_sizeof_types(struct Text *in);
 static struct Text *rewrite_division_checks(struct Text *in);
 static struct Text *rewrite_parameter_calls(struct Text *in);
 static struct Text *rewrite_safe_reference_decl(struct Text *in);
 static void check_safe_pointer_decl(const char *s);
 static struct Text *rewrite_generics(struct Text *in);
+static void append_indent_from(const char *s, struct Text *out);
+static void append_leading_newlines(const char *s, struct Text *out);
 static struct Text *rewrite_foreach_head(struct Text *head);
 static const char *matching_paren(const char *open);
 static const char *skip_divisor_expr(const char *p);
@@ -427,7 +448,7 @@ static void append_zero_clear_after_decl(struct Text *stmt, const char *original
 static int starts_word(const char *s, const char *word);
 static const char *skip_ws(const char *s);
 
-#line 431 "src/parser.c"
+#line 452 "src/parser.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -893,15 +914,15 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   383,   383,   384,   389,   391,   393,   396,   395,   402,
-     404,   409,   411,   413,   415,   421,   422,   427,   429,   431,
-     433,   435,   437,   439,   441,   443,   446,   445,   452,   454,
-     459,   461,   466,   468,   470,   472,   477,   483,   484,   489,
-     491,   493,   495,   497,   502,   508,   509,   514,   516,   518,
-     520,   522,   527,   533,   534,   539,   541,   543,   545,   547,
-     552,   554,   556,   558,   560,   562,   564,   566,   568,   570,
-     572,   574,   576,   581,   583,   585,   587,   589,   591,   593,
-     595,   597,   599,   601,   603
+       0,   404,   404,   405,   410,   412,   414,   417,   416,   423,
+     425,   430,   432,   434,   436,   442,   443,   448,   450,   452,
+     454,   456,   458,   460,   462,   464,   467,   466,   473,   475,
+     480,   482,   487,   489,   491,   493,   498,   504,   505,   510,
+     512,   514,   516,   518,   523,   529,   530,   535,   537,   539,
+     541,   543,   548,   554,   555,   560,   562,   564,   566,   568,
+     573,   575,   577,   579,   581,   583,   585,   587,   589,   591,
+     593,   595,   597,   602,   604,   606,   608,   610,   612,   614,
+     616,   618,   620,   622,   624
 };
 #endif
 
@@ -1583,505 +1604,505 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* translation_unit: %empty  */
-#line 383 "src/parser.y"
+#line 404 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1589 "src/parser.c"
+#line 1610 "src/parser.c"
     break;
 
   case 3: /* translation_unit: translation_unit external_item  */
-#line 385 "src/parser.y"
+#line 406 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); g_output = (yyval.node); }
-#line 1595 "src/parser.c"
+#line 1616 "src/parser.c"
     break;
 
   case 4: /* external_item: PP_LINE  */
-#line 390 "src/parser.y"
+#line 411 "src/parser.y"
         { (yyval.node) = process_pp_line((yyvsp[0].node)); }
-#line 1601 "src/parser.c"
+#line 1622 "src/parser.c"
     break;
 
   case 5: /* external_item: SEMI  */
-#line 392 "src/parser.y"
+#line 413 "src/parser.y"
         { (yyval.node) = process_standalone_semi((yyvsp[0].node)); }
-#line 1607 "src/parser.c"
+#line 1628 "src/parser.c"
     break;
 
   case 6: /* external_item: top_seq SEMI  */
-#line 394 "src/parser.y"
+#line 415 "src/parser.y"
         { (yyval.node) = process_external_decl((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1613 "src/parser.c"
+#line 1634 "src/parser.c"
     break;
 
   case 7: /* $@1: %empty  */
-#line 396 "src/parser.y"
+#line 417 "src/parser.y"
         { begin_top_block((yyvsp[-1].node)); }
-#line 1619 "src/parser.c"
+#line 1640 "src/parser.c"
     break;
 
   case 8: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
-#line 398 "src/parser.y"
+#line 419 "src/parser.y"
         { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1625 "src/parser.c"
+#line 1646 "src/parser.c"
     break;
 
   case 9: /* top_seq: top_part  */
-#line 403 "src/parser.y"
+#line 424 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1631 "src/parser.c"
+#line 1652 "src/parser.c"
     break;
 
   case 10: /* top_seq: top_seq top_part  */
-#line 405 "src/parser.y"
+#line 426 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1637 "src/parser.c"
+#line 1658 "src/parser.c"
     break;
 
   case 11: /* top_part: token_no_comma  */
-#line 410 "src/parser.y"
+#line 431 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1643 "src/parser.c"
+#line 1664 "src/parser.c"
     break;
 
   case 12: /* top_part: paren_group  */
-#line 412 "src/parser.y"
+#line 433 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1649 "src/parser.c"
+#line 1670 "src/parser.c"
     break;
 
   case 13: /* top_part: bracket_group  */
-#line 414 "src/parser.y"
+#line 435 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1655 "src/parser.c"
+#line 1676 "src/parser.c"
     break;
 
   case 14: /* top_part: angle_group  */
-#line 416 "src/parser.y"
+#line 437 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1661 "src/parser.c"
+#line 1682 "src/parser.c"
     break;
 
   case 15: /* compound_items: %empty  */
-#line 421 "src/parser.y"
+#line 442 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1667 "src/parser.c"
+#line 1688 "src/parser.c"
     break;
 
   case 16: /* compound_items: compound_items compound_item  */
-#line 423 "src/parser.y"
+#line 444 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1673 "src/parser.c"
+#line 1694 "src/parser.c"
     break;
 
   case 17: /* compound_item: PP_LINE  */
-#line 428 "src/parser.y"
+#line 449 "src/parser.y"
         { (yyval.node) = process_pp_line((yyvsp[0].node)); }
-#line 1679 "src/parser.c"
+#line 1700 "src/parser.c"
     break;
 
   case 18: /* compound_item: SEMI  */
-#line 430 "src/parser.y"
+#line 451 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1685 "src/parser.c"
+#line 1706 "src/parser.c"
     break;
 
   case 19: /* compound_item: return_statement  */
-#line 432 "src/parser.y"
+#line 453 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1691 "src/parser.c"
+#line 1712 "src/parser.c"
     break;
 
   case 20: /* compound_item: stmt_seq SEMI  */
-#line 434 "src/parser.y"
+#line 455 "src/parser.y"
         { (yyval.node) = process_statement((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1697 "src/parser.c"
+#line 1718 "src/parser.c"
     break;
 
   case 21: /* compound_item: stmt_seq COMMA  */
-#line 436 "src/parser.y"
+#line 457 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1703 "src/parser.c"
+#line 1724 "src/parser.c"
     break;
 
   case 22: /* compound_item: IDENT COLON  */
-#line 438 "src/parser.y"
+#line 459 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1709 "src/parser.c"
+#line 1730 "src/parser.c"
     break;
 
   case 23: /* compound_item: DEFAULT COLON  */
-#line 440 "src/parser.y"
+#line 461 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1715 "src/parser.c"
+#line 1736 "src/parser.c"
     break;
 
   case 24: /* compound_item: CASE stmt_seq COLON  */
-#line 442 "src/parser.y"
+#line 463 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1721 "src/parser.c"
+#line 1742 "src/parser.c"
     break;
 
   case 25: /* compound_item: LBRACE compound_items RBRACE  */
-#line 444 "src/parser.y"
+#line 465 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1727 "src/parser.c"
+#line 1748 "src/parser.c"
     break;
 
   case 26: /* $@2: %empty  */
-#line 446 "src/parser.y"
+#line 467 "src/parser.y"
         { begin_stmt_block((yyvsp[-1].node)); }
-#line 1733 "src/parser.c"
+#line 1754 "src/parser.c"
     break;
 
   case 27: /* compound_item: stmt_seq LBRACE $@2 compound_items RBRACE  */
-#line 448 "src/parser.y"
+#line 469 "src/parser.y"
         { (yyval.node) = finish_stmt_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1739 "src/parser.c"
+#line 1760 "src/parser.c"
     break;
 
   case 28: /* return_statement: RETURN SEMI  */
-#line 453 "src/parser.y"
+#line 474 "src/parser.y"
         { (yyval.node) = process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)); }
-#line 1745 "src/parser.c"
+#line 1766 "src/parser.c"
     break;
 
   case 29: /* return_statement: RETURN stmt_seq SEMI  */
-#line 455 "src/parser.y"
+#line 476 "src/parser.y"
         { (yyval.node) = process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1751 "src/parser.c"
+#line 1772 "src/parser.c"
     break;
 
   case 30: /* stmt_seq: stmt_part  */
-#line 460 "src/parser.y"
+#line 481 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1757 "src/parser.c"
+#line 1778 "src/parser.c"
     break;
 
   case 31: /* stmt_seq: stmt_seq stmt_part  */
-#line 462 "src/parser.y"
+#line 483 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1763 "src/parser.c"
+#line 1784 "src/parser.c"
     break;
 
   case 32: /* stmt_part: token_no_comma  */
-#line 467 "src/parser.y"
+#line 488 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1769 "src/parser.c"
+#line 1790 "src/parser.c"
     break;
 
   case 33: /* stmt_part: paren_group  */
-#line 469 "src/parser.y"
+#line 490 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1775 "src/parser.c"
+#line 1796 "src/parser.c"
     break;
 
   case 34: /* stmt_part: bracket_group  */
-#line 471 "src/parser.y"
+#line 492 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1781 "src/parser.c"
+#line 1802 "src/parser.c"
     break;
 
   case 35: /* stmt_part: angle_group  */
-#line 473 "src/parser.y"
+#line 494 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1787 "src/parser.c"
+#line 1808 "src/parser.c"
     break;
 
   case 36: /* paren_group: LPAREN paren_items RPAREN  */
-#line 478 "src/parser.y"
+#line 499 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1793 "src/parser.c"
+#line 1814 "src/parser.c"
     break;
 
   case 37: /* paren_items: %empty  */
-#line 483 "src/parser.y"
+#line 504 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1799 "src/parser.c"
+#line 1820 "src/parser.c"
     break;
 
   case 38: /* paren_items: paren_items paren_part  */
-#line 485 "src/parser.y"
+#line 506 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1805 "src/parser.c"
+#line 1826 "src/parser.c"
     break;
 
   case 39: /* paren_part: token  */
-#line 490 "src/parser.y"
+#line 511 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1811 "src/parser.c"
+#line 1832 "src/parser.c"
     break;
 
   case 40: /* paren_part: SEMI  */
-#line 492 "src/parser.y"
+#line 513 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1817 "src/parser.c"
+#line 1838 "src/parser.c"
     break;
 
   case 41: /* paren_part: paren_group  */
-#line 494 "src/parser.y"
+#line 515 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1823 "src/parser.c"
+#line 1844 "src/parser.c"
     break;
 
   case 42: /* paren_part: bracket_group  */
-#line 496 "src/parser.y"
+#line 517 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1829 "src/parser.c"
+#line 1850 "src/parser.c"
     break;
 
   case 43: /* paren_part: angle_group  */
-#line 498 "src/parser.y"
+#line 519 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1835 "src/parser.c"
+#line 1856 "src/parser.c"
     break;
 
   case 44: /* bracket_group: LBRACKET bracket_items RBRACKET  */
-#line 503 "src/parser.y"
+#line 524 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1841 "src/parser.c"
+#line 1862 "src/parser.c"
     break;
 
   case 45: /* bracket_items: %empty  */
-#line 508 "src/parser.y"
+#line 529 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1847 "src/parser.c"
+#line 1868 "src/parser.c"
     break;
 
   case 46: /* bracket_items: bracket_items bracket_part  */
-#line 510 "src/parser.y"
+#line 531 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1853 "src/parser.c"
+#line 1874 "src/parser.c"
     break;
 
   case 47: /* bracket_part: token  */
-#line 515 "src/parser.y"
+#line 536 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1859 "src/parser.c"
+#line 1880 "src/parser.c"
     break;
 
   case 48: /* bracket_part: SEMI  */
-#line 517 "src/parser.y"
+#line 538 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1865 "src/parser.c"
+#line 1886 "src/parser.c"
     break;
 
   case 49: /* bracket_part: paren_group  */
-#line 519 "src/parser.y"
+#line 540 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1871 "src/parser.c"
+#line 1892 "src/parser.c"
     break;
 
   case 50: /* bracket_part: bracket_group  */
-#line 521 "src/parser.y"
+#line 542 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1877 "src/parser.c"
+#line 1898 "src/parser.c"
     break;
 
   case 51: /* bracket_part: angle_group  */
-#line 523 "src/parser.y"
+#line 544 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1883 "src/parser.c"
+#line 1904 "src/parser.c"
     break;
 
   case 52: /* angle_group: LT angle_items GT  */
-#line 528 "src/parser.y"
+#line 549 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1889 "src/parser.c"
+#line 1910 "src/parser.c"
     break;
 
   case 53: /* angle_items: %empty  */
-#line 533 "src/parser.y"
+#line 554 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1895 "src/parser.c"
+#line 1916 "src/parser.c"
     break;
 
   case 54: /* angle_items: angle_items angle_part  */
-#line 535 "src/parser.y"
+#line 556 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1901 "src/parser.c"
+#line 1922 "src/parser.c"
     break;
 
   case 55: /* angle_part: token  */
-#line 540 "src/parser.y"
+#line 561 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1907 "src/parser.c"
+#line 1928 "src/parser.c"
     break;
 
   case 56: /* angle_part: SEMI  */
-#line 542 "src/parser.y"
+#line 563 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1913 "src/parser.c"
+#line 1934 "src/parser.c"
     break;
 
   case 57: /* angle_part: paren_group  */
-#line 544 "src/parser.y"
+#line 565 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1919 "src/parser.c"
+#line 1940 "src/parser.c"
     break;
 
   case 58: /* angle_part: bracket_group  */
-#line 546 "src/parser.y"
+#line 567 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1925 "src/parser.c"
+#line 1946 "src/parser.c"
     break;
 
   case 59: /* angle_part: angle_group  */
-#line 548 "src/parser.y"
+#line 569 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1931 "src/parser.c"
+#line 1952 "src/parser.c"
     break;
 
   case 60: /* token: IDENT  */
-#line 553 "src/parser.y"
+#line 574 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1937 "src/parser.c"
+#line 1958 "src/parser.c"
     break;
 
   case 61: /* token: NUMBER  */
-#line 555 "src/parser.y"
+#line 576 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1943 "src/parser.c"
+#line 1964 "src/parser.c"
     break;
 
   case 62: /* token: STRING_LITERAL  */
-#line 557 "src/parser.y"
+#line 578 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1949 "src/parser.c"
+#line 1970 "src/parser.c"
     break;
 
   case 63: /* token: CHAR_LITERAL  */
-#line 559 "src/parser.y"
+#line 580 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1955 "src/parser.c"
+#line 1976 "src/parser.c"
     break;
 
   case 64: /* token: KEYWORD  */
-#line 561 "src/parser.y"
+#line 582 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1961 "src/parser.c"
+#line 1982 "src/parser.c"
     break;
 
   case 65: /* token: OP  */
-#line 563 "src/parser.y"
+#line 584 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1967 "src/parser.c"
+#line 1988 "src/parser.c"
     break;
 
   case 66: /* token: LT  */
-#line 565 "src/parser.y"
+#line 586 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1973 "src/parser.c"
+#line 1994 "src/parser.c"
     break;
 
   case 67: /* token: GT  */
-#line 567 "src/parser.y"
+#line 588 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1979 "src/parser.c"
+#line 2000 "src/parser.c"
     break;
 
   case 68: /* token: COMMA  */
-#line 569 "src/parser.y"
+#line 590 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1985 "src/parser.c"
+#line 2006 "src/parser.c"
     break;
 
   case 69: /* token: COLON  */
-#line 571 "src/parser.y"
+#line 592 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1991 "src/parser.c"
+#line 2012 "src/parser.c"
     break;
 
   case 70: /* token: EQUAL  */
-#line 573 "src/parser.y"
+#line 594 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1997 "src/parser.c"
+#line 2018 "src/parser.c"
     break;
 
   case 71: /* token: PERCENT  */
-#line 575 "src/parser.y"
+#line 596 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2003 "src/parser.c"
+#line 2024 "src/parser.c"
     break;
 
   case 72: /* token: OTHER  */
-#line 577 "src/parser.y"
+#line 598 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2009 "src/parser.c"
+#line 2030 "src/parser.c"
     break;
 
   case 73: /* token_no_comma: IDENT  */
-#line 582 "src/parser.y"
+#line 603 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2015 "src/parser.c"
+#line 2036 "src/parser.c"
     break;
 
   case 74: /* token_no_comma: NUMBER  */
-#line 584 "src/parser.y"
+#line 605 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2021 "src/parser.c"
+#line 2042 "src/parser.c"
     break;
 
   case 75: /* token_no_comma: STRING_LITERAL  */
-#line 586 "src/parser.y"
+#line 607 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2027 "src/parser.c"
+#line 2048 "src/parser.c"
     break;
 
   case 76: /* token_no_comma: CHAR_LITERAL  */
-#line 588 "src/parser.y"
+#line 609 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2033 "src/parser.c"
+#line 2054 "src/parser.c"
     break;
 
   case 77: /* token_no_comma: KEYWORD  */
-#line 590 "src/parser.y"
+#line 611 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2039 "src/parser.c"
+#line 2060 "src/parser.c"
     break;
 
   case 78: /* token_no_comma: OP  */
-#line 592 "src/parser.y"
+#line 613 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2045 "src/parser.c"
+#line 2066 "src/parser.c"
     break;
 
   case 79: /* token_no_comma: LT  */
-#line 594 "src/parser.y"
+#line 615 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2051 "src/parser.c"
+#line 2072 "src/parser.c"
     break;
 
   case 80: /* token_no_comma: GT  */
-#line 596 "src/parser.y"
+#line 617 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2057 "src/parser.c"
+#line 2078 "src/parser.c"
     break;
 
   case 81: /* token_no_comma: COLON  */
-#line 598 "src/parser.y"
+#line 619 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2063 "src/parser.c"
+#line 2084 "src/parser.c"
     break;
 
   case 82: /* token_no_comma: EQUAL  */
-#line 600 "src/parser.y"
+#line 621 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2069 "src/parser.c"
+#line 2090 "src/parser.c"
     break;
 
   case 83: /* token_no_comma: PERCENT  */
-#line 602 "src/parser.y"
+#line 623 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2075 "src/parser.c"
+#line 2096 "src/parser.c"
     break;
 
   case 84: /* token_no_comma: OTHER  */
-#line 604 "src/parser.y"
+#line 625 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2081 "src/parser.c"
+#line 2102 "src/parser.c"
     break;
 
 
-#line 2085 "src/parser.c"
+#line 2106 "src/parser.c"
 
       default: break;
     }
@@ -2274,7 +2295,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 607 "src/parser.y"
+#line 628 "src/parser.y"
 
 
 static void die(const char *msg)
@@ -3097,7 +3118,18 @@ static int parse_generic_angle_arg(const char *p, char *arg, const char **after)
             depth--;
             if (depth == 0) {
                 copy_trimmed(arg, NAME_MAX_LEN, start, p);
-                if (is_ident_start((unsigned char)arg[0]) &&
+                if (strcmp(arg, "string") == 0) {
+                    strncpy(arg, "char*", NAME_MAX_LEN - 1);
+                    arg[NAME_MAX_LEN - 1] = '\0';
+                } else if (strncmp(arg, "string", 6) == 0) {
+                    const char *q = skip_ws(arg + 6);
+                    if (*q == '*') {
+                        char normalized[NAME_MAX_LEN];
+                        snprintf(normalized, sizeof(normalized), "char*%s", q);
+                        strncpy(arg, normalized, NAME_MAX_LEN - 1);
+                        arg[NAME_MAX_LEN - 1] = '\0';
+                    }
+                } else if (is_ident_start((unsigned char)arg[0]) &&
                     strchr(arg, '*') == NULL && strchr(arg, ' ') == NULL &&
                     strchr(arg, '<') == NULL && strchr(arg, ',') == NULL &&
                     keyword_type(arg) == TY_UNKNOWN) {
@@ -3410,6 +3442,18 @@ static void tag_add(enum TypeKind kind, const char *name)
     g_tags.count++;
 }
 
+static enum TypeKind tag_kind_find(const char *name)
+{
+    int i;
+
+    for (i = 0; i < g_tags.count; i++) {
+        if (strcmp(g_tags.tag[i].name, name) == 0) {
+            return g_tags.tag[i].kind;
+        }
+    }
+    return TY_UNKNOWN;
+}
+
 static void register_tag_after_keyword(const char *p, enum TypeKind kind)
 {
     char name[NAME_MAX_LEN];
@@ -3568,12 +3612,18 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
     char arg[NAME_MAX_LEN];
     enum TypeKind kind = TY_UNKNOWN;
     char tag[NAME_MAX_LEN];
+    int saw_borrow = 0;
 
     tag[0] = '\0';
     while (is_ident_start((unsigned char)*p)) {
         const char *next = read_name(p, word);
         if (!skip_decl_word(word)) {
             break;
+        }
+        if (strcmp(word, "borrow") == 0) {
+            saw_borrow = 1;
+        } else if (strcmp(word, "owned") == 0) {
+            saw_borrow = 0;
         }
         p = skip_ws(next);
     }
@@ -3606,7 +3656,7 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
         if (strcmp(word, "string") == 0) {
             *base_end = next;
             *type = type_make(TY_CHAR, 1, NULL);
-            type->owned = 1;
+            type->owned = !saw_borrow;
             return 1;
         }
         if (tmpl != NULL && parse_generic_angle_arg(next, arg, &after)) {
@@ -3855,17 +3905,63 @@ static int is_safe_reference_type(struct Type type)
     return type.kind == TY_STRUCT;
 }
 
-static struct Text *rewrite_string_decl_text(struct Text *in, const char *base_start)
+static const char *find_string_decl_keyword(const char *base, int *borrowed)
+{
+    const char *p = skip_ws(base);
+    char word[NAME_MAX_LEN];
+
+    *borrowed = 0;
+    while (is_ident_start((unsigned char)*p)) {
+        const char *next = read_name(p, word);
+        if (strcmp(word, "borrow") == 0) {
+            *borrowed = 1;
+        } else if (strcmp(word, "owned") == 0) {
+            *borrowed = 0;
+        } else if (strcmp(word, "string") == 0) {
+            return p;
+        } else if (!skip_decl_word(word)) {
+            return NULL;
+        }
+        p = skip_ws(next);
+    }
+    return NULL;
+}
+
+static struct Text *rewrite_string_decl_text(struct Text *in, const char *base_start, const char *string_start, int borrowed)
 {
     struct Text *out = text_new();
     const char *p = base_start;
+    int have_prefix = 0;
 
     text_add_n(out, in->text, (size_t)(base_start - in->text));
-    while (isspace((unsigned char)*p)) {
+    while (p < string_start) {
+        if (isspace((unsigned char)*p)) {
+            text_add_ch(out, *p++);
+            continue;
+        }
+        if (is_ident_start((unsigned char)*p)) {
+            char word[NAME_MAX_LEN];
+            const char *next = read_name(p, word);
+            if (strcmp(word, "borrow") == 0 || strcmp(word, "owned") == 0) {
+                p = next;
+                while (p < string_start && isspace((unsigned char)*p)) {
+                    p++;
+                }
+                continue;
+            }
+            text_add_n(out, p, (size_t)(next - p));
+            have_prefix = 1;
+            p = next;
+            continue;
+        }
         text_add_ch(out, *p++);
+        have_prefix = 1;
     }
-    text_add(out, "owned char*");
-    p += 6;
+    if (have_prefix && out->len > 0 && !isspace((unsigned char)out->text[out->len - 1])) {
+        text_add_ch(out, ' ');
+    }
+    text_add(out, borrowed ? "borrow char*" : "owned char*");
+    p = string_start + 6;
     text_add(out, p);
     out->tail_return = in->tail_return;
     out->ast = in->ast;
@@ -3987,6 +4083,8 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
     const char *base_end;
     struct Type base_type;
     const char *name_pos;
+    const char *string_start;
+    int string_borrowed;
     char func_name[NAME_MAX_LEN];
     struct Type ret_type;
 
@@ -3994,8 +4092,9 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
         return in;
     }
     if (parse_function_signature(in->text, func_name, &ret_type)) {
-        if (strncmp(base, "string", 6) == 0 && !is_ident((unsigned char)base[6])) {
-            in = rewrite_string_decl_text(in, base);
+        string_start = find_string_decl_keyword(base, &string_borrowed);
+        if (string_start != NULL) {
+            in = rewrite_string_decl_text(in, base, string_start, string_borrowed);
             return rewrite_safe_reference_params(in);
         }
         if (ret_type.ptr == 0 && is_safe_reference_type(ret_type)) {
@@ -4030,8 +4129,9 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
         fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
         exit(1);
     }
-    if (strncmp(base, "string", 6) == 0 && !is_ident((unsigned char)base[6])) {
-        return rewrite_string_decl_text(in, base);
+    string_start = find_string_decl_keyword(base, &string_borrowed);
+    if (string_start != NULL) {
+        return rewrite_string_decl_text(in, base, string_start, string_borrowed);
     }
     if (decl.type.ptr == 0 && is_safe_reference_type(decl.type)) {
         if (parse_base_type_prefix(base, &base_end, &base_type) &&
@@ -4509,6 +4609,12 @@ static struct Text *rewrite_foreach_head(struct Text *head)
     type_text = text_new();
     text_add(type_text, type);
     type_text = rewrite_generics(type_text);
+    if (strcmp(type_text->text, "string") == 0) {
+        struct Text *normalized = text_new();
+        text_add(normalized, "char*");
+        text_free(type_text);
+        type_text = normalized;
+    }
     {
         const char *type_end;
         struct Type foreach_type;
@@ -4759,6 +4865,7 @@ static void begin_function(void)
 {
     g_owned.count = 0;
     g_finalized_locals.count = 0;
+    g_moved_locals.count = 0;
     g_locals.count = 0;
     g_function_returns_move = 0;
     g_current_function_name[0] = '\0';
@@ -5078,6 +5185,331 @@ static void owned_remove(const char *name)
     owned_remove_from(&g_owned, name);
 }
 
+static int moved_local_index(const char *name)
+{
+    int i;
+
+    for (i = 0; i < g_moved_locals.count; i++) {
+        if (strcmp(g_moved_locals.name[i], name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void moved_local_add(const char *name)
+{
+    if (name[0] == '\0' || moved_local_index(name) >= 0) {
+        return;
+    }
+    if (g_moved_locals.count >= MAX_OWNED) {
+        die("too many moved locals in one function");
+    }
+    strncpy(g_moved_locals.name[g_moved_locals.count], name, NAME_MAX_LEN - 1);
+    g_moved_locals.name[g_moved_locals.count][NAME_MAX_LEN - 1] = '\0';
+    g_moved_locals.count++;
+}
+
+static void moved_local_remove(const char *name)
+{
+    int index = moved_local_index(name);
+    int i;
+
+    if (index < 0) {
+        return;
+    }
+    for (i = index; i + 1 < g_moved_locals.count; i++) {
+        strcpy(g_moved_locals.name[i], g_moved_locals.name[i + 1]);
+    }
+    g_moved_locals.count--;
+}
+
+static int word_occurs_after_first_token(const char *stmt, const char *word)
+{
+    const char *p = skip_ws(stmt);
+    size_t n = strlen(word);
+
+    if (is_ident_start((unsigned char)*p)) {
+        char first[NAME_MAX_LEN];
+        const char *end = read_name(p, first);
+        if (strcmp(first, word) == 0) {
+            p = end;
+        }
+    }
+    while ((p = strstr(p, word)) != NULL) {
+        if ((p == stmt || (!is_ident((unsigned char)p[-1]) && p[-1] != '.' && p[-1] != '>')) &&
+            !is_ident((unsigned char)p[n])) {
+            const char *q = p;
+
+            while (q > stmt && isspace((unsigned char)q[-1])) {
+                q--;
+            }
+            if (q >= stmt + 4 &&
+                strncmp(q - 4, "move", 4) == 0 &&
+                (q - 4 == stmt || !is_ident((unsigned char)q[-5]))) {
+                p += n;
+                continue;
+            }
+            return 1;
+        }
+        p += n;
+    }
+    return 0;
+}
+
+static void check_moved_local_use(const char *stmt)
+{
+    int i;
+    char moved[NAME_MAX_LEN];
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    if (extract_move_name(stmt, moved) && moved_local_index(moved) >= 0) {
+        fprintf(stderr, "c-: type error: use of moved value '%s' at %s:%d\n",
+                moved, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    for (i = 0; i < g_moved_locals.count; i++) {
+        if (word_occurs_after_first_token(stmt, g_moved_locals.name[i])) {
+            fprintf(stderr, "c-: type error: use of moved value '%s' at %s:%d\n",
+                    g_moved_locals.name[i], g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    }
+}
+
+static int rhs_is_null_literal(const char *rhs)
+{
+    const char *p = skip_ws(rhs);
+
+    if (starts_word(p, "NULL")) {
+        p = skip_ws(p + 4);
+        return *p == '\0' || *p == ';';
+    }
+    if (starts_word(p, "null")) {
+        p = skip_ws(p + 4);
+        return *p == '\0' || *p == ';';
+    }
+    return 0;
+}
+
+static int type_is_optional(struct Type type)
+{
+    struct GenericInstance *inst = NULL;
+    struct GenericTemplate *tmpl;
+    int i;
+    int j;
+
+    if (type.kind != TY_STRUCT) {
+        return 0;
+    }
+    tmpl = generic_struct_find_by_concrete(type.tag, &inst);
+    if (tmpl != NULL && inst != NULL && strcmp(tmpl->name, "Optional") == 0) {
+        return 1;
+    }
+    for (i = 0; i < g_payload_enums.count; i++) {
+        struct PayloadEnum *en = &g_payload_enums.en[i];
+
+        if (strcmp(en->name, "Optional") != 0) {
+            continue;
+        }
+        for (j = 0; j < en->inst_count; j++) {
+            if (strcmp(en->inst[j].concrete, type.tag) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void check_null_assignment(const char *stmt)
+{
+    int eq;
+    char lhs_name[NAME_MAX_LEN];
+    struct DeclInfo decl;
+    struct Type lhs_type;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    eq = find_assignment(stmt);
+    if (eq < 0 || !rhs_is_null_literal(stmt + eq + 1)) {
+        return;
+    }
+    if (parse_decl(stmt, &decl) && decl.is_decl && decl.name[0] != '\0') {
+        lhs_type = decl.type;
+    } else {
+        if (!extract_lhs_name(stmt, eq, lhs_name)) {
+            return;
+        }
+        if (moved_local_index(lhs_name) >= 0) {
+            moved_local_remove(lhs_name);
+            return;
+        }
+        lhs_type = lhs_type_before_eq(stmt, eq, lhs_name);
+    }
+    if (!type_is_optional(lhs_type)) {
+        fprintf(stderr, "c-: type error: NULL is only allowed for Optional in safe mode at %s:%d; use Optional<T>.None()\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+}
+
+static void append_optional_none_expr(struct Text *out, struct Type type)
+{
+    text_add(out, type.tag);
+    text_add(out, "_None()");
+}
+
+static struct Text *rewrite_optional_null_assignment(struct Text *in)
+{
+    int eq = find_assignment(in->text);
+    char lhs_name[NAME_MAX_LEN];
+    struct DeclInfo decl;
+    struct Type lhs_type;
+    struct Text *out;
+
+    if (g_unsafe_depth > 0 || eq < 0 || !rhs_is_null_literal(in->text + eq + 1)) {
+        return in;
+    }
+    if (parse_decl(in->text, &decl) && decl.is_decl && decl.name[0] != '\0') {
+        lhs_type = decl.type;
+    } else {
+        if (!extract_lhs_name(in->text, eq, lhs_name)) {
+            return in;
+        }
+        lhs_type = lhs_type_before_eq(in->text, eq, lhs_name);
+    }
+    if (!type_is_optional(lhs_type)) {
+        return in;
+    }
+    out = text_new();
+    text_add_n(out, in->text, (size_t)(eq + 1));
+    text_add_ch(out, ' ');
+    append_optional_none_expr(out, lhs_type);
+    text_add(out, ";");
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_optional_null_return(struct Text *in)
+{
+    const char *p = skip_ws(in->text);
+    const char *expr;
+    struct Text *out;
+
+    if (g_unsafe_depth > 0 || !starts_word(p, "return") || !type_is_optional(g_current_function_ret)) {
+        return in;
+    }
+    expr = skip_ws(p + 6);
+    if (!rhs_is_null_literal(expr)) {
+        return in;
+    }
+    out = text_new();
+    append_leading_newlines(in->text, out);
+    append_indent_from(in->text, out);
+    text_add(out, "return ");
+    append_optional_none_expr(out, g_current_function_ret);
+    text_add(out, ";");
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static int token_is_control_keyword(const char *name)
+{
+    return strcmp(name, "if") == 0 ||
+        strcmp(name, "while") == 0 ||
+        strcmp(name, "for") == 0 ||
+        strcmp(name, "switch") == 0 ||
+        strcmp(name, "return") == 0 ||
+        strcmp(name, "sizeof") == 0;
+}
+
+static int args_contain_top_level_null(const char *start, const char *end)
+{
+    const char *p = start;
+
+    while (p < end) {
+        const char *arg_end = find_top_level_char(p, end, ',');
+        const char *q;
+        const char *r;
+
+        if (arg_end == NULL) {
+            arg_end = end;
+        }
+        q = skip_ws(p);
+        r = arg_end;
+        while (r > q && isspace((unsigned char)r[-1])) {
+            r--;
+        }
+        if ((r - q == 4 && strncmp(q, "NULL", 4) == 0) ||
+            (r - q == 4 && strncmp(q, "null", 4) == 0)) {
+            return 1;
+        }
+        p = arg_end;
+        if (p < end && *p == ',') {
+            p++;
+        }
+    }
+    return 0;
+}
+
+static void check_null_arguments(const char *stmt)
+{
+    const char *p = stmt;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+        const char *close;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        open = skip_ws(name_end);
+        if (*open != '(' || token_is_control_keyword(name)) {
+            p = name_end;
+            continue;
+        }
+        close = matching_paren(open);
+        if (close == NULL) {
+            return;
+        }
+        if (args_contain_top_level_null(open + 1, close)) {
+            fprintf(stderr, "c-: type error: NULL function argument is only allowed for Optional in safe mode at %s:%d\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+        p = close + 1;
+    }
+}
+
 static void finalized_local_add(const char *name, struct Type type)
 {
     owned_add_to(&g_finalized_locals, name, type);
@@ -5228,6 +5660,7 @@ static void remove_moved_locals(const char *s)
                     memcpy(name, q, (size_t)(end - q));
                     name[end - q] = '\0';
                     owned_remove(name);
+                    moved_local_add(name);
                 }
             }
         }
@@ -5394,11 +5827,9 @@ static void register_function_params(const char *s)
     if (close == NULL) {
         return;
     }
-    if (find_top_level_char(open + 1, close, '=') == NULL) {
-        return;
-    }
     fn = function_params_get(name);
     fn->count = 0;
+    fn->has_defaults = 0;
     p = open + 1;
     while (p < close) {
         const char *arg_end = find_top_level_char(p, close, ',');
@@ -5427,14 +5858,27 @@ static void register_function_params(const char *s)
             if (param_name_from_text(p, eq, param_name)) {
                 const char *def_start = eq < param_end ? skip_ws(eq + 1) : param_end;
                 size_t def_len = (size_t)(param_end - def_start);
+                struct DeclInfo decl;
+                char *param_decl = xstrndup(p, (size_t)(eq - p));
 
+                if (eq < param_end) {
+                    fn->has_defaults = 1;
+                }
                 strncpy(fn->param[fn->count].name, param_name, NAME_MAX_LEN - 1);
                 fn->param[fn->count].name[NAME_MAX_LEN - 1] = '\0';
+                fn->param[fn->count].type = type_unknown();
+                if (parse_decl(param_decl, &decl) && decl.name[0] != '\0') {
+                    if (decl_has_borrow(param_decl)) {
+                        decl.type.owned = 0;
+                    }
+                    fn->param[fn->count].type = decl.type;
+                }
                 if (def_len >= DEFAULT_EXPR_MAX) {
                     def_len = DEFAULT_EXPR_MAX - 1;
                 }
                 memcpy(fn->param[fn->count].def, def_start, def_len);
                 fn->param[fn->count].def[def_len] = '\0';
+                free(param_decl);
                 fn->count++;
             }
         }
@@ -5489,6 +5933,9 @@ static void register_function_param_symbols(const char *s)
             }
             tmp = xstrndup(p, (size_t)(eq - p));
             if (parse_decl(tmp, &decl) && decl.name[0] != '\0') {
+                if (decl_has_borrow(tmp)) {
+                    decl.type.owned = 0;
+                }
                 symbol_add_to(&g_locals, decl.name, decl.type);
             }
             free(tmp);
@@ -5548,6 +5995,22 @@ static struct Text *strip_default_parameters(struct Text *in)
     return out;
 }
 
+static int range_contains_text(const char *start, const char *end, const char *needle)
+{
+    size_t needle_len = strlen(needle);
+    const char *p;
+
+    if (needle_len == 0) {
+        return 1;
+    }
+    for (p = start; p + needle_len <= end; p++) {
+        if (strncmp(p, needle, needle_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static struct Text *strip_attributes(struct Text *in)
 {
     struct Text *out = text_new();
@@ -5556,6 +6019,7 @@ static struct Text *strip_attributes(struct Text *in)
     while (i < in->len) {
         if (strncmp(in->text + i, "__attribute__", 13) == 0) {
             size_t j = i + 13;
+            size_t attr_start = i;
             int depth = 0;
             while (isspace((unsigned char)in->text[j])) {
                 j++;
@@ -5569,6 +6033,9 @@ static struct Text *strip_attributes(struct Text *in)
                     }
                     j++;
                 } while (in->text[j] != '\0' && depth > 0);
+                if (range_contains_text(in->text + attr_start, in->text + j, "unused")) {
+                    text_add_n(out, in->text + attr_start, j - attr_start);
+                }
                 i = j;
                 continue;
             }
@@ -6595,6 +7062,45 @@ static int s_string_is_in_new_initializer(const char *stmt_start, const char *s_
         (last_rbrace == NULL || last_rbrace < last_lbrace);
 }
 
+static int s_string_is_push_argument(const char *stmt_start, const char *s_start)
+{
+    const char *p;
+    const char *open = NULL;
+    const char *name_end;
+    const char *name_start;
+    char name[NAME_MAX_LEN];
+
+    for (p = stmt_start; p < s_start; p++) {
+        if (*p == '(') {
+            open = p;
+        } else if (*p == ';') {
+            open = NULL;
+        }
+    }
+    if (open == NULL) {
+        return 0;
+    }
+    name_end = open;
+    while (name_end > stmt_start && isspace((unsigned char)name_end[-1])) {
+        name_end--;
+    }
+    name_start = name_end;
+    while (name_start > stmt_start &&
+           (is_ident((unsigned char)name_start[-1]) || name_start[-1] == '.')) {
+        name_start--;
+    }
+    if (name_start == name_end || (size_t)(name_end - name_start) >= sizeof(name)) {
+        return 0;
+    }
+    memcpy(name, name_start, (size_t)(name_end - name_start));
+    name[name_end - name_start] = '\0';
+    return strcmp(name, "push") == 0 ||
+        strstr(name, ".push") != NULL ||
+        strstr(name, "_push_") != NULL ||
+        strstr(name, "_push_front_") != NULL ||
+        strstr(name, "_set_") != NULL;
+}
+
 static void node_add_escaped_format_char(struct Text *fmt, char c)
 {
     if (c == '%') {
@@ -6746,6 +7252,7 @@ static struct Text *rewrite_s_string_temporaries(struct Text *stmt)
         char tmp[NAME_MAX_LEN];
         int moved = 0;
         int escapes_to_object_initializer = s_string_is_in_new_initializer(leading_end, s_start);
+        int escapes_to_push = s_string_is_push_argument(leading_end, s_start);
         const char *move_end = s_start;
         const char *move_start;
 
@@ -6774,7 +7281,7 @@ static struct Text *rewrite_s_string_temporaries(struct Text *stmt)
         text_add(prefix, " = NULL;\n");
         append_asprintf_for_quote(prefix, tmp, quote_start, indent->text);
 
-        if (!moved && !escapes_to_object_initializer) {
+        if (!moved && !escapes_to_object_initializer && !escapes_to_push) {
             text_add(suffix, "\n");
             text_add(suffix, indent->text);
             text_add(suffix, "cminus_gc_free(");
@@ -6964,6 +7471,8 @@ static int try_rewrite_string_method(const char *s, const char **end, struct Tex
 
 static int try_rewrite_struct_method(const char *s, const char **end, struct Text *replacement)
 {
+    const char *p;
+    const char *receiver_end;
     const char *name_end;
     const char *dot;
     const char *method_start;
@@ -6971,9 +7480,12 @@ static int try_rewrite_struct_method(const char *s, const char **end, struct Tex
     const char *open;
     const char *close;
     char obj[NAME_MAX_LEN];
+    char field[NAME_MAX_LEN];
     char method[NAME_MAX_LEN];
     char generic_func[NAME_MAX_LEN];
     struct Symbol *sym;
+    struct Type recv_type;
+    int chained = 0;
 
     if (!is_ident_start((unsigned char)*s)) {
         return 0;
@@ -6983,7 +7495,35 @@ static int try_rewrite_struct_method(const char *s, const char **end, struct Tex
     if (sym == NULL || sym->type.kind != TY_STRUCT) {
         return 0;
     }
-    dot = skip_ws(name_end);
+    recv_type = sym->type;
+    p = name_end;
+    dot = skip_ws(p);
+    while (*dot == '.' || (dot[0] == '-' && dot[1] == '>')) {
+        const char *field_start = skip_ws(*dot == '.' ? dot + 1 : dot + 2);
+        const char *field_end;
+        const char *after_field;
+
+        if (!is_ident_start((unsigned char)*field_start)) {
+            return 0;
+        }
+        field_end = read_name(field_start, field);
+        after_field = skip_ws(field_end);
+        if (*after_field == '(') {
+            strncpy(method, field, NAME_MAX_LEN - 1);
+            method[NAME_MAX_LEN - 1] = '\0';
+            method_start = field_start;
+            method_end = field_end;
+            open = after_field;
+            receiver_end = dot;
+            goto found_method;
+        }
+        if (recv_type.kind != TY_STRUCT || !struct_field_type(recv_type.tag, field, &recv_type)) {
+            return 0;
+        }
+        p = field_end;
+        dot = skip_ws(p);
+        chained = 1;
+    }
     if (*dot != '.' && !(dot[0] == '-' && dot[1] == '>')) {
         return 0;
     }
@@ -6996,24 +7536,32 @@ static int try_rewrite_struct_method(const char *s, const char **end, struct Tex
     if (*open != '(') {
         return 0;
     }
+    receiver_end = dot;
+found_method:
     close = matching_paren(open);
     if (close == NULL) {
         return 0;
     }
 
-    if (generic_method_concrete_name(sym->type.tag, method, generic_func, sizeof(generic_func))) {
+    if (generic_method_concrete_name(recv_type.tag, method, generic_func, sizeof(generic_func))) {
         text_add(replacement, generic_func);
     } else {
-        text_add(replacement, sym->type.tag);
+        text_add(replacement, recv_type.tag);
         text_add_ch(replacement, '_');
         text_add(replacement, method);
     }
     text_add_ch(replacement, '(');
-    if (*dot == '-' || sym->type.ptr > 0) {
-        text_add(replacement, obj);
+    if (recv_type.ptr > 0 || (!chained && *dot == '-')) {
+        text_add_n(replacement, s, (size_t)(receiver_end - s));
     } else {
         text_add_ch(replacement, '&');
-        text_add(replacement, obj);
+        if (chained) {
+            text_add_ch(replacement, '(');
+            text_add_n(replacement, s, (size_t)(receiver_end - s));
+            text_add_ch(replacement, ')');
+        } else {
+            text_add_n(replacement, s, (size_t)(receiver_end - s));
+        }
     }
     if (close > open + 1) {
         text_add(replacement, ", ");
@@ -7057,12 +7605,146 @@ static struct Text *rewrite_method_calls(struct Text *in)
     return out;
 }
 
-static int collection_index_call(const char *name,
-                                 const char *index_start,
-                                 const char *index_end,
-                                 struct Text *replacement)
+static int skip_unknown_field_error_for_tag(const char *tag)
 {
-    struct Symbol *sym = symbol_find(name);
+    return strncmp(tag, "__CMinus", 8) == 0 ||
+        strncmp(tag, "Vec_", 4) == 0 ||
+        strncmp(tag, "List_", 5) == 0 ||
+        strncmp(tag, "Map_", 4) == 0 ||
+        strncmp(tag, "Span_", 5) == 0 ||
+        strncmp(tag, "Ref_", 4) == 0 ||
+        strncmp(tag, "Optional_", 9) == 0 ||
+        strncmp(tag, "OwnedVec_", 9) == 0 ||
+        strncmp(tag, "OwnedList_", 10) == 0 ||
+        strncmp(tag, "OwnedMap_", 9) == 0;
+}
+
+static struct Text *rewrite_auto_field_access(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *scan;
+        const char *dot;
+        struct Symbol *sym;
+        struct Type current;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                text_add_ch(out, *p);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            text_add_ch(out, *p++);
+            continue;
+        }
+        name_end = read_name(p, name);
+        sym = symbol_find(name);
+        if (sym == NULL || sym->type.kind != TY_STRUCT) {
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        current = sym->type;
+        scan = name_end;
+        dot = skip_ws(scan);
+        if (*dot != '.' && !(dot[0] == '-' && dot[1] == '>')) {
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        text_add_n(out, p, (size_t)(name_end - p));
+        while (*dot == '.' || (dot[0] == '-' && dot[1] == '>')) {
+            const char *field_start = skip_ws(*dot == '.' ? dot + 1 : dot + 2);
+            const char *field_end;
+            const char *after_field;
+            char field[NAME_MAX_LEN];
+            struct Type field_type;
+
+            text_add_n(out, scan, (size_t)(dot - scan));
+            if (!is_ident_start((unsigned char)*field_start)) {
+                text_add_n(out, dot, (size_t)((*dot == '.') ? 1 : 2));
+                scan = (*dot == '.') ? dot + 1 : dot + 2;
+                break;
+            }
+            field_end = read_name(field_start, field);
+            after_field = skip_ws(field_end);
+            if (*after_field == '(' || *after_field == '<') {
+                text_add_n(out, dot, (size_t)(field_end - dot));
+                scan = field_end;
+                break;
+            }
+            if (current.kind != TY_STRUCT ||
+                !struct_field_type(current.tag, field, &field_type)) {
+                if (current.kind == TY_STRUCT && current.tag[0] != '\0' &&
+                    !skip_unknown_field_error_for_tag(current.tag)) {
+                    fprintf(stderr, "c-: type error: unknown field '%s' in struct %s\n", field, current.tag);
+                    exit(1);
+                }
+                text_add_n(out, dot, (size_t)(field_end - dot));
+                scan = field_end;
+                break;
+            }
+            text_add(out, current.ptr > 0 ? "->" : ".");
+            text_add_n(out, field_start, (size_t)(field_end - field_start));
+            if (*dot == '.' && current.ptr > 0) {
+                changed = 1;
+            }
+            current = field_type;
+            scan = field_end;
+            dot = skip_ws(scan);
+        }
+        p = scan;
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static void append_collection_receiver(struct Text *out,
+                                       struct Type receiver_type,
+                                       const char *receiver_start,
+                                       const char *receiver_end)
+{
+    if (receiver_type.ptr > 0) {
+        text_add_n(out, receiver_start, (size_t)(receiver_end - receiver_start));
+    } else {
+        text_add_ch(out, '&');
+        text_add_ch(out, '(');
+        text_add_n(out, receiver_start, (size_t)(receiver_end - receiver_start));
+        text_add_ch(out, ')');
+    }
+}
+
+static int collection_index_call_expr(struct Type receiver_type,
+                                      const char *receiver_start,
+                                      const char *receiver_end,
+                                      const char *index_start,
+                                      const char *index_end,
+                                      struct Text *replacement)
+{
     struct GenericInstance *struct_inst = NULL;
     struct GenericTemplate *struct_tmpl;
     struct GenericTemplate *func_tmpl;
@@ -7073,10 +7755,10 @@ static int collection_index_call(const char *name,
     char tmp[128];
     int id;
 
-    if (sym == NULL || sym->type.kind != TY_STRUCT) {
+    if (receiver_type.kind != TY_STRUCT) {
         return 0;
     }
-    struct_tmpl = generic_struct_find_by_concrete(sym->type.tag, &struct_inst);
+    struct_tmpl = generic_struct_find_by_concrete(receiver_type.tag, &struct_inst);
     if (struct_tmpl == NULL || struct_inst == NULL) {
         return 0;
     }
@@ -7091,12 +7773,7 @@ static int collection_index_call(const char *name,
         text_add(replacement, "(*");
         text_add(replacement, ptr_inst->concrete);
         text_add_ch(replacement, '(');
-        if (sym->type.ptr > 0) {
-            text_add(replacement, name);
-        } else {
-            text_add_ch(replacement, '&');
-            text_add(replacement, name);
-        }
+        append_collection_receiver(replacement, receiver_type, receiver_start, receiver_end);
         text_add(replacement, ", ");
         text_add_n(replacement, index_start, (size_t)(index_end - index_start));
         text_add(replacement, ", \"");
@@ -7132,12 +7809,7 @@ static int collection_index_call(const char *name,
     text_add(replacement, tmp);
     text_add(replacement, func_inst->concrete);
     text_add_ch(replacement, '(');
-    if (sym->type.ptr > 0) {
-        text_add(replacement, name);
-    } else {
-        text_add_ch(replacement, '&');
-        text_add(replacement, name);
-    }
+    append_collection_receiver(replacement, receiver_type, receiver_start, receiver_end);
     text_add(replacement, ", ");
     text_add_n(replacement, index_start, (size_t)(index_end - index_start));
     snprintf(tmp, sizeof(tmp), "); if (__index_result%d.tag == ", id);
@@ -7152,6 +7824,64 @@ static int collection_index_call(const char *name,
     return 1;
 }
 
+static int collection_index_call(const char *name,
+                                 const char *index_start,
+                                 const char *index_end,
+                                 struct Text *replacement)
+{
+    struct Symbol *sym = symbol_find(name);
+
+    if (sym == NULL) {
+        return 0;
+    }
+    return collection_index_call_expr(sym->type, name, name + strlen(name),
+                                      index_start, index_end, replacement);
+}
+
+static int parse_field_receiver(const char *s,
+                                const char **receiver_end,
+                                struct Type *receiver_type)
+{
+    const char *p;
+    const char *dot;
+    char name[NAME_MAX_LEN];
+    char field[NAME_MAX_LEN];
+    struct Symbol *sym;
+
+    if (!is_ident_start((unsigned char)*s)) {
+        return 0;
+    }
+    p = read_name(s, name);
+    sym = symbol_find(name);
+    if (sym == NULL || sym->type.kind != TY_STRUCT) {
+        return 0;
+    }
+    *receiver_type = sym->type;
+    dot = skip_ws(p);
+    while (*dot == '.' || (dot[0] == '-' && dot[1] == '>')) {
+        const char *field_start = skip_ws(*dot == '.' ? dot + 1 : dot + 2);
+        const char *field_end;
+        const char *after_field;
+
+        if (!is_ident_start((unsigned char)*field_start)) {
+            return 0;
+        }
+        field_end = read_name(field_start, field);
+        after_field = skip_ws(field_end);
+        if (receiver_type->kind != TY_STRUCT ||
+            !struct_field_type(receiver_type->tag, field, receiver_type)) {
+            return 0;
+        }
+        if (*after_field == '[') {
+            *receiver_end = field_end;
+            return 1;
+        }
+        p = field_end;
+        dot = skip_ws(p);
+    }
+    return 0;
+}
+
 static struct Text *rewrite_index_access(struct Text *in)
 {
     const char *p = in->text;
@@ -7161,8 +7891,11 @@ static struct Text *rewrite_index_access(struct Text *in)
     while (*p != '\0') {
         char name[NAME_MAX_LEN];
         const char *name_end;
+        const char *receiver_start;
+        const char *receiver_end;
         const char *open;
         const char *close;
+        struct Type receiver_type;
         struct Text *replacement;
 
         if (*p == '"' || *p == '\'') {
@@ -7189,9 +7922,19 @@ static struct Text *rewrite_index_access(struct Text *in)
         name_end = read_name(p, name);
         open = skip_ws(name_end);
         if (*open != '[') {
-            text_add_n(out, p, (size_t)(name_end - p));
-            p = name_end;
-            continue;
+            if (!parse_field_receiver(p, &receiver_end, &receiver_type)) {
+                text_add_n(out, p, (size_t)(name_end - p));
+                p = name_end;
+                continue;
+            }
+            receiver_start = p;
+            open = skip_ws(receiver_end);
+        } else {
+            struct Symbol *sym = symbol_find(name);
+
+            receiver_start = p;
+            receiver_end = name_end;
+            receiver_type = sym != NULL ? sym->type : type_unknown();
         }
         close = open + 1;
         {
@@ -7214,7 +7957,8 @@ static struct Text *rewrite_index_access(struct Text *in)
             }
         }
         replacement = text_new();
-        if (collection_index_call(name, open + 1, close, replacement)) {
+        if (collection_index_call_expr(receiver_type, receiver_start, receiver_end,
+                                       open + 1, close, replacement)) {
             text_add(out, replacement->text);
             p = close + 1;
             changed = 1;
@@ -7324,6 +8068,16 @@ static int span_deref_replacement(const char *name, struct Text *replacement)
     return collection_index_call(name, "0", "0" + 1, replacement);
 }
 
+static int span_incdec_replacement(const char *name, int delta, struct Text *replacement)
+{
+    char delta_buf[16];
+
+    snprintf(delta_buf, sizeof(delta_buf), "%d", delta);
+    text_add(replacement, name);
+    text_add(replacement, " = ");
+    return span_offset_replacement(name, delta_buf, delta_buf + strlen(delta_buf), 0, replacement);
+}
+
 static struct Text *rewrite_span_operators(struct Text *in)
 {
     const char *p = in->text;
@@ -7370,6 +8124,18 @@ static struct Text *rewrite_span_operators(struct Text *in)
             const char *name_end = read_name(p, name);
             const char *op = skip_ws(name_end);
 
+            if ((*op == '+' || *op == '-') && op[1] == *op) {
+                struct Text *replacement = text_new();
+
+                if (span_incdec_replacement(name, *op == '+' ? 1 : -1, replacement)) {
+                    text_add(out, replacement->text);
+                    p = op + 2;
+                    changed = 1;
+                    text_free(replacement);
+                    continue;
+                }
+                text_free(replacement);
+            }
             if ((*op == '+' || *op == '-') && op[1] != *op && !(op[0] == '-' && op[1] == '>')) {
                 const char *expr_start = skip_ws(op + 1);
                 const char *expr_end = skip_divisor_expr(expr_start);
@@ -7388,6 +8154,110 @@ static struct Text *rewrite_span_operators(struct Text *in)
             text_add_n(out, p, (size_t)(name_end - p));
             p = name_end;
             continue;
+        }
+        if ((*p == '+' || *p == '-') && p[1] == *p) {
+            const char *name_start = skip_ws(p + 2);
+
+            if (is_ident_start((unsigned char)*name_start)) {
+                char name[NAME_MAX_LEN];
+                const char *name_end = read_name(name_start, name);
+                struct Text *replacement = text_new();
+
+                if (span_incdec_replacement(name, *p == '+' ? 1 : -1, replacement)) {
+                    text_add(out, replacement->text);
+                    p = name_end;
+                    changed = 1;
+                    text_free(replacement);
+                    continue;
+                }
+                text_free(replacement);
+            }
+        }
+        text_add_ch(out, *p++);
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_sizeof_types(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                if (*p == quote) {
+                    text_add_ch(out, *p++);
+                    break;
+                }
+                text_add_ch(out, *p++);
+            }
+            continue;
+        }
+        if (*p == '/' && p[1] == '/') {
+            text_add(out, p);
+            break;
+        }
+        if (*p == '/' && p[1] == '*') {
+            text_add_ch(out, *p++);
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '*' && p[1] == '/') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    break;
+                }
+                text_add_ch(out, *p++);
+            }
+            continue;
+        }
+        if ((p == in->text || !is_ident((unsigned char)p[-1])) && starts_word(p, "sizeof")) {
+            const char *open = skip_ws(p + 6);
+
+            if (*open == '(') {
+                const char *close = matching_paren(open);
+                const char *inner;
+                const char *inner_end;
+                char name[NAME_MAX_LEN];
+                enum TypeKind kind;
+
+                if (close != NULL) {
+                    inner = skip_ws(open + 1);
+                    inner_end = close;
+                    while (inner_end > inner && isspace((unsigned char)inner_end[-1])) {
+                        inner_end--;
+                    }
+                    if (is_ident_start((unsigned char)*inner) &&
+                        read_name(inner, name) == inner_end &&
+                        (kind = tag_kind_find(name)) != TY_UNKNOWN) {
+                        text_add(out, "sizeof(");
+                        text_add(out, type_kind_name(kind));
+                        text_add_ch(out, ' ');
+                        text_add(out, name);
+                        text_add_ch(out, ')');
+                        p = close + 1;
+                        changed = 1;
+                        continue;
+                    }
+                }
+            }
         }
         text_add_ch(out, *p++);
     }
@@ -7675,7 +8545,16 @@ static struct Text *build_parameter_call(struct FunctionParams *fn, const char *
             text_add(out, ", ");
         }
         if (values[i] != NULL) {
-            text_add(out, values[i]->text);
+            if (rhs_is_null_literal(values[i]->text)) {
+                if (!type_is_optional(fn->param[i].type)) {
+                    fprintf(stderr, "c-: type error: NULL argument for parameter '%s' in function '%s' is only allowed for Optional in safe mode\n",
+                            fn->param[i].name, fn->name);
+                    exit(1);
+                }
+                append_optional_none_expr(out, fn->param[i].type);
+            } else {
+                text_add(out, values[i]->text);
+            }
         } else if (fn->param[i].def[0] != '\0') {
             text_add(out, fn->param[i].def);
         } else {
@@ -7708,6 +8587,11 @@ static struct Text *rewrite_parameter_calls(struct Text *in)
             if (fn != NULL && *open == '(') {
                 const char *close = find_matching_paren(open);
                 if (close != NULL) {
+                    if (!fn->has_defaults && !args_contain_top_level_null(open + 1, close)) {
+                        text_add_n(out, p, (size_t)(close + 1 - p));
+                        p = close + 1;
+                        continue;
+                    }
                     struct Text *args = build_parameter_call(fn, open + 1, close);
                     text_add(out, name);
                     text_add_ch(out, '(');
@@ -7878,12 +8762,15 @@ static struct Text *process_control_head(struct Text *head)
     } else if (starts_word(p, "do")) {
         kind = ND_DO;
     }
-    check_owned_pointer_arithmetic(head->text);
+    check_safe_pointer_deref(head->text);
     check_casts(head->text);
+    check_moved_local_use(head->text);
     head = rewrite_generics(head);
     check_safe_pointer_decl(head->text);
     head = rewrite_method_calls(head);
+    head = rewrite_auto_field_access(head);
     head = rewrite_span_operators(head);
+    head = rewrite_sizeof_types(head);
     head = rewrite_index_access(head);
     head = rewrite_parameter_calls(head);
     head = rewrite_division_checks(head);
@@ -8131,6 +9018,31 @@ static int parse_cast_type_prefix(const char *s, const char *end, const char **a
     return p == end;
 }
 
+static int paren_is_type_query_arg(const char *start, const char *open)
+{
+    const char *end = open;
+    const char *word;
+    size_t len;
+
+    while (end > start && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    word = end;
+    while (word > start && is_ident((unsigned char)word[-1])) {
+        word--;
+    }
+    if (word == end) {
+        return 0;
+    }
+    len = (size_t)(end - word);
+    if (word > start && is_ident((unsigned char)word[-1])) {
+        return 0;
+    }
+    return (len == 6 && strncmp(word, "sizeof", 6) == 0) ||
+        (len == 8 && strncmp(word, "_Alignof", 8) == 0) ||
+        (len == 7 && strncmp(word, "alignof", 7) == 0);
+}
+
 static void check_casts(const char *text)
 {
     const char *p = text;
@@ -8202,7 +9114,7 @@ static void check_casts(const char *text)
                     q++;
                 }
             }
-            if (close != NULL && !reject &&
+            if (close != NULL && !reject && !paren_is_type_query_arg(text, p) &&
                 parse_cast_type_prefix(p + 1, close, &after) && after == close) {
                 fprintf(stderr, "c-: type error: cast is only allowed inside unsafe near `");
                 fwrite(p, 1, (size_t)(close - p + 1), stderr);
@@ -8472,15 +9384,18 @@ static struct Text *prepend_owned_assignment_release(struct Text *stmt, const ch
 {
     struct Text *out = text_new();
     struct Text *indent = text_new();
+    struct Text *normalized_lhs = text_new();
     char tmp[NAME_MAX_LEN];
 
     snprintf(tmp, sizeof(tmp), "__owned_old%d", g_right_value_id++);
+    text_add(normalized_lhs, lhs_expr);
+    normalized_lhs = rewrite_auto_field_access(normalized_lhs);
     append_indent_from(original, indent);
     text_add(out, indent->text);
     text_add(out, "void* ");
     text_add(out, tmp);
     text_add(out, " = ");
-    text_add(out, lhs_expr);
+    text_add(out, normalized_lhs->text);
     text_add(out, ";\n");
     text_add(out, stmt->text);
     text_add_ch(out, '\n');
@@ -8489,6 +9404,7 @@ static struct Text *prepend_owned_assignment_release(struct Text *stmt, const ch
     out->tail_return = stmt->tail_return;
     out->ast = stmt->ast;
     text_free(indent);
+    text_free(normalized_lhs);
     text_free(stmt);
     return out;
 }
@@ -8510,67 +9426,89 @@ static void append_zero_clear_after_decl(struct Text *stmt, const char *original
     text_free(indent);
 }
 
-static int prev_nonspace_is_plus_or_minus(const char *start, const char *p)
+static int unary_star_context(const char *start, const char *star)
 {
+    const char *p = star;
+
     while (p > start && isspace((unsigned char)p[-1])) {
         p--;
     }
-    if (p > start && (p[-1] == '+' || p[-1] == '-')) {
-        if (p[-1] == '-' && p > start + 1 && p[-2] == '>') {
-            return 0;
+    if (p == start) {
+        return 1;
+    }
+    p--;
+    if (is_ident((unsigned char)*p)) {
+        const char *end = p + 1;
+        const char *word = p;
+
+        while (word > start && is_ident((unsigned char)word[-1])) {
+            word--;
         }
+        if (end - word == 6 && strncmp(word, "return", 6) == 0) {
+            return 1;
+        }
+    }
+    if (*p == '(' || *p == '[' || *p == '{' || *p == '=' || *p == ',' ||
+        *p == ':' || *p == '?' || *p == '!' || *p == '~' ||
+        *p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '%' ||
+        *p == '&' || *p == '|' || *p == '^' || *p == '<' || *p == '>') {
         return 1;
     }
     return 0;
 }
 
-static int next_is_owned_arith(const char *p)
+static void check_safe_pointer_deref(const char *stmt)
 {
-    p = skip_ws(p);
-    if (p[0] == '+' || p[0] == '-') {
-        if (p[0] == '-' && p[1] == '>') {
-            return 0;
-        }
-        return 1;
-    }
-    return 0;
-}
+    const char *p = stmt;
 
-static void check_owned_pointer_arithmetic(const char *stmt)
-{
-    int i;
     if (g_unsafe_depth > 0) {
         return;
     }
-    for (i = 0; i < g_locals.count; i++) {
-        const char *p = stmt;
-        const char *name = g_locals.sym[i].name;
-        size_t n = strlen(name);
-        struct GenericInstance *inst = NULL;
-        struct GenericTemplate *tmpl = NULL;
-        if (g_locals.sym[i].type.ptr <= 0) {
-            continue;
-        }
-        if (g_locals.sym[i].type.kind == TY_STRUCT) {
-            tmpl = generic_struct_find_by_concrete(g_locals.sym[i].type.tag, &inst);
-            if (tmpl != NULL && strcmp(tmpl->name, "Span") == 0) {
-                continue;
-            }
-        }
-        while ((p = strstr(p, name)) != NULL) {
-            if ((p == stmt || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[n])) {
-                const char *after_name = skip_ws(p + n);
-                if (*after_name == '[') {
-                    p += n;
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
                     continue;
                 }
-                if (prev_nonspace_is_plus_or_minus(stmt, p) || next_is_owned_arith(p + n)) {
-                    fprintf(stderr, "c-: type error: pointer arithmetic is only allowed inside unsafe for pointer '%s'\n", name);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (*p == '*' && unary_star_context(stmt, p)) {
+            const char *name_start = skip_ws(p + 1);
+            char name[NAME_MAX_LEN];
+            struct Symbol *sym;
+
+            if (is_ident_start((unsigned char)*name_start)) {
+                read_name(name_start, name);
+                sym = symbol_find(name);
+                if (sym != NULL) {
+                    struct GenericInstance *inst = NULL;
+                    struct GenericTemplate *tmpl = NULL;
+
+                    if (sym->type.kind == TY_STRUCT) {
+                        tmpl = generic_struct_find_by_concrete(sym->type.tag, &inst);
+                    }
+                    if ((tmpl != NULL && strcmp(tmpl->name, "Span") == 0) ||
+                        strncmp(sym->type.tag, "Span_", 5) == 0 ||
+                        strcmp(sym->type.tag, "Span") == 0) {
+                        p++;
+                        continue;
+                    }
+                }
+                if (sym != NULL &&
+                    (sym->type.ptr > 0 ||
+                     (sym->type.kind == TY_STRUCT && strstr(name_start, "->") != NULL))) {
+                    fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe for pointer '%s'\n", name);
                     exit(1);
                 }
             }
-            p += n;
         }
+        p++;
     }
 }
 
@@ -8746,6 +9684,8 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     eq = find_assignment(all->text);
     register_tags_in_text(all->text);
     all = rewrite_payload_enum_constructors(all);
+    all = rewrite_optional_null_assignment(all);
+    eq = find_assignment(all->text);
     if (!g_in_function) {
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0' &&
             parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' &&
@@ -8759,7 +9699,15 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all->ast = ast_raw(ND_RAW, all->text);
         return remove_percent(strip_attributes(all));
     }
-    check_owned_pointer_arithmetic(all->text);
+    check_null_assignment(all->text);
+    if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+        moved_local_remove(decl.name);
+    }
+    check_moved_local_use(all->text);
+    if (eq >= 0 && extract_lhs_name(all->text, eq, lhs_name)) {
+        moved_local_remove(lhs_name);
+    }
+    check_safe_pointer_deref(all->text);
     check_casts(all->text);
     if (text_has_word(all->text, "move")) {
         g_function_returns_move = 1;
@@ -8773,6 +9721,9 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
 
     if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
         is_borrowed = decl_has_borrow(all->text);
+        if (is_borrowed) {
+            decl.type.owned = 0;
+        }
         if (decl.has_init) {
             rhs_type = expr_type(decl.init);
             if (extract_move_name(decl.init, moved_name)) {
@@ -8872,8 +9823,11 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all->ast = ast_raw(ND_DECL, all->text);
         all = remove_percent(strip_attributes(all));
         all = rewrite_method_calls(all);
+        all = rewrite_auto_field_access(all);
         all = rewrite_parameter_calls(all);
+        check_null_arguments(all->text);
         all = rewrite_span_operators(all);
+        all = rewrite_sizeof_types(all);
         all = rewrite_index_access(all);
         all = rewrite_division_checks(all);
         all = rewrite_control_condition(all);
@@ -9088,9 +10042,12 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = remove_percent(strip_attributes(all));
     all = rewrite_payload_enum_constructors(all);
     all = rewrite_method_calls(all);
+    all = rewrite_auto_field_access(all);
     all = rewrite_span_operators(all);
+    all = rewrite_sizeof_types(all);
     all = rewrite_index_access(all);
     all = rewrite_parameter_calls(all);
+    check_null_arguments(all->text);
     all = rewrite_division_checks(all);
     all = rewrite_clone_expressions(all);
     all = rewrite_control_condition(all);
@@ -9129,15 +10086,33 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
         all->tail_return = 1;
         return all;
     }
-    check_owned_pointer_arithmetic(all->text);
+    check_safe_pointer_deref(all->text);
     check_casts(all->text);
+    check_moved_local_use(all->text);
     remove_moved_locals(all->text);
     all = rewrite_generics(all);
     all = rewrite_payload_enum_constructors(all);
+    all = rewrite_optional_null_return(all);
+    {
+        const char *p = skip_ws(all->text);
+        const char *expr_start = starts_word(p, "return") ? skip_ws(p + 6) : NULL;
+
+        if (expr_start != NULL && rhs_is_null_literal(expr_start) &&
+            g_current_function_name[0] != '\0' &&
+            strncmp(g_current_function_name, "__cminus", 8) != 0 &&
+            strncmp(g_current_function_name, "cminus_", 7) != 0) {
+            fprintf(stderr, "c-: type error: return NULL is only allowed for Optional in safe mode at %s:%d; use Optional<T>.None()\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    }
     all = rewrite_method_calls(all);
+    all = rewrite_auto_field_access(all);
     all = rewrite_span_operators(all);
+    all = rewrite_sizeof_types(all);
     all = rewrite_index_access(all);
     all = rewrite_parameter_calls(all);
+    check_null_arguments(all->text);
     all = rewrite_division_checks(all);
     all = remove_percent(strip_attributes(all));
     if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {

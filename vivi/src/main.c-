@@ -1,47 +1,50 @@
+unsafe {
 #include <locale.h>
 #include <ncursesw/curses.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+}
 
-enum ViviCommand {
-    CmdNone,
-    CmdQuit,
-    CmdSave,
-    CmdUp,
-    CmdDown,
-    CmdLeft,
-    CmdRight,
-    CmdInsert,
-    CmdDelete,
-    CmdNewLine,
+enum ViviMode {
+    ModeNormal,
+    ModeInsert,
+    ModeCommand,
+    ModeSearch,
 };
 
 struct Editor {
-    struct List<char*>* lines;
-    struct Vec<char*>* viewport;
-    struct Map<int,int>* keys;
-    char* path;
+    List<string> lines;
+    Vec<string> viewport;
+    Vec<string> undo_stack;
+    Vec<string> redo_stack;
+    Map<int,int> motions;
+    string path;
+    string message;
+    string command;
+    string yank;
     int row;
     int col;
     int top;
-    int insert;
+    int mode;
     int dirty;
     int running;
+    int pending;
 };
 
-struct ListNode<char*>* vivi_force_list_node_char_ptr;
+void editor_free_lines(Editor ed);
+void editor_clamp(Editor ed);
 
-char* str_copy(const char* s)
+string str_copy(borrow string s)
 {
-    char* out;
+    string out;
     int len;
 
     if (s == NULL) {
         s = "";
     }
     len = strlen(s);
-    out = calloc(len + 1, sizeof(char));
+    out = cminus_gc_calloc(len + 1, sizeof(char));
     if (out == NULL) {
         abort();
     }
@@ -49,9 +52,14 @@ char* str_copy(const char* s)
     return out;
 }
 
-char* str_append_char(char* line, int ch)
+string str_empty(void)
 {
-    char* out;
+    return str_copy("");
+}
+
+string str_append_char(borrow string line, int ch)
+{
+    string out;
     int len;
     int pos;
 
@@ -59,7 +67,7 @@ char* str_append_char(char* line, int ch)
         line = "";
     }
     len = strlen(line);
-    out = calloc(len + 2, sizeof(char));
+    out = cminus_gc_calloc(len + 2, sizeof(char));
     if (out == NULL) {
         abort();
     }
@@ -73,33 +81,238 @@ char* str_append_char(char* line, int ch)
     return out;
 }
 
-char* str_remove_last(char* line)
+string str_insert_char(borrow string line, int col, int ch)
 {
-    char* out;
+    string out;
     int len;
     int pos;
+    int dst;
 
     if (line == NULL) {
-        return str_copy("");
+        line = "";
     }
     len = strlen(line);
-    if (len <= 0) {
-        return str_copy("");
+    if (col < 0) {
+        col = 0;
     }
-    out = calloc(len, sizeof(char));
+    if (col > len) {
+        col = len;
+    }
+    out = cminus_gc_calloc(len + 2, sizeof(char));
     if (out == NULL) {
         abort();
     }
     pos = 0;
-    while (pos < len - 1) {
-        out[pos] = line[pos];
+    dst = 0;
+    while (pos < col) {
+        out[dst] = line[pos];
         pos++;
+        dst++;
     }
-    out[len - 1] = '\0';
+    out[dst] = ch;
+    dst++;
+    while (pos < len) {
+        out[dst] = line[pos];
+        pos++;
+        dst++;
+    }
+    out[dst] = '\0';
     return out;
 }
 
-void editor_free_lines(struct Editor* ed)
+string str_delete_char(borrow string line, int col)
+{
+    string out;
+    int len;
+    int pos;
+    int dst;
+
+    if (line == NULL) {
+        return str_empty();
+    }
+    len = strlen(line);
+    if (len <= 0 || col < 0 || col >= len) {
+        out = str_copy(line);
+        return out;
+    }
+    out = cminus_gc_calloc(len, sizeof(char));
+    if (out == NULL) {
+        abort();
+    }
+    pos = 0;
+    dst = 0;
+    while (pos < len) {
+        if (pos != col) {
+            out[dst] = line[pos];
+            dst++;
+        }
+        pos++;
+    }
+    out[dst] = '\0';
+    return out;
+}
+
+string str_slice(borrow string line, int start, int end)
+{
+    string out;
+    int len;
+    int pos;
+
+    if (line == NULL) {
+        line = "";
+    }
+    len = strlen(line);
+    if (start < 0) {
+        start = 0;
+    }
+    if (end < start) {
+        end = start;
+    }
+    if (end > len) {
+        end = len;
+    }
+    out = cminus_gc_calloc(end - start + 1, sizeof(char));
+    if (out == NULL) {
+        abort();
+    }
+    pos = 0;
+    while (start + pos < end) {
+        out[pos] = line[start + pos];
+        pos++;
+    }
+    out[pos] = '\0';
+    return out;
+}
+
+string str_join(borrow string left, borrow string right)
+{
+    string out;
+    int llen;
+    int rlen;
+
+    if (left == NULL) {
+        left = "";
+    }
+    if (right == NULL) {
+        right = "";
+    }
+    llen = strlen(left);
+    rlen = strlen(right);
+    out = cminus_gc_calloc(llen + rlen + 1, sizeof(char));
+    if (out == NULL) {
+        abort();
+    }
+    strcpy(out, left);
+    strcat(out, right);
+    return out;
+}
+
+string str_append_string(borrow string left, borrow string right)
+{
+    return str_join(left, right);
+}
+
+string editor_snapshot(Editor ed)
+{
+    string out;
+    string next;
+    int index;
+    int count;
+
+    out = str_empty();
+    count = List_len<string>(ed->lines);
+    index = 0;
+    while (index < count) {
+        next = str_append_string(out, List_get<string>(ed->lines, index));
+        cminus_gc_free(out);
+        out = next;
+        next = str_append_string(out, "\n");
+        cminus_gc_free(out);
+        out = next;
+        index++;
+    }
+    return out;
+}
+
+void editor_clear_string_vec(Vec<string> values)
+{
+    int index;
+    int count;
+
+    if (values == NULL) {
+        return;
+    }
+    count = Vec_len<string>(values);
+    index = 0;
+    while (index < count) {
+        cminus_gc_free(Vec_get<string>(values, index));
+        index++;
+    }
+    Vec_clear<string>(values);
+}
+
+void editor_record_undo(Editor ed)
+{
+    string snap;
+
+    snap = editor_snapshot(ed);
+    Vec_push<string>(ed->undo_stack, move snap);
+    editor_clear_string_vec(ed->redo_stack);
+}
+
+void editor_restore_snapshot(Editor ed, string snap)
+{
+    int start;
+    int pos;
+    int len;
+
+    editor_free_lines(ed);
+    List_clear<string>(ed->lines);
+    if (snap == NULL) {
+        List_push<string>(ed->lines, str_empty());
+        return;
+    }
+    len = strlen(snap);
+    start = 0;
+    pos = 0;
+    while (pos <= len) {
+        if (snap[pos] == '\n' || snap[pos] == '\0') {
+            if (!(snap[pos] == '\0' && start == pos && pos > 0)) {
+                string line = str_slice(snap, start, pos);
+                List_push<string>(ed->lines, move line);
+            }
+            start = pos + 1;
+        }
+        pos++;
+    }
+    if (List_is_empty<string>(ed->lines)) {
+        List_push<string>(ed->lines, str_empty());
+    }
+    editor_clamp(ed);
+    ed->dirty = 1;
+}
+
+void editor_set_message(Editor ed, borrow string text)
+{
+    if (ed->message != NULL) {
+        cminus_gc_free(ed->message);
+    }
+    ed->message = str_copy(text);
+}
+
+void editor_replace_line(Editor ed, int row, string value)
+{
+    string old;
+
+    old = List_get<string>(ed->lines, row);
+    if (old != NULL) {
+        cminus_gc_free(old);
+    }
+    List_set<string>(ed->lines, row, move value);
+    ed->dirty = 1;
+}
+
+void editor_free_lines(Editor ed)
 {
     int index;
     int count;
@@ -107,135 +320,110 @@ void editor_free_lines(struct Editor* ed)
     if (ed->lines == NULL) {
         return;
     }
-    count = List_len<char*>(ed->lines);
+    count = List_len<string>(ed->lines);
     index = 0;
     while (index < count) {
-        free(List_get<char*>(ed->lines, index));
+        cminus_gc_free(List_get<string>(ed->lines, index));
         index++;
     }
 }
 
-void editor_init(struct Editor* ed, const char* path)
+void editor_init(Editor ed, borrow string path)
 {
-    struct List<char*>* lines = List_new<char*>();
-    struct Vec<char*>* viewport = Vec_new<char*>();
-    struct Map<int,int>* keys = Map_new<int,int>();
+    List<string> lines;
+    Vec<string> viewport;
+    Vec<string> undo_stack;
+    Vec<string> redo_stack;
+    Map<int,int> motions;
+    string path_copy = str_copy(path == NULL ? "vivi.txt" : path);
+
+    lines = List<string>.new();
+    viewport = Vec<string>.new();
+    undo_stack = Vec<string>.new();
+    redo_stack = Vec<string>.new();
+    motions = Map<int,int>.new();
     ed->lines = move lines;
     ed->viewport = move viewport;
-    ed->keys = move keys;
-    ed->path = str_copy(path == NULL ? "untitled.txt" : path);
+    ed->undo_stack = move undo_stack;
+    ed->redo_stack = move redo_stack;
+    ed->motions = move motions;
+    ed->path = move path_copy;
+    ed->message = str_copy("");
+    ed->command = str_copy("");
+    ed->yank = str_empty();
     ed->row = 0;
     ed->col = 0;
     ed->top = 0;
-    ed->insert = 0;
+    ed->mode = ModeNormal;
     ed->dirty = 0;
     ed->running = 1;
-    Map_set<int,int>(ed->keys, 'q', CmdQuit);
-    Map_set<int,int>(ed->keys, 'w', CmdSave);
-    Map_set<int,int>(ed->keys, 'i', CmdInsert);
-    Map_set<int,int>(ed->keys, 'h', CmdLeft);
-    Map_set<int,int>(ed->keys, 'j', CmdDown);
-    Map_set<int,int>(ed->keys, 'k', CmdUp);
-    Map_set<int,int>(ed->keys, 'l', CmdRight);
-    Map_set<int,int>(ed->keys, 'x', CmdDelete);
-    Map_set<int,int>(ed->keys, '\n', CmdNewLine);
+    ed->pending = 0;
+    Map_set<int,int>(ed->motions, 'h', -1);
+    Map_set<int,int>(ed->motions, 'j', 1);
+    Map_set<int,int>(ed->motions, 'k', -2);
+    Map_set<int,int>(ed->motions, 'l', 2);
 }
 
-void editor_load(struct Editor* ed)
+void editor_load(Editor ed)
 {
-    FILE* fp;
     char buf[4096];
+    Optional<FILE*> fp_opt = xfopen(ed->path, "r");
 
-    fp = fopen(ed->path, "r");
-    if (fp == NULL) {
-        List_push<char*>(ed->lines, str_copy(""));
+    if (!fp_opt.is_Some()) {
+        string empty = str_empty();
+        List_push<string>(ed->lines, move empty);
         return;
     }
+    __auto_type fp = fp_opt.get_Some();
     while (fgets(buf, sizeof(buf), fp) != NULL) {
         int len = strlen(buf);
         if (len > 0 && buf[len - 1] == '\n') {
             buf[len - 1] = '\0';
         }
-        List_push<char*>(ed->lines, str_copy(buf));
+        string line = str_copy(buf);
+        List_push<string>(ed->lines, move line);
     }
     fclose(fp);
-    if (List_is_empty<char*>(ed->lines)) {
-        List_push<char*>(ed->lines, str_copy(""));
+    if (List_is_empty<string>(ed->lines)) {
+        string empty = str_empty();
+        List_push<string>(ed->lines, move empty);
     }
 }
 
-int editor_save(struct Editor* ed)
+int editor_save(Editor ed)
 {
-    FILE* fp;
     int index;
     int count;
+    Optional<FILE*> fp_opt = xfopen(ed->path, "w");
 
-    fp = fopen(ed->path, "w");
-    if (fp == NULL) {
+    if (!fp_opt.is_Some()) {
+        editor_set_message(ed, "write failed");
         return 0;
     }
-    count = List_len<char*>(ed->lines);
+    __auto_type fp = fp_opt.get_Some();
+    count = List_len<string>(ed->lines);
     index = 0;
     while (index < count) {
-        fputs(List_get<char*>(ed->lines, index), fp);
+        fputs(List_get<string>(ed->lines, index), fp);
         fputc('\n', fp);
         index++;
     }
     fclose(fp);
     ed->dirty = 0;
+    editor_set_message(ed, "written");
     return 1;
 }
 
-void editor_collect_viewport(struct Editor* ed, int height)
+void editor_clamp(Editor ed)
 {
-    int index;
-    int count;
-
-    Vec_clear<char*>(ed->viewport);
-    count = List_len<char*>(ed->lines);
-    index = ed->top;
-    while (index < count && Vec_len<char*>(ed->viewport) < height) {
-        Vec_push<char*>(ed->viewport, List_get<char*>(ed->lines, index));
-        index++;
-    }
-}
-
-void editor_draw(struct Editor* ed)
-{
-    int height;
-    int width;
-    int index;
-    int count;
-
-    getmaxyx(stdscr, height, width);
-    erase();
-    editor_collect_viewport(ed, height - 1);
-    count = Vec_len<char*>(ed->viewport);
-    index = 0;
-    while (index < count) {
-        mvaddnstr(index, 0, Vec_get<char*>(ed->viewport, index), width - 1);
-        index++;
-    }
-    attron(A_REVERSE);
-    mvprintw(height - 1, 0, "%s  %s  Ln %d Col %d  %s",
-             ed->insert ? "INSERT" : "NORMAL",
-             ed->dirty ? "[+]" : "[-]",
-             ed->row + 1,
-             ed->col + 1,
-             ed->path);
-    attroff(A_REVERSE);
-    wmove(stdscr, ed->row - ed->top, ed->col);
-    refresh();
-}
-
-void editor_clamp(struct Editor* ed)
-{
-    int line_count = List_len<char*>(ed->lines);
-    char* line;
+    int line_count;
+    string line;
     int len;
 
+    line_count = List_len<string>(ed->lines);
     if (line_count <= 0) {
-        List_push<char*>(ed->lines, str_copy(""));
+        string empty = str_empty();
+        List_push<string>(ed->lines, move empty);
         line_count = 1;
     }
     if (ed->row < 0) {
@@ -244,7 +432,7 @@ void editor_clamp(struct Editor* ed)
     if (ed->row >= line_count) {
         ed->row = line_count - 1;
     }
-    line = List_get<char*>(ed->lines, ed->row);
+    line = List_get<string>(ed->lines, ed->row);
     len = strlen(line);
     if (ed->col < 0) {
         ed->col = 0;
@@ -258,155 +446,620 @@ void editor_clamp(struct Editor* ed)
     if (ed->row >= ed->top + LINES - 1) {
         ed->top = ed->row - LINES + 2;
     }
-}
-
-void editor_insert_char(struct Editor* ed, int ch)
-{
-    borrow char* old_line = List_get<char*>(ed->lines, ed->row);
-    char* new_line = str_append_char(old_line, ch);
-
-    free(old_line);
-    List_set<char*>(ed->lines, ed->row, move new_line);
-    ed->col++;
-    ed->dirty = 1;
-}
-
-void editor_backspace(struct Editor* ed)
-{
-    borrow char* old_line = List_get<char*>(ed->lines, ed->row);
-    char* new_line;
-
-    if (strlen(old_line) <= 0) {
-        return;
+    if (ed->top < 0) {
+        ed->top = 0;
     }
-    new_line = str_remove_last(old_line);
-    free(old_line);
-    List_set<char*>(ed->lines, ed->row, move new_line);
-    if (ed->col > 0) {
+}
+
+void editor_collect_viewport(Editor ed, int height)
+{
+    int index;
+    int count;
+
+    Vec_clear<string>(ed->viewport);
+    count = List_len<string>(ed->lines);
+    index = ed->top;
+    while (index < count && Vec_len<string>(ed->viewport) < height) {
+        Vec_push<string>(ed->viewport, List_get<string>(ed->lines, index));
+        index++;
+    }
+}
+
+void editor_draw(Editor ed)
+{
+    int height;
+    int width;
+    int index;
+    int count;
+    string mode_text;
+
+    getmaxyx(stdscr, height, width);
+    erase();
+    editor_collect_viewport(ed, height - 1);
+    count = Vec_len<string>(ed->viewport);
+    index = 0;
+    while (index < count) {
+        mvprintw(index, 0, "%4d ", ed->top + index + 1);
+        mvaddnstr(index, 5, Vec_get<string>(ed->viewport, index), width - 6);
+        index++;
+    }
+    if (ed->mode == ModeInsert) {
+        mode_text = "-- INSERT --";
+    } else if (ed->mode == ModeCommand) {
+        mode_text = ":";
+    } else if (ed->mode == ModeSearch) {
+        mode_text = "/";
+    } else {
+        mode_text = "";
+    }
+    attron(A_REVERSE);
+    if (ed->mode == ModeCommand || ed->mode == ModeSearch) {
+        mvprintw(height - 1, 0, "%s%s", mode_text, ed->command);
+    } else {
+        mvprintw(height - 1, 0, "%s %s  %s  %d,%d  %s",
+                 mode_text,
+                 ed->dirty ? "[+]" : "[-]",
+                 ed->path,
+                 ed->row + 1,
+                 ed->col + 1,
+                 ed->message);
+    }
+    attroff(A_REVERSE);
+    wmove(stdscr, ed->row - ed->top, ed->col + 5);
+    refresh();
+}
+
+void editor_move(Editor ed, int motion)
+{
+    if (motion == -1) {
         ed->col--;
-    }
-    ed->dirty = 1;
-}
-
-void editor_new_line(struct Editor* ed)
-{
-    List_push<char*>(ed->lines, str_copy(""));
-    ed->row = List_len<char*>(ed->lines) - 1;
-    ed->col = 0;
-    ed->dirty = 1;
-}
-
-void editor_apply_command(struct Editor* ed, int command)
-{
-    if (command == CmdQuit) {
-        ed->running = 0;
-    } else if (command == CmdSave) {
-        editor_save(ed);
-    } else if (command == CmdInsert) {
-        ed->insert = 1;
-    } else if (command == CmdUp) {
-        ed->row--;
-    } else if (command == CmdDown) {
+    } else if (motion == 1) {
         ed->row++;
-    } else if (command == CmdLeft) {
-        ed->col--;
-    } else if (command == CmdRight) {
+    } else if (motion == -2) {
+        ed->row--;
+    } else if (motion == 2) {
         ed->col++;
-    } else if (command == CmdDelete) {
-        editor_backspace(ed);
-    } else if (command == CmdNewLine) {
-        editor_new_line(ed);
     }
     editor_clamp(ed);
 }
 
-void editor_handle_key(struct Editor* ed, int ch)
+void editor_insert_char(Editor ed, int ch)
 {
-    if (ed->insert) {
-        if (ch == 27) {
-            ed->insert = 0;
-        } else if (ch == KEY_BACKSPACE || ch == 127) {
-            editor_backspace(ed);
-        } else if (ch == '\n') {
-            editor_new_line(ed);
-        } else if (ch >= 32) {
-            editor_insert_char(ed, ch);
-        }
-        editor_clamp(ed);
+    string old_line;
+    string new_line;
+
+    old_line = List_get<string>(ed->lines, ed->row);
+    new_line = str_insert_char(old_line, ed->col, ch);
+    editor_record_undo(ed);
+    editor_replace_line(ed, ed->row, new_line);
+    ed->col++;
+}
+
+void editor_delete_char(Editor ed)
+{
+    string old_line;
+    string new_line;
+
+    old_line = List_get<string>(ed->lines, ed->row);
+    if (strlen(old_line) <= 0) {
         return;
     }
-    {
-        struct __CMinusIndex<int> command = Map_get_opt<int,int>(ed->keys, ch);
-        if (command.is_Some()) {
-            editor_apply_command(ed, command.get_Some());
+    new_line = str_delete_char(old_line, ed->col);
+    editor_record_undo(ed);
+    editor_replace_line(ed, ed->row, new_line);
+    editor_clamp(ed);
+}
+
+void editor_backspace(Editor ed)
+{
+    string joined;
+    if (ed->col > 0) {
+        ed->col--;
+        editor_delete_char(ed);
+        return;
+    }
+    if (ed->row > 0) {
+        string prev;
+        string current;
+        struct __CMinusIndex<string> removed;
+        int prev_len;
+
+        editor_record_undo(ed);
+        prev = List_get<string>(ed->lines, ed->row - 1);
+        current = List_get<string>(ed->lines, ed->row);
+        prev_len = strlen(prev);
+        joined = str_join(prev, current);
+        cminus_gc_free(prev);
+        List_set<string>(ed->lines, ed->row - 1, move joined);
+        removed = List_remove_at_opt<string>(ed->lines, ed->row);
+        if (removed.is_Some()) {
+            cminus_gc_free(removed.get_Some());
         }
+        ed->row--;
+        ed->col = prev_len;
+        ed->dirty = 1;
     }
 }
 
-void editor_destroy(struct Editor* ed)
+void editor_new_line(Editor ed, int below)
+{
+    int insert_at;
+
+    insert_at = ed->row + below;
+    if (insert_at < 0) {
+        insert_at = 0;
+    }
+    if (insert_at > List_len<string>(ed->lines)) {
+        insert_at = List_len<string>(ed->lines);
+    }
+    editor_record_undo(ed);
+    {
+        string empty = str_empty();
+        List_insert<string>(ed->lines, insert_at, move empty);
+    }
+    ed->row = insert_at;
+    ed->col = 0;
+    ed->mode = ModeInsert;
+    ed->dirty = 1;
+    editor_clamp(ed);
+}
+
+void editor_split_line(Editor ed)
+{
+    string line;
+    string left;
+    string right;
+
+    editor_record_undo(ed);
+    line = List_get<string>(ed->lines, ed->row);
+    left = str_slice(line, 0, ed->col);
+    right = str_slice(line, ed->col, strlen(line));
+    cminus_gc_free(line);
+    List_set<string>(ed->lines, ed->row, move left);
+    List_insert<string>(ed->lines, ed->row + 1, move right);
+    ed->row++;
+    ed->col = 0;
+    ed->dirty = 1;
+    editor_clamp(ed);
+}
+
+void editor_delete_line(Editor ed)
+{
+    struct __CMinusIndex<string> removed;
+
+    editor_record_undo(ed);
+    if (List_len<string>(ed->lines) <= 1) {
+        string old = List_get<string>(ed->lines, 0);
+        string empty = str_empty();
+        cminus_gc_free(old);
+        List_set<string>(ed->lines, 0, move empty);
+        ed->row = 0;
+        ed->col = 0;
+        ed->dirty = 1;
+        return;
+    }
+    removed = List_remove_at_opt<string>(ed->lines, ed->row);
+    if (removed.is_Some()) {
+        cminus_gc_free(removed.get_Some());
+    }
+    ed->dirty = 1;
+    editor_clamp(ed);
+}
+
+int editor_find(Editor ed, borrow string needle)
+{
+    int index;
+    int count;
+
+    if (needle == NULL || strlen(needle) == 0) {
+        return 0;
+    }
+    count = List_len<string>(ed->lines);
+    index = ed->row;
+    while (index < count) {
+        if (strstr(List_get<string>(ed->lines, index), needle) != NULL) {
+            ed->row = index;
+            ed->col = strstr(List_get<string>(ed->lines, index), needle) - List_get<string>(ed->lines, index);
+            editor_clamp(ed);
+            return 1;
+        }
+        index++;
+    }
+    index = 0;
+    while (index < ed->row) {
+        if (strstr(List_get<string>(ed->lines, index), needle) != NULL) {
+            ed->row = index;
+            ed->col = strstr(List_get<string>(ed->lines, index), needle) - List_get<string>(ed->lines, index);
+            editor_clamp(ed);
+            return 1;
+        }
+        index++;
+    }
+    return 0;
+}
+
+void editor_clear_command(Editor ed)
+{
+    if (ed->command != NULL) {
+        cminus_gc_free(ed->command);
+    }
+    ed->command = str_empty();
+}
+
+void editor_finish_command(Editor ed)
+{
+    if (strcmp(ed->command, "q") == 0) {
+        if (ed->dirty) {
+            editor_set_message(ed, "no write since last change");
+        } else {
+            ed->running = 0;
+        }
+    } else if (strcmp(ed->command, "q!") == 0) {
+        ed->running = 0;
+    } else if (strcmp(ed->command, "w") == 0) {
+        editor_save(ed);
+    } else if (strcmp(ed->command, "wq") == 0) {
+        if (editor_save(ed)) {
+            ed->running = 0;
+        }
+    } else {
+        editor_set_message(ed, "not an editor command");
+    }
+    editor_clear_command(ed);
+    ed->mode = ModeNormal;
+}
+
+void editor_finish_search(Editor ed)
+{
+    if (!editor_find(ed, ed->command)) {
+        editor_set_message(ed, "pattern not found");
+    }
+    editor_clear_command(ed);
+    ed->mode = ModeNormal;
+}
+
+void editor_append_command_char(Editor ed, int ch)
+{
+    string next;
+
+    next = str_append_char(ed->command, ch);
+    cminus_gc_free(ed->command);
+    ed->command = next;
+}
+
+void editor_handle_command_key(Editor ed, int ch)
+{
+    string next;
+    if (ch == 27) {
+        editor_clear_command(ed);
+        ed->mode = ModeNormal;
+    } else if (ch == KEY_BACKSPACE || ch == 127) {
+        if (strlen(ed->command) > 0) {
+            next = str_slice(ed->command, 0, strlen(ed->command) - 1);
+            cminus_gc_free(ed->command);
+            ed->command = next;
+        }
+    } else if (ch == '\n') {
+        if (ed->mode == ModeCommand) {
+            editor_finish_command(ed);
+        } else {
+            editor_finish_search(ed);
+        }
+    } else if (ch >= 32) {
+        editor_append_command_char(ed, ch);
+    }
+}
+
+void editor_handle_insert_key(Editor ed, int ch)
+{
+    if (ch == 27) {
+        ed->mode = ModeNormal;
+        if (ed->col > 0) {
+            ed->col--;
+        }
+    } else if (ch == KEY_BACKSPACE || ch == 127) {
+        editor_backspace(ed);
+    } else if (ch == '\n') {
+        editor_split_line(ed);
+    } else if (ch >= 32) {
+        editor_insert_char(ed, ch);
+    }
+    editor_clamp(ed);
+}
+
+void editor_undo(Editor ed)
+{
+    struct __CMinusIndex<string> prev;
+    string current;
+
+    prev = Vec_pop_opt<string>(ed->undo_stack);
+    if (!prev.is_Some()) {
+        editor_set_message(ed, "already at oldest change");
+        return;
+    }
+    current = editor_snapshot(ed);
+    Vec_push<string>(ed->redo_stack, move current);
+    editor_restore_snapshot(ed, prev.get_Some());
+    cminus_gc_free(prev.get_Some());
+    editor_set_message(ed, "undo");
+}
+
+void editor_redo(Editor ed)
+{
+    struct __CMinusIndex<string> next;
+    string current;
+
+    next = Vec_pop_opt<string>(ed->redo_stack);
+    if (!next.is_Some()) {
+        editor_set_message(ed, "already at newest change");
+        return;
+    }
+    current = editor_snapshot(ed);
+    Vec_push<string>(ed->undo_stack, move current);
+    editor_restore_snapshot(ed, next.get_Some());
+    cminus_gc_free(next.get_Some());
+    editor_set_message(ed, "redo");
+}
+
+void editor_yank_line(Editor ed)
+{
+    if (ed->yank != NULL) {
+        cminus_gc_free(ed->yank);
+    }
+    ed->yank = str_copy(List_get<string>(ed->lines, ed->row));
+    editor_set_message(ed, "1 line yanked");
+}
+
+void editor_paste_line(Editor ed, int below)
+{
+    int row;
+    string copy;
+
+    if (ed->yank == NULL || strlen(ed->yank) == 0) {
+        editor_set_message(ed, "nothing to paste");
+        return;
+    }
+    row = ed->row + below;
+    if (row < 0) {
+        row = 0;
+    }
+    if (row > List_len<string>(ed->lines)) {
+        row = List_len<string>(ed->lines);
+    }
+    copy = str_copy(ed->yank);
+    editor_record_undo(ed);
+    List_insert<string>(ed->lines, row, move copy);
+    ed->row = row;
+    ed->col = 0;
+    ed->dirty = 1;
+    editor_clamp(ed);
+}
+
+void editor_handle_normal_key(Editor ed, int ch)
+{
+    struct __CMinusIndex<int> motion;
+
+    if (ed->pending == 'Z') {
+        if (ch == 'Z') {
+            if (editor_save(ed)) {
+                ed->running = 0;
+            }
+        }
+        ed->pending = 0;
+        return;
+    }
+    if (ed->pending == 'y') {
+        if (ch == 'y') {
+            editor_yank_line(ed);
+        }
+        ed->pending = 0;
+        return;
+    }
+    if (ch == ':') {
+        editor_clear_command(ed);
+        ed->mode = ModeCommand;
+        return;
+    }
+    if (ch == '/') {
+        editor_clear_command(ed);
+        ed->mode = ModeSearch;
+        return;
+    }
+    if (ch == 'i') {
+        ed->mode = ModeInsert;
+        return;
+    }
+    if (ch == 'a') {
+        ed->col++;
+        editor_clamp(ed);
+        ed->mode = ModeInsert;
+        return;
+    }
+    if (ch == 'o') {
+        editor_new_line(ed, 1);
+        return;
+    }
+    if (ch == 'O') {
+        editor_new_line(ed, 0);
+        return;
+    }
+    if (ch == 'x') {
+        editor_delete_char(ed);
+        return;
+    }
+    if (ch == 'u') {
+        editor_undo(ed);
+        return;
+    }
+    if (ch == 18) {
+        editor_redo(ed);
+        return;
+    }
+    if (ch == 'p') {
+        editor_paste_line(ed, 1);
+        return;
+    }
+    if (ch == 'P') {
+        editor_paste_line(ed, 0);
+        return;
+    }
+    if (ch == 'Z') {
+        ed->pending = 'Z';
+        return;
+    }
+    if (ch == 'y') {
+        ed->pending = 'y';
+        return;
+    }
+    if (ch == 'd') {
+        if (ed->pending == 'd') {
+            editor_delete_line(ed);
+            ed->pending = 0;
+        } else {
+            ed->pending = 'd';
+        }
+        return;
+    }
+    ed->pending = 0;
+    if (ch == KEY_LEFT) {
+        ch = 'h';
+    } else if (ch == KEY_DOWN) {
+        ch = 'j';
+    } else if (ch == KEY_UP) {
+        ch = 'k';
+    } else if (ch == KEY_RIGHT) {
+        ch = 'l';
+    }
+    motion = Map_get_opt<int,int>(ed->motions, ch);
+    if (motion.is_Some()) {
+        editor_move(ed, motion.get_Some());
+    }
+}
+
+void editor_handle_key(Editor ed, int ch)
+{
+    if (ed->mode == ModeInsert) {
+        editor_handle_insert_key(ed, ch);
+    } else if (ed->mode == ModeCommand || ed->mode == ModeSearch) {
+        editor_handle_command_key(ed, ch);
+    } else {
+        editor_handle_normal_key(ed, ch);
+    }
+}
+
+void editor_destroy(Editor ed)
 {
     editor_free_lines(ed);
-    List_delete<char*>(ed->lines);
-    free(ed->lines);
-    Map_delete<int,int>(ed->keys);
-    free(ed->keys);
-    Vec_delete<char*>(ed->viewport);
-    free(ed->viewport);
-    free(ed->path);
+    editor_clear_string_vec(ed->undo_stack);
+    editor_clear_string_vec(ed->redo_stack);
+    List_delete<string>(ed->lines);
+    Vec_delete<string>(ed->viewport);
+    Vec_delete<string>(ed->undo_stack);
+    Vec_delete<string>(ed->redo_stack);
+    Map_delete<int,int>(ed->motions);
+    cminus_gc_free(ed->path);
+    cminus_gc_free(ed->message);
+    cminus_gc_free(ed->command);
+    cminus_gc_free(ed->yank);
 }
 
 int run_self_test(void)
 {
-    struct Editor ed;
+    Editor ed;
     struct __CMinusIndex<int> command;
+    string line1;
+    string line2;
 
-    editor_init(&ed, "/tmp/vivi-self-test.txt");
-    List_push<char*>(ed.lines, str_copy("日本語 line"));
-    List_push<char*>(ed.lines, str_copy("second"));
-    Vec_push<char*>(ed.viewport, List_get<char*>(ed.lines, 0));
-    Vec_push<char*>(ed.viewport, List_get<char*>(ed.lines, 1));
-    Map_set<int,int>(ed.keys, 'a', CmdInsert);
-    command = Map_get_opt<int,int>(ed.keys, 'a');
-    if (!command.is_Some() || command.get_Some() != CmdInsert) {
-        editor_destroy(&ed);
+    ed = new Editor;
+    editor_init(ed, "/tmp/vivi-self-test.txt");
+    line1 = str_copy("日本語 line");
+    line2 = str_copy("second");
+    ed->lines.push(move line1);
+    ed->lines.push(move line2);
+    ed->viewport.push(ed->lines[0]);
+    ed->viewport.push(ed->lines[1]);
+    ed->motions.set('a', 99);
+    command = ed->motions.get_opt('a');
+    if (!command.is_Some() || command.get_Some() != 99) {
+        editor_destroy(ed);
         return 1;
     }
-    if (List_len<char*>(ed.lines) != 2 || Vec_len<char*>(ed.viewport) != 2 || !Map_contains<int,int>(ed.keys, 'a')) {
-        editor_destroy(&ed);
+    if (ed->lines.len() != 2 || ed->viewport.len() != 2 || !ed->motions.contains('a')) {
+        editor_destroy(ed);
         return 2;
     }
-    Map_remove<int,int>(ed.keys, 'a');
-    if (Map_contains<int,int>(ed.keys, 'a')) {
-        editor_destroy(&ed);
+    ed->motions.remove('a');
+    if (ed->motions.contains('a')) {
+        editor_destroy(ed);
         return 3;
     }
-    editor_destroy(&ed);
+    editor_handle_key(ed, ':');
+    if (ed->mode != ModeCommand) {
+        editor_destroy(ed);
+        return 4;
+    }
+    editor_handle_key(ed, 27);
+    if (ed->mode != ModeNormal) {
+        editor_destroy(ed);
+        return 5;
+    }
+    editor_handle_key(ed, 'y');
+    editor_handle_key(ed, 'y');
+    editor_handle_key(ed, 'p');
+    if (ed->lines.len() != 3) {
+        editor_destroy(ed);
+        return 6;
+    }
+    editor_handle_key(ed, 'u');
+    if (ed->lines.len() != 2) {
+        editor_destroy(ed);
+        return 7;
+    }
+    editor_handle_key(ed, 18);
+    if (ed->lines.len() != 3) {
+        editor_destroy(ed);
+        return 8;
+    }
+    editor_handle_key(ed, 'Z');
+    editor_handle_key(ed, 'Z');
+    if (ed->running != 0 || ed->dirty != 0) {
+        editor_destroy(ed);
+        return 9;
+    }
+    editor_destroy(ed);
     return 0;
 }
 
-int main(int argc, char** argv)
+int app_main(borrow string path)
 {
-    struct Editor ed;
-    const char* path = "vivi.txt";
+    Editor ed;
 
     setlocale(LC_ALL, "");
-    if (argc >= 2 && strcmp(argv[1], "--self-test") == 0) {
-        return run_self_test();
-    }
-    if (argc >= 2) {
-        path = argv[1];
-    }
-    editor_init(&ed, path);
-    editor_load(&ed);
+    ed = new Editor;
+    editor_init(ed, path);
+    editor_load(ed);
     initscr();
     raw();
     keypad(stdscr, TRUE);
     noecho();
-    while (ed.running) {
-        editor_draw(&ed);
-        editor_handle_key(&ed, getch());
+    while (ed->running) {
+        editor_draw(ed);
+        editor_handle_key(ed, getch());
     }
     endwin();
-    editor_destroy(&ed);
+    editor_destroy(ed);
     return 0;
+}
+
+unsafe {
+int main(int argc, char** argv)
+{
+    if (argc >= 2 && strcmp(argv[1], "--self-test") == 0) {
+        exit(run_self_test());
+    }
+    if (argc >= 2) {
+        exit(app_main(argv[1]));
+    }
+    exit(app_main("vivi.txt"));
+}
 }

@@ -1,0 +1,31 @@
+struct Child {
+    int value;
+};
+
+struct Parent {
+    Child child;
+    int count;
+};
+
+int child_value(Child child)
+{
+    return child.value;
+}
+
+int main(void)
+{
+    Parent parent = new Parent;
+    Child child = new Child;
+
+    child.value = 11;
+    parent.child = move child;
+    parent.count = child_value(parent.child) + 1;
+
+    if (parent.child.value != 11) {
+        return 1;
+    }
+    if (parent.count != 12) {
+        return 2;
+    }
+    return 0;
+}

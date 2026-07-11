@@ -1,0 +1,36 @@
+struct Holder {
+    Vec<int> values;
+    List<int> lines;
+    Map<int,int> lookup;
+};
+
+int main(void)
+{
+    Holder holder = new Holder;
+    Vec<int> values = Vec<int>.new();
+    List<int> lines = List<int>.new();
+    Map<int,int> lookup = Map<int,int>.new();
+    __CMinusIndex<int> found;
+
+    holder->values = move values;
+    holder->lines = move lines;
+    holder->lookup = move lookup;
+
+    holder->values.push(10);
+    holder->values.push(20);
+    holder->lines.push(30);
+    holder->lines.push(40);
+    holder->lookup.set(7, 70);
+
+    found = holder->lookup.get_opt(7);
+    if (holder->values[1] != 20) {
+        return 1;
+    }
+    if (holder->lines[0] != 30) {
+        return 2;
+    }
+    if (!found.is_Some() || found.get_Some() != 70) {
+        return 3;
+    }
+    return 0;
+}

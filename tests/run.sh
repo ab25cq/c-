@@ -251,9 +251,21 @@ grep '__foreach' tests/generics_foreach.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/generics_foreach.out.c -o tests/generics_foreach.out
 ./tests/generics_foreach.out
 
+./c- tests/field_collection_methods.c- > tests/field_collection_methods.out.c
+grep 'Vec_push_int(holder->values, 10)' tests/field_collection_methods.out.c >/dev/null
+grep 'List_push_int(holder->lines, 30)' tests/field_collection_methods.out.c >/dev/null
+grep 'Map_set_int_int(holder->lookup, 7, 70)' tests/field_collection_methods.out.c >/dev/null
+grep 'Vec_get_opt_int(holder->values, 1)' tests/field_collection_methods.out.c >/dev/null
+grep 'List_get_opt_int(holder->lines, 0)' tests/field_collection_methods.out.c >/dev/null
+grep 'Map_get_opt_int_int(holder->lookup, 7)' tests/field_collection_methods.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/field_collection_methods.out.c -o tests/field_collection_methods.out
+./tests/field_collection_methods.out
+
 ./c- tests/span_language.c- > tests/span_language.out.c
 grep 'struct Span_int\* Span_from_int' tests/span_language.out.c >/dev/null
+grep 'struct Span_int\* Span_from_bytes_int' tests/span_language.out.c >/dev/null
 grep 'Span_from_int(data, 3)' tests/span_language.out.c >/dev/null
+grep 'Span_from_bytes_int(data, sizeof(data))' tests/span_language.out.c >/dev/null
 grep 'Span_ptr_at_int(values, 1' tests/span_language.out.c >/dev/null
 grep '__foreach' tests/span_language.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/span_language.out.c -o tests/span_language.out
@@ -314,6 +326,22 @@ if ./c- tests/bad_pointer_decl_safe.c- > tests/bad_pointer_decl_safe.out.c 2> te
 fi
 grep 'pointer declarations are only allowed inside unsafe' tests/bad_pointer_decl_safe.err >/dev/null
 
+if ./c- tests/bad_pointer_deref_safe.c- > tests/bad_pointer_deref_safe.out.c 2> tests/bad_pointer_deref_safe.err; then
+    echo "pointer dereference outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'pointer dereference is only allowed inside unsafe' tests/bad_pointer_deref_safe.err >/dev/null
+
+./c- tests/unsafe_pointer_deref.c- > tests/unsafe_pointer_deref.out.c
+grep '\\*p' tests/unsafe_pointer_deref.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/unsafe_pointer_deref.out.c -o tests/unsafe_pointer_deref.out
+test "$(./tests/unsafe_pointer_deref.out)" = "7"
+
+./c- tests/safe_pointer_arith.c- > tests/safe_pointer_arith.out.c
+grep 'ref->data++;' tests/safe_pointer_arith.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/safe_pointer_arith.out.c -o tests/safe_pointer_arith.out
+./tests/safe_pointer_arith.out
+
 if ./c- tests/cast_forbidden.c- > tests/cast_forbidden.out.c 2> tests/cast_forbidden.err; then
     echo "cast outside unsafe unexpectedly succeeded" >&2
     exit 1
@@ -324,6 +352,16 @@ grep 'cast is only allowed inside unsafe' tests/cast_forbidden.err >/dev/null
 grep '(int)value' tests/cast_unsafe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/cast_unsafe.out.c -o tests/cast_unsafe.out
 test "$(./tests/cast_unsafe.out)" = "8"
+
+./c- tests/sizeof_struct_safe.c- > tests/sizeof_struct_safe.out.c
+grep 'sizeof(struct Data)' tests/sizeof_struct_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/sizeof_struct_safe.out.c -o tests/sizeof_struct_safe.out
+./tests/sizeof_struct_safe.out
+
+./c- tests/gc_double_free_reuse.c- > tests/gc_double_free_reuse.out.c
+grep '__cminus_gc_take_dead_fit' tests/gc_double_free_reuse.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/gc_double_free_reuse.out.c -o tests/gc_double_free_reuse.out
+test "$(./tests/gc_double_free_reuse.out)" = "ok"
 
 ./c- tests/ref_language.c- > tests/ref_language.out.c
 grep 'struct Ref_int\* Ref_from_int' tests/ref_language.out.c >/dev/null
@@ -408,6 +446,16 @@ grep 'cminus_gc_free(self->name);' tests/string_typedef.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/string_typedef.out.c -o tests/string_typedef.out
 ./tests/string_typedef.out
 
+./c- tests/borrow_string.c- > tests/borrow_string.out.c
+grep 'int borrowed_len(char\* text)' tests/borrow_string.out.c >/dev/null
+grep 'char\* literal = "abc";' tests/borrow_string.out.c >/dev/null
+if grep 'cminus_gc_free(literal);' tests/borrow_string.out.c >/dev/null; then
+    echo "borrow string unexpectedly owned" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/borrow_string.out.c -o tests/borrow_string.out
+./tests/borrow_string.out
+
 ./c- tests/owned_reassign.c- > tests/owned_reassign.out.c
 grep 'owned_value = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
 grep 'value = calloc(1, sizeof(int));' tests/owned_reassign.out.c >/dev/null
@@ -455,6 +503,55 @@ grep 'strcmp("aaa", "aaa") != 0' tests/method_calls.out.c >/dev/null
 grep 'return strcmp("aaa", "aaa");' tests/method_calls.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/method_calls.out.c -o tests/method_calls.out
 ./tests/method_calls.out
+
+./c- tests/dot_pointer_field.c- > tests/dot_pointer_field.out.c
+grep 'child->value = 11;' tests/dot_pointer_field.out.c >/dev/null
+grep 'parent->child = child;' tests/dot_pointer_field.out.c >/dev/null
+grep 'parent->count = child_value(parent->child) + 1;' tests/dot_pointer_field.out.c >/dev/null
+grep 'parent->child->value != 11' tests/dot_pointer_field.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/dot_pointer_field.out.c -o tests/dot_pointer_field.out
+./tests/dot_pointer_field.out
+
+if ./c- tests/bad_unknown_field.c- > /dev/null 2> tests/bad_unknown_field.err; then
+    echo "unknown field unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "unknown field 'missing' in struct Data" tests/bad_unknown_field.err >/dev/null
+
+if ./c- tests/bad_null_safe.c- > /dev/null 2> tests/bad_null_safe.err; then
+    echo "safe NULL assignment unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "NULL is only allowed for Optional in safe mode" tests/bad_null_safe.err >/dev/null
+
+if ./c- tests/bad_return_null_safe.c- > /dev/null 2> tests/bad_return_null_safe.err; then
+    echo "safe return NULL unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "return NULL is only allowed for Optional in safe mode" tests/bad_return_null_safe.err >/dev/null
+
+if ./c- tests/bad_field_null_safe.c- > /dev/null 2> tests/bad_field_null_safe.err; then
+    echo "safe field NULL assignment unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "NULL is only allowed for Optional in safe mode" tests/bad_field_null_safe.err >/dev/null
+
+if ./c- tests/bad_arg_null_safe.c- > /dev/null 2> tests/bad_arg_null_safe.err; then
+    echo "safe NULL argument unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "NULL argument for parameter 'data'" tests/bad_arg_null_safe.err >/dev/null
+
+./c- tests/optional_null_safe.c- > tests/optional_null_safe.out.c
+grep 'Optional_int_None()' tests/optional_null_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/optional_null_safe.out.c -o tests/optional_null_safe.out
+./tests/optional_null_safe.out
+
+if ./c- tests/bad_use_after_move.c- > /dev/null 2> tests/bad_use_after_move.err; then
+    echo "use after move unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "use of moved value 'left'" tests/bad_use_after_move.err >/dev/null
 
 if ./c- tests/bad.c- > /dev/null 2> tests/borrow_new.err; then
     echo "borrow new unexpectedly succeeded" >&2
@@ -532,7 +629,7 @@ fi
 grep "cannot assign struct B\\* to struct A\\*" tests/bad_type_struct.err >/dev/null
 
 if ./c- tests/bad_owned_arith.c- > /dev/null 2> tests/bad_owned_arith.err; then
-    echo "bad owned pointer arithmetic unexpectedly succeeded" >&2
+    echo "bad owned pointer declaration unexpectedly succeeded" >&2
     exit 1
 fi
 grep "pointer declarations are only allowed inside unsafe" tests/bad_owned_arith.err >/dev/null
@@ -543,7 +640,7 @@ cc -std=c99 -Wall -Wextra -pedantic tests/unsafe_pointer_arith.out.c -o tests/un
 ./tests/unsafe_pointer_arith.out
 
 if ./c- tests/bad_borrow_pointer_arith.c- > /dev/null 2> tests/bad_borrow_pointer_arith.err; then
-    echo "bad borrowed pointer arithmetic unexpectedly succeeded" >&2
+    echo "bad borrowed pointer declaration unexpectedly succeeded" >&2
     exit 1
 fi
 grep "pointer declarations are only allowed inside unsafe" tests/bad_borrow_pointer_arith.err >/dev/null

@@ -1,0 +1,14 @@
+struct Child {
+    int value;
+};
+
+struct Parent {
+    Child child;
+};
+
+int main(void)
+{
+    Parent parent = new Parent;
+    parent.child = NULL;
+    return 0;
+}

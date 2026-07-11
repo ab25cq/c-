@@ -1,0 +1,13 @@
+struct Data {
+    int value;
+};
+
+int read_data(Data data)
+{
+    return data.value;
+}
+
+int main(void)
+{
+    return read_data(NULL);
+}

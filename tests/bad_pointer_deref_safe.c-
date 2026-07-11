@@ -1,0 +1,10 @@
+int main(void)
+{
+    int value = 7;
+    Ref<int> ref;
+
+    unsafe {
+        ref = Ref<int>.from(&value);
+    }
+    return *ref->data;
+}

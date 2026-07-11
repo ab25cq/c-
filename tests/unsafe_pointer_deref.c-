@@ -1,0 +1,14 @@
+unsafe {
+#include <stdio.h>
+
+int main(void)
+{
+    int value = 7;
+    int* p = &value;
+    int out;
+
+    out = *p;
+    printf("%d\n", out);
+    return 0;
+}
+}

@@ -70,6 +70,7 @@ extern char* strncpy(char* dst, const char* src, size_t count);
 extern char* strdup(const char* src);
 extern int printf(const char* fmt, ...);
 extern int fprintf(FILE* stream, const char* fmt, ...);
+extern FILE* fopen(const char* path, const char* mode);
 extern int puts(const char* s);
 extern int asprintf(char** out, const char* fmt, ...);
 extern int backtrace(void** buffer, int size);

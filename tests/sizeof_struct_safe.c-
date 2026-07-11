@@ -1,0 +1,10 @@
+struct Data
+{
+    long x;
+    int y;
+};
+
+int main(void)
+{
+    return sizeof(Data) == sizeof(struct Data) ? 0 : 1;
+}

@@ -1,0 +1,20 @@
+unsafe {
+#include <string.h>
+}
+
+int borrowed_len(borrow string text)
+{
+    return strlen(text);
+}
+
+int main(void)
+{
+    borrow string literal = "abc";
+    if (borrowed_len("hello") != 5) {
+        return 1;
+    }
+    if (borrowed_len(literal) != 3) {
+        return 2;
+    }
+    return 0;
+}

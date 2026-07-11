@@ -6,12 +6,30 @@ int main(void)
     Span<int> values;
     Span<int> tail;
     Span<int> again;
+    Span<int> cursor;
 
     data[0] = 10;
     data[1] = 20;
     data[2] = 30;
 
     values = Span<int>.from(data, 3);
+    cursor = values;
+    cursor++;
+    if (*cursor != 20) {
+        return 10;
+    }
+    ++cursor;
+    if (*cursor != 30) {
+        return 11;
+    }
+    cursor--;
+    if (*cursor != 20) {
+        return 12;
+    }
+    --cursor;
+    if (*cursor != 10) {
+        return 13;
+    }
     tail = values + 1;
     again = tail - 1;
 

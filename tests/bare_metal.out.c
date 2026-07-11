@@ -77,6 +77,7 @@ extern char* strncpy(char* dst, const char* src, size_t count);
 extern char* strdup(const char* src);
 extern int printf(const char* fmt, ...);
 extern int fprintf(FILE* stream, const char* fmt, ...);
+extern FILE* fopen(const char* path, const char* mode);
 extern int puts(const char* s);
 extern int asprintf(char** out, const char* fmt, ...);
 extern int backtrace(void** buffer, int size);
@@ -713,6 +714,47 @@ static __attribute__((unused)) int __CMinusIndex_int_is_None(struct __CMinusInde
 {
     return self->tag == __CMinusIndex_int_TAG_None;
 }
+struct Optional_FILE_ptr{
+    int tag;
+    unsigned long origin_kind;
+    unsigned long origin_stack_id;
+    union {
+        FILE* Some;
+    } payload;
+};
+enum {
+    Optional_FILE_ptr_TAG_Some,
+    Optional_FILE_ptr_TAG_None
+};
+static __attribute__((unused)) struct Optional_FILE_ptr* Optional_FILE_ptr_Some(FILE* value)
+{
+    struct Optional_FILE_ptr* out = cminus_gc_calloc(1, sizeof(struct Optional_FILE_ptr));
+    out->tag = Optional_FILE_ptr_TAG_Some;
+    out->origin_kind = cminus_ptr_classify((void*)value, &out->origin_stack_id);
+    out->payload.Some = value;
+    return out;
+}
+static __attribute__((unused)) int Optional_FILE_ptr_is_Some(struct Optional_FILE_ptr* self)
+{
+    return self->tag == Optional_FILE_ptr_TAG_Some;
+}
+static __attribute__((unused)) FILE* Optional_FILE_ptr_get_Some(struct Optional_FILE_ptr* self)
+{
+    cminus_ptr_require_alive((void*)self->payload.Some, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    return self->payload.Some;
+}
+static __attribute__((unused)) struct Optional_FILE_ptr* Optional_FILE_ptr_None(void)
+{
+    struct Optional_FILE_ptr* out = cminus_gc_calloc(1, sizeof(struct Optional_FILE_ptr));
+    out->tag = Optional_FILE_ptr_TAG_None;
+    out->origin_kind = 0UL;
+    out->origin_stack_id = 0UL;
+    return out;
+}
+static __attribute__((unused)) int Optional_FILE_ptr_is_None(struct Optional_FILE_ptr* self)
+{
+    return self->tag == Optional_FILE_ptr_TAG_None;
+}
 struct Vec_int{
     int* data;
     int len;
@@ -756,6 +798,7 @@ void cminus_panic(const char* message, const char* file, int line)
 
 struct __CMinusGCHeader {
     size_t size;
+    size_t capacity;
     const char* file;
     int line;
     int alive;
@@ -831,7 +874,7 @@ static void* __cminus_gc_payload(struct __CMinusGCHeader* header)
     return (char*)header + sizeof(struct __CMinusGCHeader);
 }
 
-static  struct __CMinusGCHeader* __cminus_gc_find_live(void* mem)
+static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_find_live(void* mem)
 {
     struct __CMinusGCHeader* it = __cminus_gc_live_head;
 
@@ -844,7 +887,7 @@ static  struct __CMinusGCHeader* __cminus_gc_find_live(void* mem)
     return NULL;
 }
 
-static  struct __CMinusGCHeader* __cminus_gc_find_dead(void* mem)
+static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_find_dead(void* mem)
 {
     struct __CMinusGCHeader* it = __cminus_gc_dead_head;
 
@@ -857,7 +900,28 @@ static  struct __CMinusGCHeader* __cminus_gc_find_dead(void* mem)
     return NULL;
 }
 
-static  void __cminus_gc_unlink_live(struct __CMinusGCHeader* header)
+static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_take_dead_fit(size_t size)
+{
+    struct __CMinusGCHeader* it = __cminus_gc_dead_head;
+    struct __CMinusGCHeader* prev = NULL;
+
+    while (it != NULL) {
+        if (it->capacity >= size) {
+            if (prev != NULL) {
+                prev->dead_next = it->dead_next;
+            } else {
+                __cminus_gc_dead_head = it->dead_next;
+            }
+            it->dead_next = NULL;
+            return it;
+        }
+        prev = it;
+        it = it->dead_next;
+    }
+    return NULL;
+}
+
+static __attribute__((unused)) void __cminus_gc_unlink_live(struct __CMinusGCHeader* header)
 {
     if (header->prev != NULL) {
         header->prev->next = header->next;
@@ -871,10 +935,10 @@ static  void __cminus_gc_unlink_live(struct __CMinusGCHeader* header)
     header->prev = NULL;
 }
 
-static  int __cminus_gc_contains(struct __CMinusGCHeader* header, void* mem)
+static __attribute__((unused)) int __cminus_gc_contains(struct __CMinusGCHeader* header, void* mem)
 {
     size_t start = (size_t)__cminus_gc_payload(header);
-    size_t end = start + header->size;
+    size_t end = start + header->capacity;
     size_t ptr = (size_t)mem;
 
     return ptr >= start && ptr < end;
@@ -882,23 +946,12 @@ static  int __cminus_gc_contains(struct __CMinusGCHeader* header, void* mem)
 
 void cminus_gc_step(void)
 {
-    size_t budget = __cminus_gc_step_budget;
-
-    while (budget > 0 && __cminus_gc_dead_head != NULL) {
-        struct __CMinusGCHeader* header = __cminus_gc_dead_head;
-
-        __cminus_gc_dead_head = header->dead_next;
-        header->dead_next = NULL;
-        free(header);
-        budget--;
-    }
+    (void)__cminus_gc_step_budget;
 }
 
 void cminus_gc_collect(void)
 {
-    while (__cminus_gc_dead_head != NULL) {
-        cminus_gc_step();
-    }
+    cminus_gc_step();
 }
 
 void cminus_gc_report_leaks(void)
@@ -994,10 +1047,16 @@ void* cminus_gc_calloc_impl(size_t count, size_t size, const char* file, int lin
 
     size_t total = count * size;
 
-    header = calloc(1, sizeof(struct __CMinusGCHeader) + total);
-    if (header == NULL) {
-        fprintf(stderr, "c-: out of memory at %s:%d\n", file, line);
-        abort();
+    header = __cminus_gc_take_dead_fit(total);
+    if (header != NULL) {
+        memset(__cminus_gc_payload(header), 0, header->capacity);
+    } else {
+        header = calloc(1, sizeof(struct __CMinusGCHeader) + total);
+        if (header == NULL) {
+            fprintf(stderr, "c-: out of memory at %s:%d\n", file, line);
+            abort();
+        }
+        header->capacity = total;
     }
     header->size = total;
     header->file = file;
@@ -1041,8 +1100,16 @@ void cminus_gc_free_impl(void* mem, const char* file, int line)
     }
     dead = __cminus_gc_find_dead(mem);
     if (dead != NULL) {
-        fprintf(stderr, "c-: double free of managed heap object at %s:%d\n", file, line);
-        abort();
+        (void)file;
+        (void)line;
+        return;
+    }
+    for (dead = __cminus_gc_dead_head; dead != NULL; dead = dead->dead_next) {
+        if (__cminus_gc_contains(dead, mem)) {
+            (void)file;
+            (void)line;
+            return;
+        }
     }
     free(mem);
 }
@@ -1148,6 +1215,20 @@ void cminus_ptr_require_alive(void* mem, unsigned long kind, unsigned long stack
             cminus_panic("dangling stack reference", file, line);
         }
     }
+}
+
+static __attribute__((unused)) struct Optional_FILE_ptr* xfopen(const char* path, const char* mode)
+{    char __cminus_stack_anchor;
+    size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
+
+    __auto_type fp = fopen(path, mode);
+
+    if (fp == NULL) {
+        cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
+        return Optional_FILE_ptr_None();
+    }
+    cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
+    return Optional_FILE_ptr_Some(fp);
 }
 
 int main(void)

@@ -1,0 +1,12 @@
+struct Data {
+    int value;
+};
+
+int main(void)
+{
+    Data left = new Data;
+    Data right = new Data;
+
+    right = move left;
+    return left.value;
+}

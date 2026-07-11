@@ -2,7 +2,10 @@
 
 int* get_ptr(void)
 {
-    return NULL;
+    unsafe {
+        int* p = NULL;
+        return p;
+    }
 }
 
 int main(void)

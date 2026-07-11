@@ -1,0 +1,26 @@
+unsafe {
+#include <stdio.h>
+
+int main(void)
+{
+    void* first;
+    void* second;
+
+    first = cminus_gc_calloc(1, 32);
+    cminus_gc_free(first);
+    cminus_gc_free(first);
+    if (!cminus_gc_is_dead(first)) {
+        return 1;
+    }
+    second = cminus_gc_calloc(1, 16);
+    if (second != first) {
+        return 2;
+    }
+    if (!cminus_gc_is_alive(second)) {
+        return 3;
+    }
+    cminus_gc_free(second);
+    printf("ok\n");
+    return 0;
+}
+}

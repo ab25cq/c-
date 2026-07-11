@@ -16,6 +16,7 @@ uniq void cminus_panic(const char* message, const char* file, int line)
 
 struct __CMinusGCHeader {
     size_t size;
+    size_t capacity;
     const char* file;
     int line;
     int alive;
@@ -93,6 +94,27 @@ static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_find_dead(vo
     return NULL;
 }
 
+static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_take_dead_fit(size_t size)
+{
+    struct __CMinusGCHeader* it = __cminus_gc_dead_head;
+    struct __CMinusGCHeader* prev = NULL;
+
+    while (it != NULL) {
+        if (it->capacity >= size) {
+            if (prev != NULL) {
+                prev->dead_next = it->dead_next;
+            } else {
+                __cminus_gc_dead_head = it->dead_next;
+            }
+            it->dead_next = NULL;
+            return it;
+        }
+        prev = it;
+        it = it->dead_next;
+    }
+    return NULL;
+}
+
 static __attribute__((unused)) void __cminus_gc_unlink_live(struct __CMinusGCHeader* header)
 {
     if (header->prev != NULL) {
@@ -110,7 +132,7 @@ static __attribute__((unused)) void __cminus_gc_unlink_live(struct __CMinusGCHea
 static __attribute__((unused)) int __cminus_gc_contains(struct __CMinusGCHeader* header, void* mem)
 {
     size_t start = (size_t)__cminus_gc_payload(header);
-    size_t end = start + header->size;
+    size_t end = start + header->capacity;
     size_t ptr = (size_t)mem;
 
     return ptr >= start && ptr < end;
@@ -118,23 +140,12 @@ static __attribute__((unused)) int __cminus_gc_contains(struct __CMinusGCHeader*
 
 uniq void cminus_gc_step(void)
 {
-    size_t budget = __cminus_gc_step_budget;
-
-    while (budget > 0 && __cminus_gc_dead_head != NULL) {
-        struct __CMinusGCHeader* header = __cminus_gc_dead_head;
-
-        __cminus_gc_dead_head = header->dead_next;
-        header->dead_next = NULL;
-        free(header);
-        budget--;
-    }
+    (void)__cminus_gc_step_budget;
 }
 
 uniq void cminus_gc_collect(void)
 {
-    while (__cminus_gc_dead_head != NULL) {
-        cminus_gc_step();
-    }
+    cminus_gc_step();
 }
 
 uniq void cminus_gc_report_leaks(void)
@@ -222,10 +233,16 @@ uniq void* cminus_gc_calloc_impl(size_t count, size_t size, const char* file, in
     struct __CMinusGCHeader* header;
     size_t total = count * size;
 
-    header = calloc(1, sizeof(struct __CMinusGCHeader) + total);
-    if (header == NULL) {
-        fprintf(stderr, "c-: out of memory at %s:%d\n", file, line);
-        abort();
+    header = __cminus_gc_take_dead_fit(total);
+    if (header != NULL) {
+        memset(__cminus_gc_payload(header), 0, header->capacity);
+    } else {
+        header = calloc(1, sizeof(struct __CMinusGCHeader) + total);
+        if (header == NULL) {
+            fprintf(stderr, "c-: out of memory at %s:%d\n", file, line);
+            abort();
+        }
+        header->capacity = total;
     }
     header->size = total;
     header->file = file;
@@ -265,8 +282,16 @@ uniq void cminus_gc_free_impl(void* mem, const char* file, int line)
     }
     dead = __cminus_gc_find_dead(mem);
     if (dead != NULL) {
-        fprintf(stderr, "c-: double free of managed heap object at %s:%d\n", file, line);
-        abort();
+        (void)file;
+        (void)line;
+        return;
+    }
+    for (dead = __cminus_gc_dead_head; dead != NULL; dead = dead->dead_next) {
+        if (__cminus_gc_contains(dead, mem)) {
+            (void)file;
+            (void)line;
+            return;
+        }
     }
     free(mem);
 }
@@ -380,6 +405,16 @@ enum Optional<T> {
     None,
 };
 
+static __attribute__((unused)) Optional<FILE*>* xfopen(const char* path, const char* mode)
+{
+    __auto_type fp = fopen(path, mode);
+
+    if (fp == NULL) {
+        return new Optional<FILE*>.None();
+    }
+    return new Optional<FILE*>.Some(fp);
+}
+
 generic<T>
 struct Ref {
     T* data;
@@ -454,6 +489,15 @@ struct Span<T>* Span_from(T* data, int len)
     out->origin_kind = cminus_ptr_classify(data, &stack_id);
     out->origin_stack_id = stack_id;
     return out;
+}
+
+generic<T>
+struct Span<T>* Span_from_bytes(T* data, int bytes)
+{
+    if (bytes < 0 || bytes % (int)sizeof(T) != 0) {
+        cminus_panic("span byte size is not aligned to element size", __FILE__, __LINE__);
+    }
+    return Span<T>.from(data, bytes / (int)sizeof(T));
 }
 
 generic<T>
@@ -758,6 +802,45 @@ void List_push_front(struct List<T>* self, T value)
 }
 
 generic<T>
+int List_insert(struct List<T>* self, int index, T value)
+{
+    struct ListNode<T>* node;
+    struct ListNode<T>* prev;
+    int i;
+
+    if (self == NULL || index < 0 || index > self->len) {
+        return 0;
+    }
+    if (index == 0) {
+        List_push_front<T>(self, value);
+        return 1;
+    }
+    if (index == self->len) {
+        List_push<T>(self, value);
+        return 1;
+    }
+    node = calloc(1, sizeof(struct ListNode<T>));
+    if (node == NULL) {
+        abort();
+    }
+    node->value = value;
+    prev = self->head;
+    i = 0;
+    while (prev != NULL && i < index - 1) {
+        prev = prev->next;
+        i++;
+    }
+    if (prev == NULL) {
+        free(node);
+        return 0;
+    }
+    node->next = prev->next;
+    prev->next = node;
+    self->len++;
+    return 1;
+}
+
+generic<T>
 int List_len(struct List<T>* self)
 {
     return self == NULL ? 0 : self->len;
@@ -802,6 +885,40 @@ struct __CMinusIndex<T> List_pop_front_opt(struct List<T>* self)
     self->head = node->next;
     if (self->head == NULL) {
         self->tail = NULL;
+    }
+    self->len--;
+    free(node);
+    return new __CMinusIndex<T>.Some(value);
+}
+
+generic<T>
+struct __CMinusIndex<T> List_remove_at_opt(struct List<T>* self, int index)
+{
+    struct ListNode<T>* node;
+    struct ListNode<T>* prev;
+    T value;
+    int i;
+
+    if (self == NULL || index < 0 || index >= self->len) {
+        return new __CMinusIndex<T>.None();
+    }
+    if (index == 0) {
+        return List_pop_front_opt<T>(self);
+    }
+    prev = self->head;
+    i = 0;
+    while (prev != NULL && i < index - 1) {
+        prev = prev->next;
+        i++;
+    }
+    if (prev == NULL || prev->next == NULL) {
+        return new __CMinusIndex<T>.None();
+    }
+    node = prev->next;
+    value = node->value;
+    prev->next = node->next;
+    if (self->tail == node) {
+        self->tail = prev;
     }
     self->len--;
     free(node);

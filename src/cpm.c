@@ -1424,9 +1424,63 @@ static int cmd_clean(void)
     return run_cmd("rm -rf target");
 }
 
+static int install_file_to_bin(const char *src, const char *name)
+{
+    char q_src[PATH_MAX_LEN * 2];
+    char q_dst[PATH_MAX_LEN * 2];
+    char dst[PATH_MAX_LEN];
+    char cmd[PATH_MAX_LEN * 5];
+
+    snprintf(dst, sizeof(dst), "/usr/local/bin/%s", name);
+    shell_quote(q_src, sizeof(q_src), src);
+    shell_quote(q_dst, sizeof(q_dst), dst);
+    snprintf(cmd, sizeof(cmd), "install -m 755 %s %s", q_src, q_dst);
+    return run_cmd(cmd);
+}
+
+static int cmd_install_tools(void)
+{
+    if (!file_exists("c-") || !file_exists("cpm")) {
+        die("cpm: C-.toml not found and ./c- ./cpm are not available to install");
+    }
+    if (run_cmd("install -d /usr/local/bin") != 0) {
+        return 1;
+    }
+    if (install_file_to_bin("c-", "c-") != 0) {
+        return 1;
+    }
+    if (install_file_to_bin("cpm", "cpm") != 0) {
+        return 1;
+    }
+    puts("installed /usr/local/bin/c-");
+    puts("installed /usr/local/bin/cpm");
+    return 0;
+}
+
+static int cmd_install(void)
+{
+    struct Manifest m;
+
+    if (!file_exists("C-.toml")) {
+        return cmd_install_tools();
+    }
+    if (cmd_build() != 0) {
+        return 1;
+    }
+    read_manifest(&m);
+    if (run_cmd("install -d /usr/local/bin") != 0) {
+        return 1;
+    }
+    if (install_file_to_bin(m.out, m.name) != 0) {
+        return 1;
+    }
+    printf("installed /usr/local/bin/%s\n", m.name);
+    return 0;
+}
+
 static void usage(void)
 {
-    fputs("usage: cpm <new|init|build|run|test|val|leak|clean> [args]\n", stderr);
+    fputs("usage: cpm <new|init|build|run|test|val|leak|install|clean> [args]\n", stderr);
 }
 
 int main(int argc, char **argv)
@@ -1459,6 +1513,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "leak") == 0) {
         return cmd_leak(argc - 2, argv + 2);
+    }
+    if (strcmp(argv[1], "install") == 0) {
+        return cmd_install();
     }
     if (strcmp(argv[1], "clean") == 0) {
         return cmd_clean();

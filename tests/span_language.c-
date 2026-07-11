@@ -6,6 +6,7 @@ int main(void)
 {
     int data[3];
     Span<int> values = Span<int>.from(data, 3);
+    Span<int> bytes = Span<int>.from_bytes(data, sizeof(data));
     Span<int> empty = Span<int>.empty();
     struct __CMinusIndex<int> third;
     int sum = 0;
@@ -17,6 +18,9 @@ int main(void)
 
     if (values.len() != 3 || values.is_empty()) {
         return 1;
+    }
+    if (bytes.len() != 3 || bytes[2] != 30) {
+        return 6;
     }
     if (!empty.is_empty()) {
         return 2;
