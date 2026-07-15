@@ -532,10 +532,8 @@ static __attribute__((unused)) struct Optional_FILE_ptr* xfopen(const char* path
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
     return Optional_FILE_ptr_Some(fp);
 }
-struct Data
-{
-    long x;
-    int y;
+struct Data {
+    int value;
 };
 
 static __attribute__((unused)) struct Data* Data_clone(struct Data* self)
@@ -544,8 +542,7 @@ static __attribute__((unused)) struct Data* Data_clone(struct Data* self)
     if (copy == NULL || self == NULL) {
         return copy;
     }
-    copy->x = self->x;
-    copy->y = self->y;
+    copy->value = self->value;
     return copy;
 }
 
@@ -554,6 +551,47 @@ int main(void)
 {    char __cminus_stack_anchor;
     size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
 
+    struct Data *first = cminus_gc_calloc(1, sizeof(struct Data)); {
+        struct __CMinusGCHeader* first_header = __cminus_gc_header_from_payload(first);
+
+        if (__cminus_gc_payload(first_header) != first) {
+            if (first != NULL) {
+                cminus_gc_free(first);
+            }
+
+            cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
+            return 1;
+        }
+        if (first_header->magic != __CMINUS_GC_MAGIC) {
+            if (first != NULL) {
+                cminus_gc_free(first);
+            }
+
+            cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
+            return 2;
+        }
+        if (!first_header->alive) {
+            if (first != NULL) {
+                cminus_gc_free(first);
+            }
+
+            cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
+            return 3;
+        }
+        cminus_gc_free(first);
+        if (first_header->alive) {
+            if (first != NULL) {
+                cminus_gc_free(first);
+            }
+
+            cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
+            return 4;
+        }
+    }
+    if (first != NULL) {
+        cminus_gc_free(first);
+    }
+
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
-    return sizeof(struct Data) == sizeof(struct Data) ? 0 : 1;
+    return 0;
 }

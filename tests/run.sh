@@ -363,6 +363,12 @@ grep '__cminus_gc_take_dead_fit' tests/gc_double_free_reuse.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/gc_double_free_reuse.out.c -o tests/gc_double_free_reuse.out
 test "$(./tests/gc_double_free_reuse.out)" = "ok"
 
+./c- tests/gc_header_offset.c- > tests/gc_header_offset.out.c
+grep '__cminus_gc_header_from_payload(first)' tests/gc_header_offset.out.c >/dev/null
+grep 'first_header->magic != __CMINUS_GC_MAGIC' tests/gc_header_offset.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/gc_header_offset.out.c -o tests/gc_header_offset.out
+./tests/gc_header_offset.out
+
 ./c- tests/ref_language.c- > tests/ref_language.out.c
 grep 'struct Ref_int\* Ref_from_int' tests/ref_language.out.c >/dev/null
 grep 'struct Ref_int \*ref = Ref_from_int(&value)' tests/ref_language.out.c >/dev/null

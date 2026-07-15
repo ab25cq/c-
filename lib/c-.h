@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <execinfo.h>
 
+#define __CMINUS_GC_MAGIC 0x434d494e55534743UL
+
 uniq void cminus_panic(const char* message, const char* file, int line)
 {
     void* frames[64];
@@ -15,6 +17,7 @@ uniq void cminus_panic(const char* message, const char* file, int line)
 }
 
 struct __CMinusGCHeader {
+    unsigned long magic;
     size_t size;
     size_t capacity;
     const char* file;
@@ -68,13 +71,31 @@ static void* __cminus_gc_payload(struct __CMinusGCHeader* header)
     return (char*)header + sizeof(struct __CMinusGCHeader);
 }
 
+static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_header_from_payload(void* mem)
+{
+    if (mem == NULL) {
+        return NULL;
+    }
+    return (struct __CMinusGCHeader*)((char*)mem - sizeof(struct __CMinusGCHeader));
+}
+
+static __attribute__((unused)) int __cminus_gc_header_is_valid(struct __CMinusGCHeader* header)
+{
+    return header != NULL && header->magic == __CMINUS_GC_MAGIC;
+}
+
 static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_find_live(void* mem)
 {
+    struct __CMinusGCHeader* header;
     struct __CMinusGCHeader* it = __cminus_gc_live_head;
 
     while (it != NULL) {
         if (__cminus_gc_payload(it) == mem) {
-            return it;
+            header = __cminus_gc_header_from_payload(mem);
+            if (__cminus_gc_header_is_valid(header) && header == it && header->alive) {
+                return header;
+            }
+            return NULL;
         }
         it = it->next;
     }
@@ -83,11 +104,16 @@ static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_find_live(vo
 
 static __attribute__((unused)) struct __CMinusGCHeader* __cminus_gc_find_dead(void* mem)
 {
+    struct __CMinusGCHeader* header;
     struct __CMinusGCHeader* it = __cminus_gc_dead_head;
 
     while (it != NULL) {
         if (__cminus_gc_payload(it) == mem) {
-            return it;
+            header = __cminus_gc_header_from_payload(mem);
+            if (__cminus_gc_header_is_valid(header) && header == it && !header->alive) {
+                return header;
+            }
+            return NULL;
         }
         it = it->dead_next;
     }
@@ -244,6 +270,7 @@ uniq void* cminus_gc_calloc_impl(size_t count, size_t size, const char* file, in
         }
         header->capacity = total;
     }
+    header->magic = __CMINUS_GC_MAGIC;
     header->size = total;
     header->file = file;
     header->line = line;

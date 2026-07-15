@@ -1,0 +1,27 @@
+struct Data {
+    int value;
+};
+
+int main(void)
+{
+    Data first = new Data;
+
+    unsafe {
+        struct __CMinusGCHeader* first_header = __cminus_gc_header_from_payload(first);
+
+        if (__cminus_gc_payload(first_header) != first) {
+            return 1;
+        }
+        if (first_header->magic != __CMINUS_GC_MAGIC) {
+            return 2;
+        }
+        if (!first_header->alive) {
+            return 3;
+        }
+        cminus_gc_free(first);
+        if (first_header->alive) {
+            return 4;
+        }
+    }
+    return 0;
+}
