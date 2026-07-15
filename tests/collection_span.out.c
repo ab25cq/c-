@@ -647,42 +647,31 @@ void* cminus_gc_calloc_impl(size_t count, size_t size, const char* file, int lin
 
 void cminus_gc_free_impl(void* mem, const char* file, int line)
 {
-    struct __CMinusGCHeader* live = {0};
-    memset(&live, 0, sizeof(live));
-
-    struct __CMinusGCHeader* dead = {0};
-    memset(&dead, 0, sizeof(dead));
+    struct __CMinusGCHeader* header = {0};
+    memset(&header, 0, sizeof(header));
 
 
     if (mem == NULL) {
         return;
     }
-    live = __cminus_gc_find_live(mem);
-    if (live != NULL) {
-        __cminus_gc_unlink_live(live);
-        live->alive = 0;
-        live->dead_next = __cminus_gc_dead_head;
-        __cminus_gc_dead_head = live;
-        if (__cminus_gc_live_count > 0) {
-            __cminus_gc_live_count--;
-        }
-        cminus_gc_step();
+    header = __cminus_gc_header_from_payload(mem);
+    if (!__cminus_gc_header_is_valid(header)) {
+        free(mem);
         return;
     }
-    dead = __cminus_gc_find_dead(mem);
-    if (dead != NULL) {
+    if (!header->alive) {
         (void)file;
         (void)line;
         return;
     }
-    for (dead = __cminus_gc_dead_head; dead != NULL; dead = dead->dead_next) {
-        if (__cminus_gc_contains(dead, mem)) {
-            (void)file;
-            (void)line;
-            return;
-        }
+    __cminus_gc_unlink_live(header);
+    header->alive = 0;
+    header->dead_next = __cminus_gc_dead_head;
+    __cminus_gc_dead_head = header;
+    if (__cminus_gc_live_count > 0) {
+        __cminus_gc_live_count--;
     }
-    free(mem);
+    cminus_gc_step();
 }
 
 size_t cminus_stack_enter_impl(const char* file, int line, void* anchor)
