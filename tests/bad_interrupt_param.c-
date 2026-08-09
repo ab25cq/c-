@@ -1,0 +1,4 @@
+interrupt void timer_irq(int code)
+{
+    (void)code;
+}

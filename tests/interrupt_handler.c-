@@ -1,0 +1,15 @@
+unsigned int IRQ_STATUS_CELL;
+Register<unsigned int> IRQ_STATUS;
+
+interrupt void timer_irq(void)
+{
+    IRQ_STATUS.set_bits(0x01u);
+}
+
+int main(void)
+{
+    unsafe {
+        IRQ_STATUS = Register<unsigned int>.from_addr((unsigned long)&IRQ_STATUS_CELL);
+    }
+    return 0;
+}

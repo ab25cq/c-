@@ -1,0 +1,16 @@
+unsafe {
+struct Holder {
+    int* raw;
+};
+
+int present(int* raw)
+{
+    return raw != 0;
+}
+}
+
+int main(void)
+{
+    Holder holder = new Holder();
+    return present(holder.raw);
+}

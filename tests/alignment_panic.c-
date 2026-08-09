@@ -1,0 +1,5 @@
+int main(void)
+{
+    unsigned long value = align_up(1u, 0u);
+    return value == 0u ? 0 : 1;
+}

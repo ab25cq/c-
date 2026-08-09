@@ -57,6 +57,62 @@ grep 'division by zero' tests/division_ok.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/division_ok.out.c -o tests/division_ok.out
 ./tests/division_ok.out
 
+./c- tests/os_attributes.c- > tests/os_attributes.out.c
+grep '__attribute__((section(".vectors"), used)) int vectors\[4\];' tests/os_attributes.out.c >/dev/null
+grep '__attribute__((aligned(4096))) int page_table\[1024\];' tests/os_attributes.out.c >/dev/null
+grep '__attribute__((naked)) void trampoline(void)' tests/os_attributes.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra -c tests/os_attributes.out.c -o tests/os_attributes.out.o
+
+./c- tests/os_compile_time.c- > tests/os_compile_time.out.c
+grep '_Static_assert(sizeof(struct TrapFrame) == 12, "trap frame size");' tests/os_compile_time.out.c >/dev/null
+grep '_Static_assert(__builtin_offsetof(struct TrapFrame, pc) == 8, "pc offset");' tests/os_compile_time.out.c >/dev/null
+grep '__attribute__((noreturn)) void halt_forever(void)' tests/os_compile_time.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra -c tests/os_compile_time.out.c -o tests/os_compile_time.out.o
+
+./c- tests/bitflags_safe.c- > tests/bitflags_safe.out.c
+grep 'typedef unsigned int PageFlags;' tests/bitflags_safe.out.c >/dev/null
+grep 'PageFlags_Present = 1u' tests/bitflags_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/bitflags_safe.out.c -o tests/bitflags_safe.out
+./tests/bitflags_safe.out
+
+./c- tests/export_weak_symbols.c- > tests/export_weak_symbols.out.c
+grep '__attribute__((used, externally_visible, section(".init.text"))) void kernel_entry(void)' tests/export_weak_symbols.out.c >/dev/null
+grep '__attribute__((weak)) int board_timer_init(void)' tests/export_weak_symbols.out.c >/dev/null
+grep '__attribute__((used, externally_visible, weak)) int board_magic = 42;' tests/export_weak_symbols.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/export_weak_symbols.out.c -o tests/export_weak_symbols.out
+./tests/export_weak_symbols.out
+
+./c- tests/linker_symbols.c- > tests/linker_symbols.out.c
+grep 'extern char __kernel_start\[\];' tests/linker_symbols.out.c >/dev/null
+grep '((unsigned long)(__kernel_start))' tests/linker_symbols.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/linker_symbols.out.c -o tests/linker_symbols.out
+./tests/linker_symbols.out
+
+./c- tests/alignment_helpers.c- > tests/alignment_helpers.out.c
+grep 'cminus_align_up_impl' tests/alignment_helpers.out.c | grep '"tests/alignment_helpers.c-"' >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/alignment_helpers.out.c -o tests/alignment_helpers.out
+./tests/alignment_helpers.out
+
+./c- tests/alignment_panic.c- > tests/alignment_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/alignment_panic.out.c -o tests/alignment_panic.out
+if ./tests/alignment_panic.out > tests/alignment_panic.out.log 2> tests/alignment_panic.err; then
+    echo "alignment zero did not panic" >&2
+    exit 1
+fi
+grep 'panic: alignment is zero at tests/alignment_panic.c-:' tests/alignment_panic.err >/dev/null
+
+if ./c- tests/bad_linker_addr_unknown.c- > /dev/null 2> tests/bad_linker_addr_unknown.err; then
+    echo "unknown linker symbol addr_of unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'addr_of(__missing_symbol) requires `linker_symbol __missing_symbol;` first' tests/bad_linker_addr_unknown.err >/dev/null
+
+if ./c- tests/bad_bitflags_mismatch.c- > /dev/null 2> tests/bad_bitflags_mismatch.err; then
+    echo "bad bitflags assignment unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "cannot assign IrqFlags to PageFlags" tests/bad_bitflags_mismatch.err >/dev/null
+
 ./c- tests/division_panic.c- > tests/division_panic.out.c
 grep 'division by zero' tests/division_panic.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/division_panic.out.c -o tests/division_panic.out
@@ -195,16 +251,20 @@ fi
 rm -rf /tmp/cpm-leak-smoke
 ./cpm new /tmp/cpm-leak-smoke
 cat > /tmp/cpm-leak-smoke/src/main.c- <<'SRC'
+unsafe {
 #include <stdlib.h>
 
 void* raw_alloc(size_t size)
 {
     return malloc(size);
 }
+}
 
 int main(void)
 {
-    raw_alloc(16);
+    unsafe {
+        raw_alloc(16);
+    }
     return 0;
 }
 SRC
@@ -217,7 +277,7 @@ grep 'definitely lost' /tmp/cpm-leak-smoke/val.err >/dev/null
 ./c- tests/object_initializer.c- > tests/object_initializer.out.c
 grep 'struct Person \*person = ({ struct Person\* __right_value' tests/object_initializer.out.c >/dev/null
 grep 'cminus_gc_calloc(1, sizeof(struct Person))' tests/object_initializer.out.c >/dev/null
-grep 'asprintf(&__right_value[0-9]*, "aaa");' tests/object_initializer.out.c >/dev/null
+grep '__right_value[0-9]* = cminus_string_format("aaa");' tests/object_initializer.out.c >/dev/null
 grep '__right_value[0-9]*->name = __right_value[0-9]*;' tests/object_initializer.out.c >/dev/null
 grep '__right_value[0-9]*->age = 48;' tests/object_initializer.out.c >/dev/null
 grep 'Person_finalize(person);' tests/object_initializer.out.c >/dev/null
@@ -262,17 +322,81 @@ cc -std=gnu99 -Wall -Wextra tests/field_collection_methods.out.c -o tests/field_
 ./tests/field_collection_methods.out
 
 ./c- tests/span_language.c- > tests/span_language.out.c
-grep 'struct Span_int\* Span_from_int' tests/span_language.out.c >/dev/null
-grep 'struct Span_int\* Span_from_bytes_int' tests/span_language.out.c >/dev/null
+grep 'struct Span_int Span_from_int' tests/span_language.out.c >/dev/null
+grep 'struct Span_int Span_from_bytes_int' tests/span_language.out.c >/dev/null
 grep 'Span_from_int(data, 3)' tests/span_language.out.c >/dev/null
 grep 'Span_from_bytes_int(data, sizeof(data))' tests/span_language.out.c >/dev/null
-grep 'Span_ptr_at_int(values, 1' tests/span_language.out.c >/dev/null
+grep 'Span_ptr_at_int(&(values), 1' tests/span_language.out.c >/dev/null
 grep '__foreach' tests/span_language.out.c >/dev/null
+grep 'values.len' tests/span_language.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/span_language.out.c -o tests/span_language.out
 test "$(./tests/span_language.out)" = "60"
 
+./c- tests/span_set_safe.c- > tests/span_set_safe.out.c
+grep 'Span_set_int(&values, 0, 11)' tests/span_set_safe.out.c >/dev/null
+grep 'Span_get_int(&values, 2)' tests/span_set_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/span_set_safe.out.c -o tests/span_set_safe.out
+./tests/span_set_safe.out
+
+./c- tests/string_methods.c- > tests/string_methods.out.c
+grep 'cminus_string_len(text)' tests/string_methods.out.c >/dev/null
+grep 'cminus_string_eq(text, "hello")' tests/string_methods.out.c >/dev/null
+grep 'cminus_string_contains(text, "ell")' tests/string_methods.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/string_methods.out.c -o tests/string_methods.out
+./tests/string_methods.out
+
+if ./c- tests/bad_span_stack_len.c- > /dev/null 2> tests/bad_span_stack_len.err; then
+    echo "oversized stack Span unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Span.from length 4 exceeds array 'data' length 3" tests/bad_span_stack_len.err >/dev/null
+
+if ./c- tests/bad_span_stack_bytes.c- > /dev/null 2> tests/bad_span_stack_bytes.err; then
+    echo "oversized byte stack Span unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Span.from_bytes length 16 exceeds array 'data' size 12 bytes" tests/bad_span_stack_bytes.err >/dev/null
+
+./c- tests/span_field_ok.c- > tests/span_field_ok.out.c
+grep 'Span_from_int(holder->data, 3)' tests/span_field_ok.out.c >/dev/null
+grep 'Span_from_bytes_int(holder->data, sizeof(holder->data))' tests/span_field_ok.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/span_field_ok.out.c -o tests/span_field_ok.out
+test "$(./tests/span_field_ok.out)" = "3"
+
+./c- tests/fixed_array_safe.c- > tests/fixed_array_safe.out.c
+grep 'Span_from_int(buf->data, 4)' tests/fixed_array_safe.out.c >/dev/null
+grep 'FixedVec_from_int(buf->data, 4)' tests/fixed_array_safe.out.c >/dev/null
+grep 'struct FixedVec_int FixedVec_from_int' tests/fixed_array_safe.out.c >/dev/null
+grep 'FixedVec_get_opt_int' tests/fixed_array_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/fixed_array_safe.out.c -o tests/fixed_array_safe.out
+./tests/fixed_array_safe.out
+
+if ./c- tests/bad_array_const_index_safe.c- > /dev/null 2> tests/bad_array_const_index_safe.err; then
+    echo "out-of-range fixed array index unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "array index 3 is out of range for 'data' length 3" tests/bad_array_const_index_safe.err >/dev/null
+
+if ./c- tests/bad_array_var_index_safe.c- > /dev/null 2> tests/bad_array_var_index_safe.err; then
+    echo "variable fixed array index unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "variable index into fixed array 'data' is not allowed in safe mode" tests/bad_array_var_index_safe.err >/dev/null
+
+if ./c- tests/bad_span_field_len.c- > /dev/null 2> tests/bad_span_field_len.err; then
+    echo "oversized field Span unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Span.from length 4 exceeds array 'holder.data' length 3" tests/bad_span_field_len.err >/dev/null
+
+if ./c- tests/bad_span_field_bytes.c- > /dev/null 2> tests/bad_span_field_bytes.err; then
+    echo "oversized byte field Span unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Span.from_bytes length 16 exceeds array 'holder.data' size 12 bytes" tests/bad_span_field_bytes.err >/dev/null
+
 ./c- tests/span_panic.c- > tests/span_panic.out.c
-grep 'Span_ptr_at_int(values, 2, "tests/span_panic.c-",' tests/span_panic.out.c >/dev/null
+grep 'Span_ptr_at_int(&(values), 2, "tests/span_panic.c-",' tests/span_panic.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/span_panic.out.c -o tests/span_panic.out
 if ./tests/span_panic.out > tests/span_panic.out.log 2> tests/span_panic.err; then
     echo "out-of-range Span index unexpectedly succeeded" >&2
@@ -281,10 +405,10 @@ fi
 grep 'panic: index out of range at tests/span_panic.c-:' tests/span_panic.err >/dev/null
 
 ./c- tests/span_operator.c- > tests/span_operator.out.c
-grep 'Span_offset_int(values, 1, "tests/span_operator.c-",' tests/span_operator.out.c >/dev/null
-grep 'Span_offset_int(tail, -(1), "tests/span_operator.c-",' tests/span_operator.out.c >/dev/null
-grep 'Span_ptr_at_int(tail, 0, "tests/span_operator.c-",' tests/span_operator.out.c >/dev/null
-grep 'Span_ptr_at_int(tail, 1, "tests/span_operator.c-",' tests/span_operator.out.c >/dev/null
+grep 'Span_offset_int(&values, 1, "tests/span_operator.c-",' tests/span_operator.out.c >/dev/null
+grep 'Span_offset_int(&tail, -(1), "tests/span_operator.c-",' tests/span_operator.out.c >/dev/null
+grep 'Span_ptr_at_int(&(tail), 0, "tests/span_operator.c-",' tests/span_operator.out.c >/dev/null
+grep 'Span_ptr_at_int(&(tail), 1, "tests/span_operator.c-",' tests/span_operator.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/span_operator.out.c -o tests/span_operator.out
 test "$(./tests/span_operator.out)" = "55"
 
@@ -313,6 +437,108 @@ grep 'Map_values_to_list_int_int(map)' tests/collection_convert.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/collection_convert.out.c -o tests/collection_convert.out
 test "$(./tests/collection_convert.out)" = "340"
 
+./c- tests/iterator_interface.c- > tests/iterator_interface.out.c
+grep 'struct Iterator_int' tests/iterator_interface.out.c >/dev/null
+grep 'Vec_iter_int' tests/iterator_interface.out.c >/dev/null
+grep 'List_iter_int' tests/iterator_interface.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/iterator_interface.out.c -o tests/iterator_interface.out
+test "$(./tests/iterator_interface.out)" = "36"
+
+./c- tests/register_safe.c- > tests/register_safe.out.c
+grep 'struct Register_unsigned_int reg = {0};' tests/register_safe.out.c >/dev/null
+grep 'volatile unsigned int\* addr;' tests/register_safe.out.c >/dev/null
+grep 'Register_from_addr_unsigned_int((unsigned long)&cell)' tests/register_safe.out.c >/dev/null
+grep 'Register_replace_bits_unsigned_int(&reg, 0x30u, 0x20u)' tests/register_safe.out.c >/dev/null
+grep 'Register_has_bits_unsigned_int(&reg, 0x02u)' tests/register_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/register_safe.out.c -o tests/register_safe.out
+./tests/register_safe.out
+
+./c- tests/register_field_safe.c- > tests/register_field_safe.out.c
+grep 'struct Register_unsigned_int status;' tests/register_field_safe.out.c >/dev/null
+grep 'struct Uart uart = {0};' tests/register_field_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/register_field_safe.out.c -o tests/register_field_safe.out
+./tests/register_field_safe.out
+
+./c- tests/mmio_struct_safe.c- > tests/mmio_struct_safe.out.c
+grep 'struct Register_unsigned_int status;' tests/mmio_struct_safe.out.c >/dev/null
+grep 'struct Register_unsigned_int data;' tests/mmio_struct_safe.out.c >/dev/null
+if grep 'mmio struct' tests/mmio_struct_safe.out.c >/dev/null; then
+    echo "mmio modifier leaked into generated C" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/mmio_struct_safe.out.c -o tests/mmio_struct_safe.out
+./tests/mmio_struct_safe.out
+
+if ./c- tests/bad_mmio_pointer_field.c- > /dev/null 2> tests/bad_mmio_pointer_field.err; then
+    echo "bad mmio array field unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "mmio struct fields must be scalar register values" tests/bad_mmio_pointer_field.err >/dev/null
+
+if ./c- tests/bad_register_from_addr_safe.c- > /dev/null 2> tests/bad_register_from_addr_safe.err; then
+    echo "safe Register.from_addr unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'from_addr can only be called inside unsafe' tests/bad_register_from_addr_safe.err >/dev/null
+
+./c- tests/interrupt_handler.c- > tests/interrupt_handler.out.c
+grep '__attribute__((interrupt))' tests/interrupt_handler.out.c >/dev/null
+grep 'void timer_irq(void)' tests/interrupt_handler.out.c >/dev/null
+grep 'Register_set_bits_unsigned_int(&IRQ_STATUS, 0x01u)' tests/interrupt_handler.out.c >/dev/null
+if sed -n '/void timer_irq(void)/,/^}/p' tests/interrupt_handler.out.c | grep 'cminus_stack_enter_impl' >/dev/null; then
+    echo "interrupt handler unexpectedly has stack lifetime guard" >&2
+    exit 1
+fi
+
+if ./c- tests/bad_interrupt_param.c- > /dev/null 2> tests/bad_interrupt_param.err; then
+    echo "interrupt function with parameter unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'interrupt functions must be `interrupt void name(void)`' tests/bad_interrupt_param.err >/dev/null
+
+if ./c- tests/bad_interrupt_return.c- > /dev/null 2> tests/bad_interrupt_return.err; then
+    echo "interrupt function with non-void return unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'interrupt functions must be `interrupt void name(void)`' tests/bad_interrupt_return.err >/dev/null
+
+if ./c- tests/bad_interrupt_new.c- > /dev/null 2> tests/bad_interrupt_new.err; then
+    echo "interrupt function allocation unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'managed heap allocation is not allowed in interrupt functions' tests/bad_interrupt_new.err >/dev/null
+
+./c- tests/atomic_safe.c- > tests/atomic_safe.out.c
+grep 'struct Atomic_unsigned_int counter = Atomic_init_unsigned_int(1u);' tests/atomic_safe.out.c >/dev/null
+grep '__atomic_fetch_add' tests/atomic_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/atomic_safe.out.c -o tests/atomic_safe.out
+./tests/atomic_safe.out
+
+./c- tests/critical_safe.c- > tests/critical_safe.out.c
+grep 'struct Critical guard = Critical_enter();' tests/critical_safe.out.c >/dev/null
+grep 'Critical_leave(&guard)' tests/critical_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/critical_safe.out.c -o tests/critical_safe.out
+./tests/critical_safe.out
+
+./c- tests/static_cell_safe.c- > tests/static_cell_safe.out.c
+grep 'struct StaticCell_int cell = StaticCell_uninit_int();' tests/static_cell_safe.out.c >/dev/null
+grep 'StaticCell_set_int(&cell, 10)' tests/static_cell_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/static_cell_safe.out.c -o tests/static_cell_safe.out
+./tests/static_cell_safe.out
+
+./c- tests/volatile_safe.c- > tests/volatile_safe.out.c
+grep 'struct Volatile_unsigned_int cell = {0};' tests/volatile_safe.out.c >/dev/null
+grep 'Volatile_from_addr_unsigned_int((unsigned long)&raw)' tests/volatile_safe.out.c >/dev/null
+grep 'Volatile_write_unsigned_int(&cell, 42u)' tests/volatile_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/volatile_safe.out.c -o tests/volatile_safe.out
+./tests/volatile_safe.out
+
+if ./c- tests/bad_volatile_from_addr_safe.c- > /dev/null 2> tests/bad_volatile_from_addr_safe.err; then
+    echo "safe Volatile.from_addr unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'from_addr can only be called inside unsafe' tests/bad_volatile_from_addr_safe.err >/dev/null
+
 ./c- tests/safe_reference_surface.c- > tests/safe_reference_surface.out.c
 grep 'struct Data \*make_data(void)' tests/safe_reference_surface.out.c >/dev/null
 grep 'char\* text' tests/safe_reference_surface.out.c >/dev/null
@@ -332,13 +558,97 @@ if ./c- tests/bad_pointer_deref_safe.c- > tests/bad_pointer_deref_safe.out.c 2> 
 fi
 grep 'pointer dereference is only allowed inside unsafe' tests/bad_pointer_deref_safe.err >/dev/null
 
+if ./c- tests/bad_pointer_deref_call_safe.c- > /dev/null 2> tests/bad_pointer_deref_call_safe.err; then
+    echo "pointer return dereference outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'pointer dereference is only allowed inside unsafe' tests/bad_pointer_deref_call_safe.err >/dev/null
+
+if ./c- tests/bad_c_string_call_safe.c- > /dev/null 2> tests/bad_c_string_call_safe.err; then
+    echo "C string function outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "C function 'strlen' can only be called inside unsafe" tests/bad_c_string_call_safe.err >/dev/null
+
+if ./c- tests/bad_ref_raw_safe.c- > tests/bad_ref_raw_safe.out.c 2> tests/bad_ref_raw_safe.err; then
+    echo "raw pointer Ref input outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'raw pointer cannot be stored in Ref in safe mode' tests/bad_ref_raw_safe.err >/dev/null
+
+if ./c- tests/bad_span_raw_safe.c- > tests/bad_span_raw_safe.out.c 2> tests/bad_span_raw_safe.err; then
+    echo "raw pointer Span input outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'raw pointer cannot be stored in Span in safe mode' tests/bad_span_raw_safe.err >/dev/null
+
+if ./c- tests/bad_optional_raw_safe.c- > tests/bad_optional_raw_safe.out.c 2> tests/bad_optional_raw_safe.err; then
+    echo "raw pointer Optional input outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'raw pointer cannot be stored in Optional in safe mode' tests/bad_optional_raw_safe.err >/dev/null
+
+if ./c- tests/bad_raw_return_taint_safe.c- > tests/bad_raw_return_taint_safe.out.c 2> tests/bad_raw_return_taint_safe.err; then
+    echo "raw pointer return taint unexpectedly reached safe Ref" >&2
+    exit 1
+fi
+grep 'raw pointer cannot be stored in Ref in safe mode' tests/bad_raw_return_taint_safe.err >/dev/null
+
+if ./c- tests/bad_raw_arg_taint_safe.c- > tests/bad_raw_arg_taint_safe.out.c 2> tests/bad_raw_arg_taint_safe.err; then
+    echo "raw pointer argument taint unexpectedly reached safe function call" >&2
+    exit 1
+fi
+grep "raw pointer taint cannot be passed to function 'take' in safe mode" tests/bad_raw_arg_taint_safe.err >/dev/null
+
+if ./c- tests/bad_raw_field_taint_safe.c- > tests/bad_raw_field_taint_safe.out.c 2> tests/bad_raw_field_taint_safe.err; then
+    echo "raw pointer field taint unexpectedly reached safe Span" >&2
+    exit 1
+fi
+grep "raw pointer field 'Holder.raw' cannot be accessed in safe mode" tests/bad_raw_field_taint_safe.err >/dev/null
+
+./c- tests/safe_to_unsafe_ok.c- > tests/safe_to_unsafe_ok.out.c
+grep 'read_value(&local)' tests/safe_to_unsafe_ok.out.c >/dev/null
+grep 'sum_span(data, 3)' tests/safe_to_unsafe_ok.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/safe_to_unsafe_ok.out.c -o tests/safe_to_unsafe_ok.out
+test "$(./tests/safe_to_unsafe_ok.out)" = "9 11 6"
+
+if ./c- tests/bad_unsafe_call_safe.c- > /dev/null 2> tests/bad_unsafe_call_safe.err; then
+    echo "unsafe function call outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "unsafe function 'read_raw' can only be called inside unsafe" tests/bad_unsafe_call_safe.err >/dev/null
+
+if ./c- tests/bad_raw_return_assignment_taint_safe.c- > tests/bad_raw_return_assignment_taint_safe.out.c 2> tests/bad_raw_return_assignment_taint_safe.err; then
+    echo "raw pointer return taint unexpectedly crossed safe return" >&2
+    exit 1
+fi
+grep "raw pointer taint cannot be returned from safe function 'pass_raw'" tests/bad_raw_return_assignment_taint_safe.err >/dev/null
+
+if ./c- tests/bad_raw_param_return_taint_safe.c- > tests/bad_raw_param_return_taint_safe.out.c 2> tests/bad_raw_param_return_taint_safe.err; then
+    echo "raw pointer parameter return taint unexpectedly reached safe Ref" >&2
+    exit 1
+fi
+grep 'raw pointer cannot be stored in Ref in safe mode' tests/bad_raw_param_return_taint_safe.err >/dev/null
+
+if ./c- tests/bad_raw_field_arg_taint_safe.c- > tests/bad_raw_field_arg_taint_safe.out.c 2> tests/bad_raw_field_arg_taint_safe.err; then
+    echo "raw pointer field taint unexpectedly crossed safe call" >&2
+    exit 1
+fi
+grep "raw pointer field 'Holder.raw' cannot be accessed in safe mode" tests/bad_raw_field_arg_taint_safe.err >/dev/null
+
+if ./c- tests/bad_raw_optional_return_taint_safe.c- > tests/bad_raw_optional_return_taint_safe.out.c 2> tests/bad_raw_optional_return_taint_safe.err; then
+    echo "raw pointer optional taint unexpectedly crossed safe return" >&2
+    exit 1
+fi
+grep 'raw pointer cannot be stored in Optional in safe mode' tests/bad_raw_optional_return_taint_safe.err >/dev/null
+
 ./c- tests/unsafe_pointer_deref.c- > tests/unsafe_pointer_deref.out.c
 grep '\\*p' tests/unsafe_pointer_deref.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/unsafe_pointer_deref.out.c -o tests/unsafe_pointer_deref.out
 test "$(./tests/unsafe_pointer_deref.out)" = "7"
 
 ./c- tests/safe_pointer_arith.c- > tests/safe_pointer_arith.out.c
-grep 'ref->data++;' tests/safe_pointer_arith.out.c >/dev/null
+grep 'ref.data++;' tests/safe_pointer_arith.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/safe_pointer_arith.out.c -o tests/safe_pointer_arith.out
 ./tests/safe_pointer_arith.out
 
@@ -370,10 +680,10 @@ cc -std=gnu99 -Wall -Wextra tests/gc_header_offset.out.c -o tests/gc_header_offs
 ./tests/gc_header_offset.out
 
 ./c- tests/ref_language.c- > tests/ref_language.out.c
-grep 'struct Ref_int\* Ref_from_int' tests/ref_language.out.c >/dev/null
-grep 'struct Ref_int \*ref = Ref_from_int(&value)' tests/ref_language.out.c >/dev/null
-grep 'Ref_get_int(ref)' tests/ref_language.out.c >/dev/null
-grep 'Ref_set_int(ref, 25)' tests/ref_language.out.c >/dev/null
+grep 'struct Ref_int Ref_from_int' tests/ref_language.out.c >/dev/null
+grep 'struct Ref_int ref = Ref_from_int(&value)' tests/ref_language.out.c >/dev/null
+grep 'Ref_get_int(&ref)' tests/ref_language.out.c >/dev/null
+grep 'Ref_set_int(&ref, 25)' tests/ref_language.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/ref_language.out.c -o tests/ref_language.out
 test "$(./tests/ref_language.out)" = "25"
 
@@ -419,10 +729,10 @@ cc -std=gnu99 -Wall -Wextra tests/payload_enum.out.c -o tests/payload_enum.out
 ./tests/payload_enum.out
 
 ./c- tests/optional_language.c- > tests/optional_language.out.c
-grep 'struct Optional_int \*make_some' tests/optional_language.out.c >/dev/null
-grep 'struct Optional_int \*some = make_some(42);' tests/optional_language.out.c >/dev/null
+grep 'struct Optional_int make_some' tests/optional_language.out.c >/dev/null
+grep 'struct Optional_int some = make_some(42);' tests/optional_language.out.c >/dev/null
 grep 'Optional_int_Some(7)' tests/optional_language.out.c >/dev/null
-grep 'Optional_int_is_Some(some)' tests/optional_language.out.c >/dev/null
+grep 'Optional_int_is_Some(&some)' tests/optional_language.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/optional_language.out.c -o tests/optional_language.out
 ./tests/optional_language.out
 
@@ -477,13 +787,13 @@ cc -std=c99 -Wall -Wextra -pedantic tests/owned_reassign.out.c -o tests/owned_re
 ./tests/owned_reassign.out
 
 ./c- tests/owned_field_finalizer_reassign.c- > tests/owned_field_finalizer_reassign.out.c
-grep 'asprintf(&holder->text, "bbb");' tests/owned_field_finalizer_reassign.out.c >/dev/null
+grep 'holder->text = cminus_string_format("bbb");' tests/owned_field_finalizer_reassign.out.c >/dev/null
 grep 'cminus_gc_free(__owned_old' tests/owned_field_finalizer_reassign.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/owned_field_finalizer_reassign.out.c -o tests/owned_field_finalizer_reassign.out
 ./tests/owned_field_finalizer_reassign.out
 
 ./c- tests/strdup_owned_reassign.c- > tests/strdup_owned_reassign.out.c
-grep 'asprintf(&data->text, "bbb");' tests/strdup_owned_reassign.out.c >/dev/null
+grep 'data->text = cminus_string_format("bbb");' tests/strdup_owned_reassign.out.c >/dev/null
 grep 'cminus_gc_free(__owned_old' tests/strdup_owned_reassign.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/strdup_owned_reassign.out.c -o tests/strdup_owned_reassign.out
 ./tests/strdup_owned_reassign.out
@@ -505,8 +815,8 @@ grep 'struct data \*d = cminus_gc_calloc(1, sizeof(struct data));' tests/method_
 grep 'struct data \*p = cminus_gc_calloc(1, sizeof(struct data));' tests/method_calls.out.c >/dev/null
 grep 'data_show(d);' tests/method_calls.out.c >/dev/null
 grep 'data_show(p);' tests/method_calls.out.c >/dev/null
-grep 'strcmp("aaa", "aaa") != 0' tests/method_calls.out.c >/dev/null
-grep 'return strcmp("aaa", "aaa");' tests/method_calls.out.c >/dev/null
+grep 'cminus_string_cmp("aaa", "aaa") != 0' tests/method_calls.out.c >/dev/null
+grep 'return cminus_string_cmp("aaa", "aaa");' tests/method_calls.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/method_calls.out.c -o tests/method_calls.out
 ./tests/method_calls.out
 
@@ -529,6 +839,18 @@ if ./c- tests/bad_null_safe.c- > /dev/null 2> tests/bad_null_safe.err; then
     exit 1
 fi
 grep "NULL is only allowed for Optional in safe mode" tests/bad_null_safe.err >/dev/null
+
+if ./c- tests/bad_raw_heap_safe.c- > /dev/null 2> tests/bad_raw_heap_safe.err; then
+    echo "safe raw heap call unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "raw heap function 'malloc' is only allowed inside unsafe" tests/bad_raw_heap_safe.err >/dev/null
+
+if ./c- tests/bad_alloc_attr_safe.c- > /dev/null 2> tests/bad_alloc_attr_safe.err; then
+    echo "safe alloc-attributed call unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "alloc-attributed function 'raw_alloc' is only allowed inside unsafe" tests/bad_alloc_attr_safe.err >/dev/null
 
 if ./c- tests/bad_return_null_safe.c- > /dev/null 2> tests/bad_return_null_safe.err; then
     echo "safe return NULL unexpectedly succeeded" >&2
@@ -559,6 +881,78 @@ if ./c- tests/bad_use_after_move.c- > /dev/null 2> tests/bad_use_after_move.err;
 fi
 grep "use of moved value 'left'" tests/bad_use_after_move.err >/dev/null
 
+if ./c- tests/bad_borrow_after_owner_reassign.c- > /dev/null 2> tests/bad_borrow_after_owner_reassign.err; then
+    echo "borrow after owner reassign unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "borrowed value 'view' is used after owner 'text' was released" tests/bad_borrow_after_owner_reassign.err >/dev/null
+
+if ./c- tests/bad_borrow_after_owner_move.c- > /dev/null 2> tests/bad_borrow_after_owner_move.err; then
+    echo "borrow after owner move unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "borrowed value 'view' is used after owner 'text' was released" tests/bad_borrow_after_owner_move.err >/dev/null
+
+if ./c- tests/bad_borrow_after_owner_reassign_condition.c- > /dev/null 2> tests/bad_borrow_after_owner_reassign_condition.err; then
+    echo "borrow after owner reassign in condition unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "borrowed value 'view' is used after owner 'text' was released" tests/bad_borrow_after_owner_reassign_condition.err >/dev/null
+
+if ./c- tests/bad_borrow_field_after_reassign.c- > /dev/null 2> tests/bad_borrow_field_after_reassign.err; then
+    echo "borrow after owned field reassign unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "borrowed value 'view' is used after owner 'holder' was released" tests/bad_borrow_field_after_reassign.err >/dev/null
+
+if ./c- tests/bad_return_stack_ref_safe.c- > /dev/null 2> tests/bad_return_stack_ref_safe.err; then
+    echo "return stack Ref unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "value 'value' cannot escape through returned safe reference" tests/bad_return_stack_ref_safe.err >/dev/null
+
+if ./c- tests/bad_return_stack_span_safe.c- > /dev/null 2> tests/bad_return_stack_span_safe.err; then
+    echo "return stack Span unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "value 'values' cannot escape through returned safe reference" tests/bad_return_stack_span_safe.err >/dev/null
+
+if ./c- tests/bad_return_owned_borrow_safe.c- > /dev/null 2> tests/bad_return_owned_borrow_safe.err; then
+    echo "return owned borrow unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "borrowed value 'view' from 'text' cannot be returned" tests/bad_return_owned_borrow_safe.err >/dev/null
+
+if ./c- tests/bad_return_owned_field_borrow_safe.c- > /dev/null 2> tests/bad_return_owned_field_borrow_safe.err; then
+    echo "return owned field borrow unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "borrowed value 'view' from 'holder' cannot be returned" tests/bad_return_owned_field_borrow_safe.err >/dev/null
+
+if ./c- tests/bad_ref_field_safe.c- > /dev/null 2> tests/bad_ref_field_safe.err; then
+    echo "Ref field in safe struct unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Ref/Span fields are not allowed in safe structs" tests/bad_ref_field_safe.err >/dev/null
+
+if ./c- tests/bad_span_field_safe.c- > /dev/null 2> tests/bad_span_field_safe.err; then
+    echo "Span field in safe struct unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Ref/Span fields are not allowed in safe structs" tests/bad_span_field_safe.err >/dev/null
+
+if ./c- tests/bad_raw_arg_condition_safe.c- > /dev/null 2> tests/bad_raw_arg_condition_safe.err; then
+    echo "raw pointer condition argument unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "raw pointer taint cannot be passed to function 'present' in safe mode" tests/bad_raw_arg_condition_safe.err >/dev/null
+
+if ./c- tests/bad_raw_field_access_safe.c- > /dev/null 2> tests/bad_raw_field_access_safe.err; then
+    echo "raw pointer field access unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "raw pointer field 'Holder.raw' cannot be accessed in safe mode" tests/bad_raw_field_access_safe.err >/dev/null
+
 if ./c- tests/bad.c- > /dev/null 2> tests/borrow_new.err; then
     echo "borrow new unexpectedly succeeded" >&2
     exit 1
@@ -588,7 +982,7 @@ cc -std=c99 -Wall -Wextra -pedantic tests/attr_malloc_owned_reassign.out.c -o te
 
 ./c- tests/s_string_owned.c- > tests/s_string_owned.out.c
 grep 'char\* text;' tests/s_string_owned.out.c >/dev/null
-grep 'asprintf(&text, "aaa %d", 1+1);' tests/s_string_owned.out.c >/dev/null
+grep 'text = cminus_string_format("aaa %d", 1+1);' tests/s_string_owned.out.c >/dev/null
 grep 'cminus_gc_free(text);' tests/s_string_owned.out.c >/dev/null
 test "$(grep -c 'cminus_gc_free(text);' tests/s_string_owned.out.c)" = "1"
 cc -std=c99 -Wall -Wextra -pedantic tests/s_string_owned.out.c -o tests/s_string_owned.out
@@ -596,16 +990,16 @@ cc -std=c99 -Wall -Wextra -pedantic tests/s_string_owned.out.c -o tests/s_string
 
 ./c- tests/s_string_unbound.c- > tests/s_string_unbound.out.c
 grep 'char\* text;' tests/s_string_unbound.out.c >/dev/null
-grep 'asprintf(&text, "abc");' tests/s_string_unbound.out.c >/dev/null
+grep 'text = cminus_string_format("abc");' tests/s_string_unbound.out.c >/dev/null
 grep 'cminus_gc_free(text);' tests/s_string_unbound.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/s_string_unbound.out.c -o tests/s_string_unbound.out
 ./tests/s_string_unbound.out
 
 ./c- tests/s_string_rvalue.c- > tests/s_string_rvalue.out.c
-grep 'char\* __right_value0 = NULL;' tests/s_string_rvalue.out.c >/dev/null
-grep 'asprintf(&__right_value0, "abc");' tests/s_string_rvalue.out.c >/dev/null
-grep 'strcmp(__right_value0, "abc") == 0' tests/s_string_rvalue.out.c >/dev/null
-grep 'cminus_gc_free(__right_value0);' tests/s_string_rvalue.out.c >/dev/null
+grep 'char\* text;' tests/s_string_rvalue.out.c >/dev/null
+grep 'text = cminus_string_format("abc");' tests/s_string_rvalue.out.c >/dev/null
+grep 'cminus_string_eq(text, "abc")' tests/s_string_rvalue.out.c >/dev/null
+grep 'cminus_gc_free(text);' tests/s_string_rvalue.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/s_string_rvalue.out.c -o tests/s_string_rvalue.out
 ./tests/s_string_rvalue.out
 
@@ -615,6 +1009,130 @@ grep 'while (({' tests/s_string_conditions.out.c >/dev/null
 grep 'cminus_gc_free(__right_value' tests/s_string_conditions.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/s_string_conditions.out.c -o tests/s_string_conditions.out
 ./tests/s_string_conditions.out
+
+./c- tests/generic_early_return_cleanup.c- > tests/generic_early_return_cleanup.out.c
+grep 'cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);' tests/generic_early_return_cleanup.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/generic_early_return_cleanup.out.c -o tests/generic_early_return_cleanup.out
+test "$(./tests/generic_early_return_cleanup.out)" = "30"
+
+./c- tests/stack_struct.c- > tests/stack_struct.out.c
+grep 'struct Data data = {0};' tests/stack_struct.out.c >/dev/null
+if grep 'struct Data \*data = cminus_gc_calloc' tests/stack_struct.out.c >/dev/null; then
+    echo "stack struct unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/stack_struct.out.c -o tests/stack_struct.out
+./tests/stack_struct.out
+
+./c- -no-heap tests/no_heap_stack_ok.c- > tests/no_heap_stack_ok.out.c
+grep 'struct Data data = {0};' tests/no_heap_stack_ok.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/no_heap_stack_ok.out.c -o tests/no_heap_stack_ok.out
+./tests/no_heap_stack_ok.out
+
+./c- -no-heap tests/no_heap_span_fixedvec_ok.c- > tests/no_heap_span_fixedvec_ok.out.c
+grep 'struct Span_unsigned_char all = {0};' tests/no_heap_span_fixedvec_ok.out.c >/dev/null
+grep 'struct FixedVec_unsigned_char used = {0};' tests/no_heap_span_fixedvec_ok.out.c >/dev/null
+if grep 'cminus_gc_calloc(1, sizeof(struct Span_unsigned_char))' tests/no_heap_span_fixedvec_ok.out.c >/dev/null; then
+    echo "no-heap Span metadata unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+if grep 'cminus_gc_calloc(1, sizeof(struct FixedVec_unsigned_char))' tests/no_heap_span_fixedvec_ok.out.c >/dev/null; then
+    echo "no-heap FixedVec metadata unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/no_heap_span_fixedvec_ok.out.c -o tests/no_heap_span_fixedvec_ok.out
+./tests/no_heap_span_fixedvec_ok.out
+
+./c- -no-heap tests/no_heap_register_ok.c- > tests/no_heap_register_ok.out.c
+grep 'struct Register_unsigned_int reg = {0};' tests/no_heap_register_ok.out.c >/dev/null
+if grep 'cminus_gc_calloc(1, sizeof(struct Register_unsigned_int))' tests/no_heap_register_ok.out.c >/dev/null; then
+    echo "no-heap Register metadata unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/no_heap_register_ok.out.c -o tests/no_heap_register_ok.out
+./tests/no_heap_register_ok.out
+
+./c- -no-heap tests/no_heap_atomic_critical_ok.c- > tests/no_heap_atomic_critical_ok.out.c
+grep 'struct Atomic_unsigned_int value = Atomic_init_unsigned_int(0u);' tests/no_heap_atomic_critical_ok.out.c >/dev/null
+grep 'struct Critical guard = Critical_enter();' tests/no_heap_atomic_critical_ok.out.c >/dev/null
+if grep 'cminus_gc_calloc(1, sizeof(struct Atomic_unsigned_int))' tests/no_heap_atomic_critical_ok.out.c >/dev/null; then
+    echo "no-heap Atomic metadata unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/no_heap_atomic_critical_ok.out.c -o tests/no_heap_atomic_critical_ok.out
+./tests/no_heap_atomic_critical_ok.out
+
+./c- -no-heap tests/no_heap_static_volatile_ok.c- > tests/no_heap_static_volatile_ok.out.c
+grep 'struct StaticCell_int cell = StaticCell_init_int(5);' tests/no_heap_static_volatile_ok.out.c >/dev/null
+grep 'struct Volatile_unsigned_int vol = {0};' tests/no_heap_static_volatile_ok.out.c >/dev/null
+if grep 'cminus_gc_calloc(1, sizeof(struct StaticCell_int))' tests/no_heap_static_volatile_ok.out.c >/dev/null; then
+    echo "no-heap StaticCell metadata unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+if grep 'cminus_gc_calloc(1, sizeof(struct Volatile_unsigned_int))' tests/no_heap_static_volatile_ok.out.c >/dev/null; then
+    echo "no-heap Volatile metadata unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/no_heap_static_volatile_ok.out.c -o tests/no_heap_static_volatile_ok.out
+./tests/no_heap_static_volatile_ok.out
+
+./c- -no-heap tests/no_heap_optional_ref_ok.c- > tests/no_heap_optional_ref_ok.out.c
+grep 'struct Optional_int maybe = make_value(9);' tests/no_heap_optional_ref_ok.out.c >/dev/null
+grep 'struct Ref_int ref = Ref_from_int(&value);' tests/no_heap_optional_ref_ok.out.c >/dev/null
+if grep 'cminus_gc_calloc(1, sizeof(struct Optional_int))' tests/no_heap_optional_ref_ok.out.c >/dev/null; then
+    echo "no-heap Optional unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+if grep 'cminus_gc_calloc(1, sizeof(struct Ref_int))' tests/no_heap_optional_ref_ok.out.c >/dev/null; then
+    echo "no-heap Ref unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/no_heap_optional_ref_ok.out.c -o tests/no_heap_optional_ref_ok.out
+./tests/no_heap_optional_ref_ok.out
+
+if ./c- -no-heap tests/bad_no_heap_new.c- > /dev/null 2> tests/bad_no_heap_new.err; then
+    echo "no-heap new unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "managed heap allocation is not allowed in no-heap functions" tests/bad_no_heap_new.err >/dev/null
+
+if ./c- -no-heap tests/bad_no_heap_s_string.c- > /dev/null 2> tests/bad_no_heap_s_string.err; then
+    echo "no-heap s string unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "s strings allocate managed heap" tests/bad_no_heap_s_string.err >/dev/null
+
+if ./c- -no-heap tests/bad_no_heap_vec.c- > /dev/null 2> tests/bad_no_heap_vec.err; then
+    echo "no-heap Vec unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "managed heap allocation is not allowed in no-heap functions" tests/bad_no_heap_vec.err >/dev/null
+
+if ./c- -no-heap tests/bad_no_heap_clone.c- > /dev/null 2> tests/bad_no_heap_clone.err; then
+    echo "no-heap clone unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "managed heap allocation is not allowed in no-heap functions" tests/bad_no_heap_clone.err >/dev/null
+
+rm -rf /tmp/cpm-no-heap-smoke
+./cpm new /tmp/cpm-no-heap-smoke
+printf '\nno_heap = true\n' >> /tmp/cpm-no-heap-smoke/C-.toml
+cat > /tmp/cpm-no-heap-smoke/src/main.c- <<'SRC'
+struct Data {
+    int value;
+};
+
+int main(void)
+{
+    stack Data data;
+
+    data.value = 12;
+    return data.value == 12 ? 0 : 1;
+}
+SRC
+(cd /tmp/cpm-no-heap-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" build > build.out 2>&1)
+grep -- ' -no-heap ' /tmp/cpm-no-heap-smoke/build.out >/dev/null
+/tmp/cpm-no-heap-smoke/target/debug/cpm-no-heap-smoke
 
 if ./c- tests/bad_owned_non_pointer.c- > /dev/null 2> tests/bad_owned_non_pointer.err; then
     echo "bad owned non-pointer unexpectedly succeeded" >&2

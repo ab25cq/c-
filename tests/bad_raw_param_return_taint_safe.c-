@@ -1,0 +1,13 @@
+unsafe {
+char* raw_identity(char* value)
+{
+    return value;
+}
+}
+
+int main(void)
+{
+    string text = s"abc";
+    Ref<char> ref = Ref<char>.from(raw_identity(text));
+    return 0;
+}

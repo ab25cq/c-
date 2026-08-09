@@ -1,0 +1,962 @@
+#define UART0_DR_ADDR 0x20201000u
+#define UART0_FR_ADDR 0x20201018u
+#define UART_FR_TXFF 0x20u
+#define TIMER_CS_ADDR 0x20003000u
+#define TIMER_CLO_ADDR 0x20003004u
+#define TIMER_C1_ADDR 0x20003010u
+#define IRQ_ENABLE1_ADDR 0x2000B210u
+#define TIMER_MATCH1 0x02u
+#define TIMER_INTERVAL 50000u
+
+#define MINUX_MAX_PROC 4
+#define MINUX_MAX_FILES 4
+#define MINUX_NAME_LEN 12
+#define MINUX_FILE_SIZE 32
+#define MINUX_USER_STACK_WORDS 32
+#define PROC_EMPTY 0
+#define PROC_RUNNABLE 1
+#define PROC_ZOMBIE 2
+
+#define SYS_WRITE 4
+#define SYS_EXIT 2
+#define SYS_PUTCHAR 1
+#define FD_STDOUT 1
+
+#define MODE_KERNEL 0
+#define MODE_USER 1
+
+#define USER_TRAP_NONE 0
+#define USER_TRAP_SYSCALL 1
+
+#define ARM_MODE_MASK 0x1fu
+#define ARM_MODE_USER 0x10u
+
+unsafe {
+struct Kernel* G_KERNEL;
+void irq_enable(void);
+void irq_disable(void);
+void minux_user_svc_probe(void);
+void minux_user_syscall(int number, int arg0, int arg1, int arg2, unsigned int user_sp);
+}
+
+struct Kernel {
+    Register<unsigned int> uart_dr;
+    Register<unsigned int> uart_fr;
+    Register<unsigned int> timer_cs;
+    Register<unsigned int> timer_clo;
+    Register<unsigned int> timer_c1;
+    Register<unsigned int> irq_enable1;
+    int proc_pid[MINUX_MAX_PROC];
+    int proc_state[MINUX_MAX_PROC];
+    int proc_entry[MINUX_MAX_PROC];
+    int proc_pc[MINUX_MAX_PROC];
+    int proc_user_pc[MINUX_MAX_PROC];
+    int proc_user_sp[MINUX_MAX_PROC];
+    int proc_user_lr[MINUX_MAX_PROC];
+    int proc_user_cpsr[MINUX_MAX_PROC];
+    int proc_r0[MINUX_MAX_PROC];
+    int proc_r1[MINUX_MAX_PROC];
+    int proc_r2[MINUX_MAX_PROC];
+    int proc_r3[MINUX_MAX_PROC];
+    int user_stacks[MINUX_MAX_PROC * MINUX_USER_STACK_WORDS];
+    int fs_used[MINUX_MAX_FILES];
+    int fs_size[MINUX_MAX_FILES];
+    int fs_name[MINUX_MAX_FILES * MINUX_NAME_LEN];
+    int fs_data[MINUX_MAX_FILES * MINUX_FILE_SIZE];
+    int current_proc;
+    int next_pid;
+    int ticks;
+    int need_resched;
+    int cpu_mode;
+    int user_trap;
+    int syscall_number;
+    int syscall_arg0;
+    int syscall_arg1;
+    int syscall_arg2;
+    int svc_return_pc;
+    int svc_return_cpsr;
+    int hw_user_svc_seen;
+    int hw_user_svc_mode;
+};
+
+void console_init(Kernel kernel)
+{
+    unsafe {
+        kernel.uart_dr = Register<unsigned int>.from_addr(UART0_DR_ADDR);
+        kernel.uart_fr = Register<unsigned int>.from_addr(UART0_FR_ADDR);
+        kernel.timer_cs = Register<unsigned int>.from_addr(TIMER_CS_ADDR);
+        kernel.timer_clo = Register<unsigned int>.from_addr(TIMER_CLO_ADDR);
+        kernel.timer_c1 = Register<unsigned int>.from_addr(TIMER_C1_ADDR);
+        kernel.irq_enable1 = Register<unsigned int>.from_addr(IRQ_ENABLE1_ADDR);
+    }
+}
+
+void console_putc(Kernel kernel, int ch)
+{
+    if (ch == '\n') {
+        console_putc(kernel, '\r');
+    }
+    while (kernel.uart_fr.get_bits(UART_FR_TXFF) != 0u) {
+    }
+    kernel.uart_dr.write(ch);
+}
+
+void console_write(Kernel kernel, Span<int> text)
+{
+    int i = 0;
+    int ch;
+
+    while (i < text.len()) {
+        ch = text.get(i);
+        if (ch == 0) {
+            return;
+        }
+        console_putc(kernel, ch);
+        i++;
+    }
+}
+
+void text_hello(Span<int> out)
+{
+    out.set(0, 'h');
+    out.set(1, 'e');
+    out.set(2, 'l');
+    out.set(3, 'l');
+    out.set(4, 'o');
+    out.set(5, ' ');
+    out.set(6, 'w');
+    out.set(7, 'o');
+    out.set(8, 'r');
+    out.set(9, 'l');
+    out.set(10, 'd');
+    out.set(11, '\n');
+    out.set(12, 0);
+}
+
+void text_init(Span<int> out)
+{
+    out.set(0, 'i');
+    out.set(1, 'n');
+    out.set(2, 'i');
+    out.set(3, 't');
+    out.set(4, '[');
+    out.set(5, '1');
+    out.set(6, ']');
+    out.set(7, '\n');
+    out.set(8, 0);
+}
+
+void text_shell(Span<int> out)
+{
+    out.set(0, 's');
+    out.set(1, 'h');
+    out.set(2, '[');
+    out.set(3, '2');
+    out.set(4, ']');
+    out.set(5, '\n');
+    out.set(6, 0);
+}
+
+void text_fs_header(Span<int> out)
+{
+    out.set(0, 'f');
+    out.set(1, 's');
+    out.set(2, ':');
+    out.set(3, '\n');
+    out.set(4, 0);
+}
+
+void text_path_motd(Span<int> out)
+{
+    out.set(0, '/');
+    out.set(1, 'e');
+    out.set(2, 't');
+    out.set(3, 'c');
+    out.set(4, '/');
+    out.set(5, 'm');
+    out.set(6, 'o');
+    out.set(7, 't');
+    out.set(8, 'd');
+    out.set(9, 0);
+}
+
+void text_path_bin_app(Span<int> out)
+{
+    out.set(0, '/');
+    out.set(1, 'b');
+    out.set(2, 'i');
+    out.set(3, 'n');
+    out.set(4, '/');
+    out.set(5, 'a');
+    out.set(6, 'p');
+    out.set(7, 'p');
+    out.set(8, 0);
+}
+
+void text_motd(Span<int> out)
+{
+    out.set(0, 'm');
+    out.set(1, 'i');
+    out.set(2, 'n');
+    out.set(3, 'u');
+    out.set(4, 'x');
+    out.set(5, 'f');
+    out.set(6, 's');
+    out.set(7, '\n');
+    out.set(8, 0);
+}
+
+void text_program_app(Span<int> out)
+{
+    out.set(0, '3');
+    out.set(1, 0);
+}
+
+int span_cstr_len(Span<int> text)
+{
+    int i = 0;
+
+    while (i < text.len()) {
+        if (text.get(i) == 0) {
+            return i;
+        }
+        i++;
+    }
+    return text.len();
+}
+
+void fs_init(Kernel kernel)
+{
+    Span<int> used = Span<int>.from(kernel->fs_used, MINUX_MAX_FILES);
+    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES);
+    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN);
+    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE);
+    int i = 0;
+
+    while (i < used.len()) {
+        used.set(i, 0);
+        sizes.set(i, 0);
+        i++;
+    }
+    i = 0;
+    while (i < names.len()) {
+        names.set(i, 0);
+        i++;
+    }
+    i = 0;
+    while (i < data.len()) {
+        data.set(i, 0);
+        i++;
+    }
+}
+
+int fs_name_pos(int file_index, int offset)
+{
+    return file_index * MINUX_NAME_LEN + offset;
+}
+
+int fs_data_pos(int file_index, int offset)
+{
+    return file_index * MINUX_FILE_SIZE + offset;
+}
+
+int fs_name_equals(Kernel kernel, int file_index, Span<int> path)
+{
+    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN);
+    int i = 0;
+    int left;
+    int right;
+
+    while (i < MINUX_NAME_LEN && i < path.len()) {
+        left = names.get(fs_name_pos(file_index, i));
+        right = path.get(i);
+        if (left != right) {
+            return 0;
+        }
+        if (right == 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+int fs_find(Kernel kernel, Span<int> path)
+{
+    Span<int> used = Span<int>.from(kernel->fs_used, MINUX_MAX_FILES);
+    int i = 0;
+
+    while (i < MINUX_MAX_FILES) {
+        if (used.get(i) && fs_name_equals(kernel, i, path)) {
+            return i;
+        }
+        i++;
+    }
+    return -1;
+}
+
+int fs_alloc(Kernel kernel)
+{
+    Span<int> used = Span<int>.from(kernel->fs_used, MINUX_MAX_FILES);
+    int i = 0;
+
+    while (i < MINUX_MAX_FILES) {
+        if (!used.get(i)) {
+            used.set(i, 1);
+            return i;
+        }
+        i++;
+    }
+    return -1;
+}
+
+int fs_create(Kernel kernel, Span<int> path)
+{
+    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN);
+    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES);
+    int index = fs_find(kernel, path);
+    int i;
+    int ch;
+
+    if (index >= 0) {
+        return index;
+    }
+    index = fs_alloc(kernel);
+    if (index < 0) {
+        return -1;
+    }
+    i = 0;
+    while (i < MINUX_NAME_LEN && i < path.len()) {
+        ch = path.get(i);
+        names.set(fs_name_pos(index, i), ch);
+        if (ch == 0) {
+            break;
+        }
+        i++;
+    }
+    sizes.set(index, 0);
+    return index;
+}
+
+int fs_write(Kernel kernel, int file_index, Span<int> text)
+{
+    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES);
+    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE);
+    int len = span_cstr_len(text);
+    int i = 0;
+    int ch;
+
+    if (file_index < 0 || file_index >= MINUX_MAX_FILES) {
+        return -1;
+    }
+    if (len >= MINUX_FILE_SIZE) {
+        len = MINUX_FILE_SIZE - 1;
+    }
+    while (i < len) {
+        ch = text.get(i);
+        data.set(fs_data_pos(file_index, i), ch);
+        i++;
+    }
+    data.set(fs_data_pos(file_index, len), 0);
+    sizes.set(file_index, len);
+    return len;
+}
+
+int fs_read(Kernel kernel, int file_index, Span<int> out)
+{
+    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES);
+    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE);
+    int len;
+    int i = 0;
+    int ch;
+
+    if (file_index < 0 || file_index >= MINUX_MAX_FILES) {
+        return -1;
+    }
+    len = sizes.get(file_index);
+    if (len >= out.len()) {
+        len = out.len() - 1;
+    }
+    while (i < len) {
+        ch = data.get(fs_data_pos(file_index, i));
+        out.set(i, ch);
+        i++;
+    }
+    out.set(len, 0);
+    return len;
+}
+
+void fs_list(Kernel kernel)
+{
+    Span<int> used = Span<int>.from(kernel->fs_used, MINUX_MAX_FILES);
+    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN);
+    int i = 0;
+    int j;
+    int ch;
+
+    while (i < MINUX_MAX_FILES) {
+        if (used.get(i)) {
+            j = 0;
+            while (j < MINUX_NAME_LEN) {
+                ch = names.get(fs_name_pos(i, j));
+                if (ch == 0) {
+                    break;
+                }
+                console_putc(kernel, ch);
+                j++;
+            }
+            console_putc(kernel, '\n');
+        }
+        i++;
+    }
+}
+
+void fs_demo(Kernel kernel)
+{
+    int header_buf[8];
+    int path_buf[16];
+    int write_buf[16];
+    int read_buf[16];
+    Span<int> header = Span<int>.from(header_buf, 8);
+    Span<int> path = Span<int>.from(path_buf, 16);
+    Span<int> write_text = Span<int>.from(write_buf, 16);
+    Span<int> read_text = Span<int>.from(read_buf, 16);
+    int fd;
+
+    text_fs_header(header);
+    console_write(kernel, header);
+    text_path_motd(path);
+    text_motd(write_text);
+    fd = fs_create(kernel, path);
+    fs_write(kernel, fd, write_text);
+    text_path_bin_app(path);
+    text_program_app(write_text);
+    fd = fs_create(kernel, path);
+    fs_write(kernel, fd, write_text);
+    fs_list(kernel);
+    text_path_motd(path);
+    fd = fs_find(kernel, path);
+    fs_read(kernel, fd, read_text);
+    console_write(kernel, read_text);
+}
+
+int minux_svc_handler(unsigned int saved_cpsr, unsigned int saved_r0, unsigned int saved_r1, unsigned int saved_r2, unsigned int saved_lr)
+{
+    unsigned int mode = saved_cpsr & ARM_MODE_MASK;
+
+    unsafe {
+        if (G_KERNEL != 0) {
+            G_KERNEL->hw_user_svc_seen = 1;
+            G_KERNEL->hw_user_svc_mode = mode;
+            G_KERNEL->cpu_mode = MODE_KERNEL;
+            G_KERNEL->user_trap = USER_TRAP_SYSCALL;
+            G_KERNEL->syscall_number = saved_r0;
+            G_KERNEL->syscall_arg0 = saved_r1;
+            G_KERNEL->syscall_arg1 = saved_r2;
+            G_KERNEL->syscall_arg2 = 0;
+            G_KERNEL->svc_return_pc = saved_lr;
+            G_KERNEL->svc_return_cpsr = saved_cpsr;
+        }
+    }
+    if (mode == ARM_MODE_USER) {
+        return 1;
+    }
+    return 0;
+}
+
+void kernel_probe_user_mode(Kernel kernel)
+{
+    kernel.hw_user_svc_seen = 0;
+    kernel.hw_user_svc_mode = 0;
+    unsafe {
+        minux_user_svc_probe();
+    }
+    if (!kernel.hw_user_svc_seen) {
+        cminus_panic("hardware SVC probe did not trap", __FILE__, __LINE__);
+    }
+    if (kernel.hw_user_svc_mode != ARM_MODE_USER) {
+        cminus_panic("hardware SVC did not come from user mode", __FILE__, __LINE__);
+    }
+}
+
+void kernel_enter_kernel(Kernel kernel)
+{
+    kernel.cpu_mode = MODE_KERNEL;
+}
+
+void kernel_enter_user(Kernel kernel)
+{
+    kernel.cpu_mode = MODE_USER;
+    kernel.user_trap = USER_TRAP_NONE;
+    kernel.syscall_number = 0;
+    kernel.syscall_arg0 = 0;
+    kernel.syscall_arg1 = 0;
+    kernel.syscall_arg2 = 0;
+}
+
+void kernel_require_kernel(Kernel kernel)
+{
+    if (kernel.cpu_mode != MODE_KERNEL) {
+        cminus_panic("kernel service called from user mode", __FILE__, __LINE__);
+    }
+}
+
+void user_hardware_syscall(Kernel kernel, int number, int arg0, int arg1, int arg2)
+{
+    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC);
+    if (kernel.cpu_mode != MODE_USER) {
+        cminus_panic("hardware syscall outside user mode", __FILE__, __LINE__);
+    }
+    unsafe {
+        minux_user_syscall(number, arg0, arg1, arg2, user_sps.get(kernel.current_proc));
+    }
+}
+
+void kernel_save_user_context(Kernel kernel, int index)
+{
+    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC);
+    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC);
+    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC);
+    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC);
+    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC);
+    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC);
+    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC);
+
+    user_pcs.set(index, kernel.svc_return_pc);
+    user_lrs.set(index, kernel.svc_return_pc);
+    user_cpsrs.set(index, kernel.svc_return_cpsr);
+    r0s.set(index, kernel.syscall_number);
+    r1s.set(index, kernel.syscall_arg0);
+    r2s.set(index, kernel.syscall_arg1);
+    r3s.set(index, kernel.syscall_arg2);
+}
+
+void kernel_check_saved_user_frame(Kernel kernel, int index)
+{
+    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC);
+    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC);
+
+    if (user_pcs.get(index) == 0) {
+        cminus_panic("missing saved user pc", __FILE__, __LINE__);
+    }
+    if ((user_cpsrs.get(index) & ARM_MODE_MASK) != ARM_MODE_USER) {
+        cminus_panic("saved user cpsr is not user mode", __FILE__, __LINE__);
+    }
+}
+
+int proc_char(int entry, int pc)
+{
+    if (entry == 1) {
+        if (pc == 0) { return 'i'; }
+        if (pc == 1) { return 'n'; }
+        if (pc == 2) { return 'i'; }
+        if (pc == 3) { return 't'; }
+        if (pc == 4) { return '['; }
+        if (pc == 5) { return '1'; }
+        if (pc == 6) { return ']'; }
+        if (pc == 7) { return '\n'; }
+        return 0;
+    }
+    if (entry == 2) {
+        if (pc == 0) { return '$'; }
+        if (pc == 1) { return ' '; }
+        if (pc == 2) { return 'p'; }
+        if (pc == 3) { return 'w'; }
+        if (pc == 4) { return 'd'; }
+        if (pc == 5) { return '\n'; }
+        if (pc == 6) { return '$'; }
+        if (pc == 7) { return ' '; }
+        if (pc == 8) { return 'l'; }
+        if (pc == 9) { return 's'; }
+        if (pc == 10) { return '\n'; }
+        if (pc == 11) { return '$'; }
+        if (pc == 12) { return ' '; }
+        if (pc == 13) { return 'r'; }
+        if (pc == 14) { return 'u'; }
+        if (pc == 15) { return 'n'; }
+        if (pc == 16) { return ' '; }
+        if (pc == 17) { return '/'; }
+        if (pc == 18) { return 'b'; }
+        if (pc == 19) { return 'i'; }
+        if (pc == 20) { return 'n'; }
+        if (pc == 21) { return '/'; }
+        if (pc == 22) { return 'a'; }
+        if (pc == 23) { return 'p'; }
+        if (pc == 24) { return 'p'; }
+        if (pc == 25) { return '\n'; }
+        return 0;
+    }
+    if (entry == 3) {
+        if (pc == 0) { return 'a'; }
+        if (pc == 1) { return 'p'; }
+        if (pc == 2) { return 'p'; }
+        if (pc == 3) { return '['; }
+        if (pc == 4) { return '3'; }
+        if (pc == 5) { return ']'; }
+        if (pc == 6) { return '\n'; }
+        return 0;
+    }
+    return 0;
+}
+
+void timer_arm(Kernel kernel)
+{
+    unsigned int now = kernel.timer_clo.read();
+
+    kernel.timer_cs.write(TIMER_MATCH1);
+    kernel.timer_c1.write(now + TIMER_INTERVAL);
+}
+
+void timer_init(Kernel kernel)
+{
+    kernel.irq_enable1.set_bits(TIMER_MATCH1);
+    timer_arm(kernel);
+    unsafe {
+        irq_enable();
+    }
+}
+
+void kernel_init(Kernel kernel)
+{
+    Span<int> pids = Span<int>.from(kernel.proc_pid, MINUX_MAX_PROC);
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
+    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC);
+    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC);
+    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC);
+    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC);
+    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC);
+    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC);
+    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC);
+    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC);
+    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC);
+    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC);
+    Span<int> stacks = Span<int>.from(kernel.user_stacks, MINUX_MAX_PROC * MINUX_USER_STACK_WORDS);
+    int i = 0;
+
+    console_init(kernel);
+    while (i < MINUX_MAX_PROC) {
+        pids.set(i, 0);
+        states.set(i, PROC_EMPTY);
+        entries.set(i, 0);
+        pcs.set(i, 0);
+        user_pcs.set(i, 0);
+        user_sps.set(i, 0);
+        user_lrs.set(i, 0);
+        user_cpsrs.set(i, ARM_MODE_USER);
+        r0s.set(i, 0);
+        r1s.set(i, 0);
+        r2s.set(i, 0);
+        r3s.set(i, 0);
+        i++;
+    }
+    i = 0;
+    while (i < stacks.len()) {
+        stacks.set(i, 0);
+        i++;
+    }
+    kernel.current_proc = 0;
+    kernel.next_pid = 1;
+    kernel.ticks = 0;
+    kernel.need_resched = 0;
+    kernel.cpu_mode = MODE_KERNEL;
+    kernel.user_trap = USER_TRAP_NONE;
+    kernel.syscall_number = 0;
+    kernel.syscall_arg0 = 0;
+    kernel.syscall_arg1 = 0;
+    kernel.syscall_arg2 = 0;
+    kernel.svc_return_pc = 0;
+    kernel.svc_return_cpsr = ARM_MODE_USER;
+    kernel.hw_user_svc_seen = 0;
+    kernel.hw_user_svc_mode = 0;
+    fs_init(kernel);
+}
+
+void kernel_spawn(Kernel kernel, int entry)
+{
+    Span<int> pids = Span<int>.from(kernel.proc_pid, MINUX_MAX_PROC);
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
+    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC);
+    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC);
+    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC);
+    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC);
+    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC);
+    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC);
+    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC);
+    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC);
+    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC);
+    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC);
+    int i = 0;
+    int pid;
+
+    while (i < MINUX_MAX_PROC) {
+        if (states.get(i) == PROC_EMPTY) {
+            pid = kernel.next_pid;
+            kernel.next_pid++;
+            pids.set(i, pid);
+            states.set(i, PROC_RUNNABLE);
+            entries.set(i, entry);
+            pcs.set(i, 0);
+            user_pcs.set(i, 0);
+            unsafe {
+                user_sps.set(i, (int)&kernel->user_stacks[(i + 1) * MINUX_USER_STACK_WORDS]);
+            }
+            user_lrs.set(i, 0);
+            user_cpsrs.set(i, ARM_MODE_USER);
+            r0s.set(i, 0);
+            r1s.set(i, 0);
+            r2s.set(i, 0);
+            r3s.set(i, 0);
+            return;
+        }
+        i++;
+    }
+    return;
+}
+
+void fs_load_program(Kernel kernel, Span<int> path)
+{
+    int file_index = fs_find(kernel, path);
+    int image_buf[8];
+    Span<int> image = Span<int>.from(image_buf, 8);
+    int entry;
+
+    if (file_index < 0) {
+        return;
+    }
+    fs_read(kernel, file_index, image);
+    entry = image.get(0) - '0';
+    if (entry > 0) {
+        kernel_spawn(kernel, entry);
+    }
+}
+
+void shell_exec_pwd(Kernel kernel)
+{
+    kernel_require_kernel(kernel);
+    console_putc(kernel, '/');
+    console_putc(kernel, '\n');
+}
+
+void shell_exec_ls(Kernel kernel)
+{
+    kernel_require_kernel(kernel);
+    fs_list(kernel);
+}
+
+void shell_exec_run(Kernel kernel)
+{
+    int path_buf[16];
+    Span<int> path = Span<int>.from(path_buf, 16);
+
+    kernel_require_kernel(kernel);
+    text_path_bin_app(path);
+    fs_load_program(kernel, path);
+}
+
+void shell_after_line(Kernel kernel, int pc)
+{
+    if (pc == 5) {
+        shell_exec_pwd(kernel);
+    } else if (pc == 10) {
+        shell_exec_ls(kernel);
+    } else if (pc == 25) {
+        shell_exec_run(kernel);
+    }
+}
+
+void kernel_sys_write(Kernel kernel, int fd, Span<int> text)
+{
+    kernel_require_kernel(kernel);
+    if (fd != FD_STDOUT) {
+        return;
+    }
+    console_write(kernel, text);
+}
+
+void kernel_sys_putchar(Kernel kernel, int ch)
+{
+    kernel_require_kernel(kernel);
+    console_putc(kernel, ch);
+}
+
+void kernel_sys_exit(Kernel kernel, int proc_index)
+{
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
+
+    kernel_require_kernel(kernel);
+    states.set(proc_index, PROC_ZOMBIE);
+}
+
+void kernel_handle_user_trap(Kernel kernel, int index)
+{
+    if (kernel.user_trap == USER_TRAP_NONE) {
+        return;
+    }
+    kernel_enter_kernel(kernel);
+    kernel_save_user_context(kernel, index);
+    if (kernel.user_trap == USER_TRAP_SYSCALL) {
+        if (kernel.syscall_number == SYS_PUTCHAR) {
+            kernel_sys_putchar(kernel, kernel.syscall_arg0);
+        } else if (kernel.syscall_number == SYS_EXIT) {
+            kernel_sys_exit(kernel, index);
+        } else {
+            cminus_panic("unknown user syscall", __FILE__, __LINE__);
+        }
+    } else {
+        cminus_panic("unknown user trap", __FILE__, __LINE__);
+    }
+}
+
+void kernel_user_step(Kernel kernel, int index)
+{
+    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC);
+    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC);
+    int entry = entries.get(index);
+    int pc = pcs.get(index);
+    int ch = proc_char(entry, pc);
+
+    kernel_enter_user(kernel);
+    if (ch == 0) {
+        if (entry == 2) {
+            kernel_enter_kernel(kernel);
+            kernel_spawn(kernel, 1);
+            kernel_enter_user(kernel);
+        }
+        user_hardware_syscall(kernel, SYS_EXIT, 0, 0, 0);
+        kernel_handle_user_trap(kernel, index);
+        return;
+    }
+    user_hardware_syscall(kernel, SYS_PUTCHAR, ch, 0, 0);
+    kernel_handle_user_trap(kernel, index);
+    kernel_check_saved_user_frame(kernel, index);
+    pcs.set(index, pc + 1);
+    if (entry == 2 && ch == '\n') {
+        kernel_enter_kernel(kernel);
+        shell_after_line(kernel, pc);
+    }
+}
+
+void kernel_run_shell_proc(Kernel kernel, int index)
+{
+    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC);
+    int pc = pcs.get(index);
+    int ch = proc_char(2, pc);
+
+    while (ch != 0) {
+        kernel_user_step(kernel, index);
+        pc++;
+        if (ch == '\n') {
+            return;
+        }
+        ch = proc_char(2, pc);
+    }
+    kernel_user_step(kernel, index);
+}
+
+void kernel_run_proc(Kernel kernel, int index)
+{
+    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC);
+    int entry = entries.get(index);
+
+    kernel.current_proc = index;
+    if (entry == 2) {
+        kernel_run_shell_proc(kernel, index);
+        return;
+    }
+    kernel_user_step(kernel, index);
+}
+
+int kernel_has_runnable(Kernel kernel)
+{
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
+    int i = 0;
+
+    while (i < MINUX_MAX_PROC) {
+        if (states.get(i) == PROC_RUNNABLE) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+void kernel_schedule(Kernel kernel)
+{
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
+    int i;
+    int next;
+
+    i = 0;
+    while (i < MINUX_MAX_PROC) {
+        next = kernel.current_proc + 1;
+        if (next >= MINUX_MAX_PROC) {
+            next = 0;
+        }
+        kernel.current_proc = next;
+        if (states.get(next) == PROC_RUNNABLE) {
+            kernel_run_proc(kernel, next);
+            return;
+        }
+        i++;
+    }
+}
+
+void kernel_idle(Kernel kernel)
+{
+    while (kernel_has_runnable(kernel)) {
+        if (kernel.need_resched) {
+            kernel.need_resched = 0;
+            kernel_schedule(kernel);
+        }
+    }
+}
+
+void kernel_on_timer(Kernel kernel)
+{
+    if (kernel.timer_cs.has_bits(TIMER_MATCH1)) {
+        kernel.timer_cs.write(TIMER_MATCH1);
+        kernel.ticks++;
+        kernel.need_resched = 1;
+        timer_arm(kernel);
+    }
+}
+
+void minux_irq_handler(void)
+{
+    unsafe {
+        if (G_KERNEL != 0) {
+            kernel_on_timer(G_KERNEL);
+        }
+    }
+}
+
+void kernel_banner(Kernel kernel)
+{
+    int text[16];
+    Span<int> out = Span<int>.from(text, 16);
+
+    text_hello(out);
+    kernel_sys_write(kernel, FD_STDOUT, out);
+}
+
+int main(void)
+{
+    stack Kernel kernel;
+
+    kernel_init(&kernel);
+    unsafe {
+        G_KERNEL = &kernel;
+    }
+    kernel_probe_user_mode(&kernel);
+    kernel_banner(&kernel);
+    fs_demo(&kernel);
+    kernel_spawn(&kernel, 2);
+    timer_init(&kernel);
+    kernel_idle(&kernel);
+    unsafe {
+        irq_disable();
+    }
+    while (1) {
+    }
+    return 0;
+}

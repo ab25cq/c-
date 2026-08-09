@@ -7,6 +7,6 @@ unsafe {
 int main(void)
 {
     string text = s"aaa \{1+1}";
-    int ok = strcmp(text, "aaa 2");
+    int ok = text.cmp("aaa 2");
     return ok;
 }

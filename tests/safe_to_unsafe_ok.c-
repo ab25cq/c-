@@ -1,0 +1,53 @@
+unsafe {
+#include <stdio.h>
+
+int read_value(int* value)
+{
+    return *value;
+}
+
+void write_value(int* value, int next)
+{
+    *value = next;
+}
+
+int sum_span(int* values, int len)
+{
+    int total = 0;
+    int i = 0;
+
+    while (i < len) {
+        total += values[i];
+        i++;
+    }
+    return total;
+}
+}
+
+struct Data {
+    int value;
+};
+
+int main(void)
+{
+    int local = 7;
+    int data[3];
+    int read_local = 0;
+    int read_box = 0;
+    int total = 0;
+    Data box = new Data;
+
+    data[0] = 1;
+    data[1] = 2;
+    data[2] = 3;
+    box->value = 11;
+
+    unsafe {
+        write_value(&local, 9);
+        read_local = read_value(&local);
+        read_box = read_value(&box->value);
+        total = sum_span(data, 3);
+    }
+    printf("%d %d %d\n", read_local, read_box, total);
+    return 0;
+}

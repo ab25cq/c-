@@ -1,0 +1,23 @@
+struct TrapFrame {
+    unsigned int r0;
+    unsigned int r1;
+    unsigned int pc;
+};
+
+static_assert(sizeof(TrapFrame) == 12, "trap frame size");
+static_assert(offset_of(TrapFrame, pc) == 8, "pc offset");
+
+no_return void halt_forever(void)
+{
+    unsafe {
+        __asm__ volatile("");
+    }
+    for (;;) {
+    }
+}
+
+int main(void)
+{
+    static_assert(offset_of(TrapFrame, r1) == 4, "r1 offset");
+    return offset_of(TrapFrame, pc);
+}

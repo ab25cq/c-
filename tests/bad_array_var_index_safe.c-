@@ -1,0 +1,7 @@
+int main(void)
+{
+    int data[3];
+    int index = 1;
+
+    return data[index];
+}

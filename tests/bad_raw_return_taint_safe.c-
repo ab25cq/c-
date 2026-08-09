@@ -1,0 +1,14 @@
+unsafe {
+#include <stdlib.h>
+
+char* raw_make(void)
+{
+    return malloc(8);
+}
+}
+
+int main(void)
+{
+    Ref<char> value = Ref<char>.from(raw_make());
+    return 0;
+}

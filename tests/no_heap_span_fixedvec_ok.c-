@@ -1,0 +1,19 @@
+struct Packet {
+    unsigned char bytes[8];
+};
+
+int main(void)
+{
+    stack Packet pkt;
+    Span<unsigned char> all;
+    FixedVec<unsigned char> used;
+
+    all = Span<unsigned char>.from(pkt.bytes);
+    used = FixedVec<unsigned char>.from(pkt.bytes);
+    used.push(10);
+    used.push(20);
+    if (all.len() != 8 || used.len() != 2 || used[1] != 20) {
+        return 1;
+    }
+    return 0;
+}

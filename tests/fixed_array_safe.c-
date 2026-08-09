@@ -1,0 +1,37 @@
+struct Buffer {
+    int data[4];
+};
+
+int main(void)
+{
+    Buffer buf = new Buffer;
+    Span<int> view;
+    Span<int> used;
+    FixedVec<int> values;
+
+    buf.data[0] = 10;
+    buf.data[1] = 20;
+    buf.data[2] = 30;
+    buf.data[3] = 40;
+
+    view = Span<int>.from(buf.data);
+    if (view.len() != 4 || view[2] != 30) {
+        return 1;
+    }
+
+    values = FixedVec<int>.from(buf.data);
+    values.push(7);
+    values.push(8);
+    values.push(9);
+    if (values.len() != 3 || values.capacity() != 4) {
+        return 2;
+    }
+    if (values[0] != 7 || values[2] != 9) {
+        return 3;
+    }
+    used = values.as_span();
+    if (used[1] != 8) {
+        return 4;
+    }
+    return 0;
+}

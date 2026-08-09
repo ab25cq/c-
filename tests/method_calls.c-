@@ -22,8 +22,8 @@ int main(void)
     if (d->value != 42 || p->value != 42) {
         return 1;
     }
-    if ("aaa".strcmp("aaa") != 0) {
+    if ("aaa".cmp("aaa") != 0) {
         return 2;
     }
-    return "aaa".strcmp("aaa");
+    return "aaa".cmp("aaa");
 }

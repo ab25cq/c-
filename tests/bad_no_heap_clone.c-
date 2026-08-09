@@ -1,0 +1,10 @@
+struct Data {
+    int value;
+};
+
+int main(void)
+{
+    stack Data data;
+    Data copy = clone data;
+    return copy.value;
+}

@@ -1,0 +1,11 @@
+int main(void)
+{
+    owned string text = s"abc";
+    borrow string view = text;
+
+    text = s"def";
+    if (view != NULL) {
+        return 1;
+    }
+    return 0;
+}

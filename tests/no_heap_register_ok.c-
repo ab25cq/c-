@@ -1,0 +1,11 @@
+int main(void)
+{
+    unsigned int cell = 0;
+    Register<unsigned int> reg;
+
+    unsafe {
+        reg = Register<unsigned int>.from_addr((unsigned long)&cell);
+    }
+    reg.write(7u);
+    return reg.read() == 7u ? 0 : 1;
+}

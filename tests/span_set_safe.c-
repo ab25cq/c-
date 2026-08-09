@@ -1,0 +1,10 @@
+int main(void)
+{
+    int data[3];
+    Span<int> values = Span<int>.from(data, 3);
+
+    values.set(0, 11);
+    values.set(1, 22);
+    values.set(2, 33);
+    return values.get(0) + values.get(1) + values.get(2) == 66 ? 0 : 1;
+}

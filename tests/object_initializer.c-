@@ -11,7 +11,7 @@ int main(void)
 {
     Person person = new Person { name: s"aaa", age: 48 };
 
-    if (strcmp(person->name, "aaa") != 0) {
+    if (!person.name.eq("aaa")) {
         return 1;
     }
     if (person->age != 48) {

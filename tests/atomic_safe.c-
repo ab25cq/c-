@@ -1,0 +1,24 @@
+int main(void)
+{
+    Atomic<unsigned int> counter = Atomic<unsigned int>.init(1u);
+    unsigned int old;
+    int swapped;
+
+    old = counter.fetch_add(2u);
+    if (old != 1u || counter.load() != 3u) {
+        return 1;
+    }
+    old = counter.fetch_or(0x10u);
+    if (old != 3u || counter.load() != 0x13u) {
+        return 2;
+    }
+    old = counter.exchange(7u);
+    if (old != 0x13u || counter.load() != 7u) {
+        return 3;
+    }
+    swapped = counter.compare_exchange(7u, 9u);
+    if (!swapped || counter.load() != 9u) {
+        return 4;
+    }
+    return 0;
+}

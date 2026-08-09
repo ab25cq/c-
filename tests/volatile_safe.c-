@@ -1,0 +1,11 @@
+int main(void)
+{
+    unsigned int raw = 0u;
+    Volatile<unsigned int> cell;
+
+    unsafe {
+        cell = Volatile<unsigned int>.from_addr((unsigned long)&raw);
+    }
+    cell.write(42u);
+    return cell.read() == 42u && raw == 42u ? 0 : 1;
+}

@@ -1,0 +1,22 @@
+struct Holder {
+    int data[3];
+};
+
+int main(void)
+{
+    Holder holder = new Holder;
+    Span<int> values = Span<int>.from(holder.data, 3);
+    Span<int> bytes = Span<int>.from_bytes(holder.data, sizeof(holder.data));
+    int n;
+
+    holder.data[0] = 10;
+    holder.data[1] = 20;
+    holder.data[2] = 30;
+
+    if (values[2] != 30) {
+        return 1;
+    }
+    n = bytes.len();
+    printf("%d\n", n);
+    return 0;
+}

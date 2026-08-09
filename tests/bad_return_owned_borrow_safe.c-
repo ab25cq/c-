@@ -1,0 +1,14 @@
+borrow string leak(void)
+{
+    owned string text = s"abc";
+    borrow string view = text;
+
+    return view;
+}
+
+int main(void)
+{
+    borrow string value = leak();
+
+    return value[0];
+}

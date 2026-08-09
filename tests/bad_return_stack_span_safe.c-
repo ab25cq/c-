@@ -1,0 +1,16 @@
+Span<int> make_span(void)
+{
+    int values[3];
+
+    values[0] = 1;
+    values[1] = 2;
+    values[2] = 3;
+    return Span<int>.from(values, 3);
+}
+
+int main(void)
+{
+    Span<int> values = make_span();
+
+    return values[0];
+}

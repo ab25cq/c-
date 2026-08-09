@@ -15,8 +15,8 @@ extern int yylineno;
 #define MAX_FINALIZERS 128
 #define MAX_FIELDS 64
 #define MAX_PARAMS 32
-#define MAX_GENERIC_TEMPLATES 128
-#define MAX_GENERIC_INSTANCES 128
+#define MAX_GENERIC_TEMPLATES 512
+#define MAX_GENERIC_INSTANCES 512
 #define MAX_ENUM_VARIANTS 64
 #define DEFAULT_EXPR_MAX 256
 
@@ -39,7 +39,8 @@ enum TypeKind {
     TY_DOUBLE,
     TY_STRUCT,
     TY_UNION,
-    TY_ENUM
+    TY_ENUM,
+    TY_BITFLAGS
 };
 
 struct Type {
@@ -47,6 +48,8 @@ struct Type {
     struct Type *base;
     int ptr;
     int owned;
+    int raw_ptr;
+    int array_len;
     int size;
     int align;
     char tag[NAME_MAX_LEN];
@@ -60,6 +63,14 @@ struct Owned {
 
 struct MovedLocals {
     char name[MAX_OWNED][NAME_MAX_LEN];
+    int count;
+};
+
+struct BorrowLinks {
+    char borrower[MAX_OWNED][NAME_MAX_LEN];
+    char owner[MAX_OWNED][NAME_MAX_LEN];
+    int dead[MAX_OWNED];
+    int stack_owner[MAX_OWNED];
     int count;
 };
 
@@ -82,6 +93,21 @@ struct StructFinalizers {
 
 struct StructClones {
     struct StructFinalizer fin[MAX_FINALIZERS];
+    int count;
+};
+
+struct BitflagDecl {
+    char name[NAME_MAX_LEN];
+    char base[NAME_MAX_LEN];
+};
+
+struct BitflagDecls {
+    struct BitflagDecl flag[MAX_TAGS];
+    int count;
+};
+
+struct LinkerSymbols {
+    char name[MAX_TAGS][NAME_MAX_LEN];
     int count;
 };
 
@@ -137,6 +163,7 @@ struct Node {
 struct Funcs {
     char name[MAX_FUNCS][NAME_MAX_LEN];
     struct Type ret[MAX_FUNCS];
+    int is_alloc_attr[MAX_FUNCS];
     int count;
 };
 
@@ -148,9 +175,11 @@ struct ParamInfo {
 
 struct FunctionParams {
     char name[NAME_MAX_LEN];
+    struct Type ret;
     struct ParamInfo param[MAX_PARAMS];
     int count;
     int has_defaults;
+    int is_unsafe;
 };
 
 struct FunctionParamTable {
@@ -224,6 +253,7 @@ static struct Text *g_defines;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
 static struct MovedLocals g_moved_locals;
+static struct BorrowLinks g_borrow_links;
 static struct Funcs g_malloc_funcs;
 static struct FunctionParamTable g_param_funcs;
 static struct Symbols g_globals;
@@ -234,6 +264,8 @@ static struct GenericTemplates g_generic_funcs;
 static struct PayloadEnums g_payload_enums;
 static struct StructFinalizers g_struct_finalizers;
 static struct StructClones g_struct_clones;
+static struct BitflagDecls g_bitflags;
+static struct LinkerSymbols g_linker_symbols;
 static struct Obj *g_objs;
 static struct VarScope *g_var_scope;
 static struct TagScope *g_tag_scope;
@@ -253,8 +285,15 @@ static int g_need_stdio_h;
 static int g_need_execinfo_h;
 static int g_unsafe_depth;
 static int g_bare_metal;
+static int g_no_heap;
 static int g_emit_uniq;
 static int g_function_returns_move;
+static int g_current_function_interrupt;
+static int g_current_function_naked;
+static int g_current_bitflags;
+static char g_current_bitflags_name[NAME_MAX_LEN];
+static char g_current_bitflags_base[NAME_MAX_LEN];
+static int g_current_struct_mmio;
 static char g_current_function_name[NAME_MAX_LEN];
 static struct Type g_current_function_ret;
 static int g_current_function_stack_guard;
@@ -282,9 +321,11 @@ static struct Node *ast_raw(enum NodeKind kind, const char *tok);
 static struct Node *ast_block(struct Node *body);
 static struct Type *type_copy(struct Type type);
 static struct Type type_make(enum TypeKind kind, int ptr, const char *tag);
+static struct Type type_unknown(void);
 static struct Obj *obj_new(const char *name, struct Type type, int is_local, int is_function);
 static void tag_add(enum TypeKind kind, const char *name);
 static void symbol_add(const char *name, struct Type type);
+struct DeclInfo;
 static void register_function_params(const char *s);
 static void register_function_param_symbols(const char *s);
 static void begin_function(void);
@@ -299,8 +340,12 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi);
 static struct Text *process_control_head(struct Text *head);
 static int find_assignment(const char *s);
 static int parse_function_signature(const char *s, char *name, struct Type *ret);
+static struct FunctionParams *function_params_find(const char *name);
+static int param_index(struct FunctionParams *fn, const char *name);
+static struct Symbol *symbol_find_or_current_param(const char *name);
 static int malloc_func_index(const char *name);
 static void owned_func_add_type(const char *name, struct Type ret);
+static void owned_func_add_type_ex(const char *name, struct Type ret, int is_alloc_attr);
 static void append_indent_from(const char *s, struct Text *out);
 static void append_leading_newlines(const char *s, struct Text *out);
 static int rhs_has_malloc_call(const char *rhs, char *func_name);
@@ -309,6 +354,7 @@ static struct Text *rewrite_owned_return_rvalues(struct Text *in, const char *or
 static int text_has_s_string(const char *text);
 static int rhs_has_function_call(const char *rhs);
 static enum TypeKind keyword_type(const char *word);
+static int type_same_unowned(struct Type a, struct Type b);
 static int rhs_has_new_expr(const char *rhs, struct Type *type);
 static int rhs_has_clone_expr(const char *rhs, struct Type *type);
 static int head_function_name(const char *head, char *name);
@@ -323,13 +369,41 @@ static const char *find_top_level_char(const char *start, const char *end, char 
 static void moved_local_add(const char *name);
 static void moved_local_remove(const char *name);
 static void check_moved_local_use(const char *stmt);
+static void borrow_link_add(const char *borrower, const char *owner);
+static void borrow_link_remove_borrower(const char *borrower);
+static void borrow_links_invalidate_owner(const char *owner);
+static void check_dead_borrow_use(const char *stmt);
+static void check_borrow_escape_return(const char *stmt);
+static int extract_direct_borrow_owner(const char *expr, char *owner);
+static int extract_safe_reference_borrow_owner(const char *expr, char *owner);
+static int word_occurs_after_first_token(const char *stmt, const char *word);
 static void check_null_assignment(const char *stmt);
 static struct Text *rewrite_optional_null_assignment(struct Text *in);
 static struct Text *rewrite_optional_null_return(struct Text *in);
 static void check_null_arguments(const char *stmt);
+static void check_span_stack_array_bounds(const char *stmt);
+static void check_safe_heap_calls(const char *stmt);
+static void check_safe_reference_raw_inputs(const char *stmt);
+static void check_safe_raw_field_access(const char *stmt);
+static void check_safe_c_function_calls(const char *stmt);
+static void check_safe_array_index_access(const char *stmt);
+static struct Text *rewrite_inferred_array_from_calls(struct Text *in);
+static void register_unsafe_metadata(const char *body);
 static int range_contains_text(const char *start, const char *end, const char *needle);
+static struct Text *rewrite_os_attributes(struct Text *in);
+static struct Text *rewrite_compile_time_os_ops(struct Text *in);
+static int parse_linker_symbol_decl(const char *s, char *name);
+static struct Text *rewrite_linker_symbol_decl(struct Text *in);
+static struct Text *rewrite_linker_address_ops(struct Text *in);
+static struct Text *rewrite_alignment_calls(struct Text *in);
+static struct Text *rewrite_mmio_field_decl(struct Text *in, struct DeclInfo *decl);
+static struct Text *strip_mmio_modifier(struct Text *in);
 static struct Text *strip_attributes(struct Text *in);
 static struct Text *remove_percent(struct Text *in);
+static int function_decl_has_interrupt(const char *s);
+static int function_decl_has_naked(const char *s);
+static void validate_interrupt_function_head(const char *s);
+static struct Text *rewrite_interrupt_function_head(struct Text *in);
 static void check_safe_pointer_deref(const char *stmt);
 static int is_unsafe_head(const char *s);
 static void begin_stmt_block(struct Text *head);
@@ -361,6 +435,10 @@ static int parse_generic_function_head(const char *s, char *param, char *name);
 static int parse_generic_angle_arg(const char *p, char *arg, const char **after);
 static void emit_generic_instances(FILE *out);
 static int parse_payload_enum_head(const char *s, char *param, char *name);
+static int parse_bitflags_head(const char *s, char *name, char *base);
+static struct Text *emit_bitflags_decl(const char *name, const char *base, const char *body);
+static int bitflags_const_type(const char *name, struct Type *type);
+static int bitflags_expr_type(const char *expr, struct Type *type);
 static void emit_payload_enum_instances(FILE *out);
 static struct Text *rewrite_payload_enum_constructors(struct Text *in);
 static struct Text *try_rewrite_auto_payload_enum_decl(struct Text *in);
@@ -374,6 +452,7 @@ static void append_struct_clone_definition(struct Text *out, struct StructFinali
 static void append_finalize_for_type(struct Text *out, const char *indent, const char *expr, struct Type type);
 static void append_release_pointer(struct Text *out, const char *indent, const char *expr, struct Type type);
 static struct Text *prepend_owned_assignment_release(struct Text *stmt, const char *original, const char *lhs_expr, struct Type type);
+static struct Text *rewrite_returns_with_stack_leave(struct Text *in);
 static void append_zero_clear_after_decl(struct Text *stmt, const char *original, const char *name);
 static int starts_word(const char *s, const char *word);
 static const char *skip_ws(const char *s);
@@ -381,6 +460,7 @@ static const char *skip_ws(const char *s);
 
 %code requires {
 struct Text;
+struct DeclInfo;
 }
 
 %union {
@@ -1062,6 +1142,193 @@ static int parse_payload_enum_head(const char *s, char *param, char *name)
     return name[0] != '\0';
 }
 
+static int parse_bitflags_head(const char *s, char *name, char *base)
+{
+    const char *p = skip_ws(s);
+    const char *name_end;
+    const char *colon;
+    const char *end;
+
+    name[0] = '\0';
+    base[0] = '\0';
+    if (!starts_word(p, "bitflags")) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    if (!is_ident_start((unsigned char)*p)) {
+        return 0;
+    }
+    name_end = read_name(p, name);
+    colon = skip_ws(name_end);
+    if (*colon != ':') {
+        return 0;
+    }
+    p = skip_ws(colon + 1);
+    end = p + strlen(p);
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (end <= p || (size_t)(end - p) >= NAME_MAX_LEN) {
+        return 0;
+    }
+    copy_trimmed(base, NAME_MAX_LEN, p, end);
+    return name[0] != '\0' && base[0] != '\0';
+}
+
+static int bitflags_find(const char *name)
+{
+    int i;
+
+    for (i = 0; i < g_bitflags.count; i++) {
+        if (strcmp(g_bitflags.flag[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void bitflags_add(const char *name, const char *base)
+{
+    int index;
+
+    if (name[0] == '\0') {
+        return;
+    }
+    index = bitflags_find(name);
+    if (index >= 0) {
+        strncpy(g_bitflags.flag[index].base, base, NAME_MAX_LEN - 1);
+        g_bitflags.flag[index].base[NAME_MAX_LEN - 1] = '\0';
+        return;
+    }
+    if (g_bitflags.count >= MAX_TAGS) {
+        die("too many bitflags");
+    }
+    strncpy(g_bitflags.flag[g_bitflags.count].name, name, NAME_MAX_LEN - 1);
+    g_bitflags.flag[g_bitflags.count].name[NAME_MAX_LEN - 1] = '\0';
+    strncpy(g_bitflags.flag[g_bitflags.count].base, base, NAME_MAX_LEN - 1);
+    g_bitflags.flag[g_bitflags.count].base[NAME_MAX_LEN - 1] = '\0';
+    g_bitflags.count++;
+}
+
+static int bitflags_const_type(const char *name, struct Type *type)
+{
+    int i;
+
+    for (i = 0; i < g_bitflags.count; i++) {
+        size_t n = strlen(g_bitflags.flag[i].name);
+        if (strncmp(name, g_bitflags.flag[i].name, n) == 0 && name[n] == '_') {
+            *type = type_make(TY_BITFLAGS, 0, g_bitflags.flag[i].name);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int bitflags_expr_type(const char *expr, struct Type *type)
+{
+    const char *p = expr;
+    struct Type found = type_unknown();
+    int saw = 0;
+
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *end;
+        struct Type current;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        end = read_name(p, name);
+        if (bitflags_const_type(name, &current)) {
+            if (!saw) {
+                found = current;
+                saw = 1;
+            } else if (!type_same_unowned(found, current)) {
+                fprintf(stderr, "c-: type error: cannot mix different bitflags in expression at %s:%d\n",
+                        g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+        }
+        p = end;
+    }
+    if (saw) {
+        *type = found;
+        return 1;
+    }
+    return 0;
+}
+
+static struct Text *emit_bitflags_decl(const char *name, const char *base, const char *body)
+{
+    const char *p = body;
+    struct Text *out = text_new();
+
+    text_add(out, "\ntypedef ");
+    text_add(out, base);
+    text_add_ch(out, ' ');
+    text_add(out, name);
+    text_add(out, ";\nenum {\n");
+    while (*p != '\0') {
+        char variant[NAME_MAX_LEN];
+        const char *name_end;
+        const char *eq;
+        const char *value_start;
+        const char *value_end;
+
+        p = skip_ws(p);
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, variant);
+        eq = skip_ws(name_end);
+        if (*eq != '=') {
+            fprintf(stderr, "c-: type error: bitflags variants require explicit values at %s:%d\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+        value_start = skip_ws(eq + 1);
+        value_end = value_start;
+        while (*value_end != '\0' && *value_end != ',') {
+            value_end++;
+        }
+        while (value_end > value_start && isspace((unsigned char)value_end[-1])) {
+            value_end--;
+        }
+        text_add(out, "    ");
+        text_add(out, name);
+        text_add_ch(out, '_');
+        text_add(out, variant);
+        text_add(out, " = ");
+        text_add_n(out, value_start, (size_t)(value_end - value_start));
+        text_add(out, ",\n");
+        p = value_end;
+        while (*p != '\0' && *p != ',') {
+            p++;
+        }
+    }
+    text_add(out, "};\n");
+    return out;
+}
+
 static struct GenericTemplate *generic_find(struct GenericTemplates *templates, const char *name)
 {
     int i;
@@ -1574,6 +1841,8 @@ static struct Type type_make(enum TypeKind kind, int ptr, const char *tag)
     t.base = NULL;
     t.ptr = ptr;
     t.owned = 0;
+    t.raw_ptr = 0;
+    t.array_len = 0;
     t.size = 0;
     t.align = 1;
     t.tag[0] = '\0';
@@ -1593,6 +1862,7 @@ static struct Type type_make(enum TypeKind kind, int ptr, const char *tag)
     case TY_INT:
     case TY_FLOAT:
     case TY_ENUM:
+    case TY_BITFLAGS:
         t.size = 4;
         t.align = 4;
         break;
@@ -1639,6 +1909,11 @@ static int type_is_string(struct Type t)
     return t.kind == TY_CHAR && t.ptr == 1 && t.owned;
 }
 
+static int type_is_string_like(struct Type t)
+{
+    return t.kind == TY_CHAR && t.ptr == 1;
+}
+
 static const char *type_kind_name(enum TypeKind kind)
 {
     switch (kind) {
@@ -1662,6 +1937,8 @@ static const char *type_kind_name(enum TypeKind kind)
         return "union";
     case TY_ENUM:
         return "enum";
+    case TY_BITFLAGS:
+        return "bitflags";
     default:
         return "unknown";
     }
@@ -1679,7 +1956,9 @@ static void type_to_string(struct Type t, char *buf, size_t size)
     }
     stars[i] = '\0';
 
-    if (t.kind == TY_STRUCT || t.kind == TY_UNION || t.kind == TY_ENUM) {
+    if (t.kind == TY_BITFLAGS) {
+        snprintf(buf, size, "%s%s", t.tag, stars);
+    } else if (t.kind == TY_STRUCT || t.kind == TY_UNION || t.kind == TY_ENUM) {
         snprintf(buf, size, "%s %s%s", type_kind_name(t.kind), t.tag, stars);
     } else {
         snprintf(buf, size, "%s%s", type_kind_name(t.kind), stars);
@@ -1688,6 +1967,10 @@ static void type_to_string(struct Type t, char *buf, size_t size)
     if (t.owned && off + 1 < size) {
         buf[off] = '%';
         buf[off + 1] = '\0';
+        off++;
+    }
+    if (t.raw_ptr && off + 4 < size) {
+        strcpy(buf + off, " raw");
     }
 }
 
@@ -1714,7 +1997,7 @@ static int type_same_unowned(struct Type a, struct Type b)
     if (a.kind != b.kind || a.ptr != b.ptr) {
         return 0;
     }
-    if (a.kind == TY_STRUCT || a.kind == TY_UNION || a.kind == TY_ENUM) {
+    if (a.kind == TY_STRUCT || a.kind == TY_UNION || a.kind == TY_ENUM || a.kind == TY_BITFLAGS) {
         return strcmp(a.tag, b.tag) == 0;
     }
     return 1;
@@ -1874,7 +2157,8 @@ static int skip_decl_word(const char *word)
 {
     static const char *words[] = {
         "auto", "extern", "register", "static", "typedef", "const", "volatile",
-        "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", "borrow", "owned", NULL
+        "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", "borrow", "owned",
+        "interrupt", "mmio", NULL
     };
     int i;
     for (i = 0; words[i] != NULL; i++) {
@@ -1883,6 +2167,49 @@ static int skip_decl_word(const char *word)
         }
     }
     return 0;
+}
+
+static int os_attribute_name(const char *word)
+{
+    return strcmp(word, "section") == 0 ||
+        strcmp(word, "aligned") == 0 ||
+        strcmp(word, "packed") == 0 ||
+        strcmp(word, "used") == 0 ||
+        strcmp(word, "naked") == 0 ||
+        strcmp(word, "no_return") == 0 ||
+        strcmp(word, "weak") == 0 ||
+        strcmp(word, "export") == 0;
+}
+
+static const char *skip_os_attribute(const char *p, const char *word)
+{
+    const char *q = skip_ws(p);
+    const char *close;
+
+    if (strcmp(word, "section") == 0 || strcmp(word, "aligned") == 0) {
+        if (*q != '(') {
+            fprintf(stderr, "c-: type error: %s requires an argument at %s:%d\n",
+                    word, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+        close = matching_paren(q);
+        if (close == NULL) {
+            fprintf(stderr, "c-: type error: unterminated %s attribute at %s:%d\n",
+                    word, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+        return skip_ws(close + 1);
+    }
+    return q;
+}
+
+static int os_attribute_can_start_decl(const char *word, const char *next)
+{
+    if (strcmp(word, "section") == 0 || strcmp(word, "aligned") == 0) {
+        return *skip_ws(next) == '(';
+    }
+    next = skip_ws(next);
+    return is_ident_start((unsigned char)*next);
 }
 
 static enum TypeKind keyword_type(const char *word)
@@ -1946,7 +2273,11 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
     tag[0] = '\0';
     while (is_ident_start((unsigned char)*p)) {
         const char *next = read_name(p, word);
-        if (!skip_decl_word(word)) {
+        if (os_attribute_name(word) && os_attribute_can_start_decl(word, next)) {
+            p = skip_os_attribute(next, word);
+            continue;
+        }
+        if (!skip_decl_word(word) && strcmp(word, "stack") != 0) {
             break;
         }
         if (strcmp(word, "borrow") == 0) {
@@ -1986,6 +2317,11 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
             *base_end = next;
             *type = type_make(TY_CHAR, 1, NULL);
             type->owned = !saw_borrow;
+            return 1;
+        }
+        if (bitflags_find(word) >= 0) {
+            *base_end = next;
+            *type = type_make(TY_BITFLAGS, 0, word);
             return 1;
         }
         if (tmpl != NULL && parse_generic_angle_arg(next, arg, &after)) {
@@ -2121,6 +2457,9 @@ static int parse_function_signature(const char *s, char *name, struct Type *ret)
     if (has_decl_word_before(s, name_start, "owned")) {
         ret->owned = 1;
     }
+    if (g_unsafe_depth > 0 && ret->ptr > 0 && !ret->owned) {
+        ret->raw_ptr = 1;
+    }
     return 1;
 }
 
@@ -2135,6 +2474,7 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     char word[NAME_MAX_LEN];
     int eq;
     int ptr = 0;
+    int array_len = 0;
     struct Type base_type;
 
     memset(decl, 0, sizeof(*decl));
@@ -2153,7 +2493,18 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     }
     for (scan = base_end; scan < limit; scan++) {
         if (*scan == '[') {
+            const char *len_start = skip_ws(scan + 1);
+            char *len_end;
+            long len;
+
             decl->is_array = 1;
+            if (isdigit((unsigned char)*len_start)) {
+                len = strtol(len_start, &len_end, 10);
+                len_end = (char*)skip_ws(len_end);
+                if (*len_end == ']' && len > 0 && len <= 2147483647L) {
+                    array_len = (int)len;
+                }
+            }
             while (scan < limit && *scan != ']') {
                 scan++;
             }
@@ -2189,8 +2540,14 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     decl->name[name_end - name_start] = '\0';
     decl->type = base_type;
     decl->type.ptr += ptr;
+    if (decl->is_array) {
+        decl->type.array_len = array_len;
+    }
     decl->type.owned = base_type.owned || strchr(base_end, '%') != NULL ||
         has_decl_word_before(s, name_start, "owned");
+    if (g_unsafe_depth > 0 && decl->type.ptr > 0 && !decl->type.owned) {
+        decl->type.raw_ptr = 1;
+    }
     scan = skip_ws(name_end);
     if (*scan == '(' && eq < 0) {
         decl->is_function = 1;
@@ -2231,7 +2588,29 @@ static int is_safe_reference_type(struct Type type)
     if (type.tag[0] != '\0' && strncmp(type.tag, "__CMinusIndex", 13) == 0) {
         return 0;
     }
+    if (strcmp(type.tag, "Optional") == 0 || strncmp(type.tag, "Optional_", 9) == 0 ||
+        strcmp(type.tag, "Ref") == 0 || strncmp(type.tag, "Ref_", 4) == 0 ||
+        strcmp(type.tag, "Span") == 0 || strncmp(type.tag, "Span_", 5) == 0 ||
+        strcmp(type.tag, "FixedVec") == 0 || strncmp(type.tag, "FixedVec_", 9) == 0 ||
+        strcmp(type.tag, "Register") == 0 || strncmp(type.tag, "Register_", 9) == 0 ||
+        strcmp(type.tag, "Atomic") == 0 || strncmp(type.tag, "Atomic_", 7) == 0 ||
+        strcmp(type.tag, "Volatile") == 0 || strncmp(type.tag, "Volatile_", 9) == 0 ||
+        strcmp(type.tag, "StaticCell") == 0 || strncmp(type.tag, "StaticCell_", 11) == 0 ||
+        strcmp(type.tag, "Critical") == 0) {
+        return 0;
+    }
     return type.kind == TY_STRUCT;
+}
+
+static int type_is_stored_safe_reference(struct Type type)
+{
+    if (type.kind != TY_STRUCT || type.tag[0] == '\0') {
+        return 0;
+    }
+    return strcmp(type.tag, "Ref") == 0 ||
+           strcmp(type.tag, "Span") == 0 ||
+           strncmp(type.tag, "Ref_", 4) == 0 ||
+           strncmp(type.tag, "Span_", 5) == 0;
 }
 
 static const char *find_string_decl_keyword(const char *base, int *borrowed)
@@ -2330,6 +2709,31 @@ static struct Text *rewrite_bare_struct_reference_decl(struct Text *in, const ch
     in->ast = NULL;
     text_free(in);
     return out;
+}
+
+static struct Text *rewrite_stack_struct_value_decl(struct Text *in, const char *base_start, const char *base_end, const char *name_pos, struct Type type)
+{
+    struct Text *out = text_new();
+    const char *kind = type_kind_name(type.kind);
+
+    text_add_n(out, in->text, (size_t)(base_start - in->text));
+    text_add(out, kind);
+    text_add_ch(out, ' ');
+    text_add(out, type.tag);
+    text_add_n(out, base_end, (size_t)(name_pos - base_end));
+    text_add(out, name_pos);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_critical_value_decl(struct Text *in, const char *base_start, const char *base_end, const char *name_pos)
+{
+    struct Type type = type_make(TY_STRUCT, 0, "Critical");
+
+    return rewrite_stack_struct_value_decl(in, base_start, base_end, name_pos, type);
 }
 
 static struct Text *rewrite_safe_reference_params(struct Text *in)
@@ -2454,6 +2858,16 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
     if (name_pos == NULL) {
         return in;
     }
+    if (has_decl_word_before(in->text, name_pos, "stack")) {
+        if (parse_base_type_prefix(base, &base_end, &base_type) &&
+            base_type.tag[0] != '\0' &&
+            !starts_word(base, "struct") &&
+            !starts_word(base, "union") &&
+            !starts_word(base, "enum")) {
+            return rewrite_stack_struct_value_decl(in, base, base_end, name_pos, base_type);
+        }
+        return in;
+    }
     if (pointer_token_before(in->text, name_pos)) {
         fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
         exit(1);
@@ -2461,6 +2875,12 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
     string_start = find_string_decl_keyword(base, &string_borrowed);
     if (string_start != NULL) {
         return rewrite_string_decl_text(in, base, string_start, string_borrowed);
+    }
+    if (decl.type.ptr == 0 && decl.type.kind == TY_STRUCT && strcmp(decl.type.tag, "Critical") == 0 &&
+        parse_base_type_prefix(base, &base_end, &base_type) &&
+        strcmp(base_type.tag, "Critical") == 0 &&
+        !starts_word(base, "struct")) {
+        return rewrite_critical_value_decl(in, base, base_end, name_pos);
     }
     if (decl.type.ptr == 0 && is_safe_reference_type(decl.type)) {
         if (parse_base_type_prefix(base, &base_end, &base_type) &&
@@ -2587,7 +3007,7 @@ static struct Type lhs_type_before_eq(const char *s, int eq, char *name)
             }
         }
     }
-    sym = symbol_find(name);
+    sym = symbol_find_or_current_param(name);
     if (sym == NULL) {
         return type_unknown();
     }
@@ -2595,6 +3015,9 @@ static struct Type lhs_type_before_eq(const char *s, int eq, char *name)
     while (deref > 0 && t.ptr > 0) {
         t.ptr--;
         deref--;
+    }
+    if (t.ptr == 0) {
+        t.raw_ptr = 0;
     }
     if (deref > 0) {
         return type_unknown();
@@ -2619,6 +3042,9 @@ static struct Type expr_type(const char *s)
         }
     }
     if (rhs_has_new_expr(p, &t)) {
+        return t;
+    }
+    if (bitflags_expr_type(p, &t)) {
         return t;
     }
     if (*p == '"') {
@@ -2649,6 +3075,9 @@ static struct Type expr_type(const char *s)
             if (sym != NULL && sym->type.ptr > 0) {
                 t = sym->type;
                 t.ptr--;
+                if (t.ptr == 0) {
+                    t.raw_ptr = 0;
+                }
                 t.owned = 0;
                 return t;
             }
@@ -2681,6 +3110,10 @@ static struct Type expr_type(const char *s)
                 p = skip_ws(field_end);
             }
             if (*p == '(') {
+                struct FunctionParams *fn = function_params_find(name);
+                if (fn != NULL) {
+                    return fn->ret;
+                }
                 if (malloc_func_index(name) >= 0) {
                     return g_malloc_funcs.ret[malloc_func_index(name)];
                 }
@@ -2688,7 +3121,14 @@ static struct Type expr_type(const char *s)
             }
             return t;
         }
+        if (bitflags_const_type(name, &t)) {
+            return t;
+        }
         if (*p == '(') {
+            struct FunctionParams *fn = function_params_find(name);
+            if (fn != NULL) {
+                return fn->ret;
+            }
             if (malloc_func_index(name) >= 0) {
                 return g_malloc_funcs.ret[malloc_func_index(name)];
             }
@@ -2700,6 +3140,11 @@ static struct Type expr_type(const char *s)
 
 static void check_assignment_type(const char *what, struct Type lhs, struct Type rhs)
 {
+    if (g_unsafe_depth == 0 && (lhs.raw_ptr || rhs.raw_ptr)) {
+        fprintf(stderr, "c-: type error: raw pointer taint cannot cross safe assignment in %s; use unsafe or convert to a managed safe type\n",
+                what);
+        exit(1);
+    }
     if (!type_compatible(lhs, rhs)) {
         type_error(what, lhs, rhs);
     }
@@ -2708,9 +3153,17 @@ static void check_assignment_type(const char *what, struct Type lhs, struct Type
 static int looks_like_aggregate_head(const char *s)
 {
     const char *p = skip_ws(s);
+    char word[NAME_MAX_LEN];
     if (is_generic_decl_head(p)) {
         char param[NAME_MAX_LEN];
         p = parse_generic_prefix(p, param);
+    }
+    while (is_ident_start((unsigned char)*p)) {
+        const char *next = read_name(p, word);
+        if (!skip_decl_word(word)) {
+            break;
+        }
+        p = skip_ws(next);
     }
     return starts_word(p, "struct") || starts_word(p, "union") || starts_word(p, "enum");
 }
@@ -2862,14 +3315,17 @@ static struct Text *rewrite_generics(struct Text *in)
             struct GenericTemplate *tmpl = generic_find(&g_generic_funcs, name);
 
             if (tmpl != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
+                struct GenericInstance *inst = generic_instance_get(tmpl, arg);
                 call = skip_ws(after);
                 if (*call == '(') {
-                    struct GenericInstance *inst = generic_instance_get(tmpl, arg);
                     text_add(out, inst->concrete);
                     text_add_n(out, after, (size_t)(call - after));
                     p = call;
                     continue;
                 }
+                text_add(out, inst->concrete);
+                p = after;
+                continue;
             }
         }
         text_add_ch(out, *p++);
@@ -2961,7 +3417,7 @@ static struct Text *rewrite_foreach_head(struct Text *head)
 
     id = g_foreach_id++;
     strcpy(data_op, ".");
-    collection_sym = symbol_find(collection);
+    collection_sym = symbol_find_or_current_param(collection);
     if (collection_sym != NULL && collection_sym->type.ptr > 0) {
         strcpy(data_op, "->");
     }
@@ -3080,6 +3536,17 @@ static int struct_field_type(const char *tag, const char *field, struct Type *ty
     struct StructFinalizer *clone = struct_clone_find(tag);
     int i;
 
+    if (strncmp(tag, "Ref_", 4) == 0) {
+        if (strcmp(field, "data") == 0) {
+            *type = type_make(TY_INT, 1, "");
+            return 1;
+        }
+        if (strcmp(field, "origin_kind") == 0 ||
+            strcmp(field, "origin_stack_id") == 0) {
+            *type = type_make(TY_LONG, 0, "");
+            return 1;
+        }
+    }
     if (fin != NULL) {
         for (i = 0; i < fin->count; i++) {
             if (strcmp(fin->fields[i].name, field) == 0) {
@@ -3195,11 +3662,14 @@ static void begin_function(void)
     g_owned.count = 0;
     g_finalized_locals.count = 0;
     g_moved_locals.count = 0;
+    g_borrow_links.count = 0;
     g_locals.count = 0;
     g_function_returns_move = 0;
     g_current_function_name[0] = '\0';
     g_current_function_ret = type_unknown();
     g_current_function_stack_guard = 0;
+    g_current_function_interrupt = 0;
+    g_current_function_naked = 0;
     g_in_function = 1;
 }
 
@@ -3211,6 +3681,10 @@ static void begin_top_block(struct Text *head)
     register_tags_in_text(head->text);
     g_current_generic_kind = 0;
     g_current_payload_enum = 0;
+    g_current_bitflags = 0;
+    g_current_bitflags_name[0] = '\0';
+    g_current_bitflags_base[0] = '\0';
+    g_current_struct_mmio = 0;
     if (is_unsafe_head(head->text)) {
         cminus_unsafe_push();
         g_top_block_is_function = 0;
@@ -3219,7 +3693,16 @@ static void begin_top_block(struct Text *head)
         g_current_struct_tag[0] = '\0';
         return;
     }
-    if (parse_payload_enum_head(head->text, param, name)) {
+    if (parse_bitflags_head(head->text, name, param)) {
+        g_current_bitflags = 1;
+        strncpy(g_current_bitflags_name, name, NAME_MAX_LEN - 1);
+        g_current_bitflags_name[NAME_MAX_LEN - 1] = '\0';
+        strncpy(g_current_bitflags_base, param, NAME_MAX_LEN - 1);
+        g_current_bitflags_base[NAME_MAX_LEN - 1] = '\0';
+        bitflags_add(name, param);
+        g_top_block_is_function = 0;
+        g_in_function = 0;
+    } else if (parse_payload_enum_head(head->text, param, name)) {
         g_current_payload_enum = 1;
         g_top_block_is_function = 0;
         g_in_function = 0;
@@ -3234,12 +3717,17 @@ static void begin_top_block(struct Text *head)
     }
     g_in_aggregate_struct = 0;
     g_current_struct_tag[0] = '\0';
-    if (g_current_payload_enum) {
+    if (g_current_bitflags) {
+        g_in_function = 0;
+    } else if (g_current_payload_enum) {
         g_in_function = 0;
     } else if (g_current_generic_kind == 1) {
         g_in_function = 0;
     } else if (g_top_block_is_function) {
         begin_function();
+        validate_interrupt_function_head(head->text);
+        g_current_function_interrupt = function_decl_has_interrupt(head->text);
+        g_current_function_naked = function_decl_has_naked(head->text);
         if (parse_function_signature(head->text, name, &ret)) {
             struct Text *normalized_head = text_new();
             text_add(normalized_head, head->text);
@@ -3253,14 +3741,20 @@ static void begin_top_block(struct Text *head)
                 g_current_function_ret = type_unknown();
             }
             register_function_params(normalized_head->text);
-            if (head_function_name(normalized_head->text, name) && function_needs_stack_guard(name)) {
+            if (head_function_name(normalized_head->text, name) &&
+                !function_signature_is_internal(normalized_head->text)) {
                 register_function_param_symbols(normalized_head->text);
             }
             text_free(normalized_head);
         }
-        g_current_function_stack_guard = !function_signature_is_internal(head->text);
+        g_current_function_stack_guard = !g_current_function_interrupt &&
+            !g_current_function_naked &&
+            !function_signature_is_internal(head->text);
     } else if (parse_struct_head(head->text, name)) {
+        const char *struct_name_pos = find_decl_name_pos(head->text, name);
         g_in_aggregate_struct = 1;
+        g_current_struct_mmio = struct_name_pos != NULL &&
+            has_decl_word_before(head->text, struct_name_pos, "mmio");
         strncpy(g_current_struct_tag, name, NAME_MAX_LEN - 1);
         g_current_struct_tag[NAME_MAX_LEN - 1] = '\0';
         struct_finalizer_get(name);
@@ -3553,6 +4047,290 @@ static void moved_local_remove(const char *name)
     g_moved_locals.count--;
 }
 
+static int borrow_link_index(const char *borrower)
+{
+    int i;
+
+    for (i = 0; i < g_borrow_links.count; i++) {
+        if (strcmp(g_borrow_links.borrower[i], borrower) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int owner_is_tracked_owned(const char *owner)
+{
+    struct Symbol *sym;
+
+    if (owner[0] == '\0') {
+        return 0;
+    }
+    if (owned_index_in(&g_owned, owner) >= 0) {
+        return 1;
+    }
+    sym = symbol_find(owner);
+    return sym != NULL && sym->type.ptr > 0 && sym->type.owned;
+}
+
+static int owner_is_local_stack(const char *owner)
+{
+    struct Symbol *sym;
+
+    if (owner[0] == '\0' || owned_index_in(&g_owned, owner) >= 0) {
+        return 0;
+    }
+    sym = symbol_find(owner);
+    return sym != NULL && sym->var != NULL && sym->var->is_local && !sym->type.owned;
+}
+
+static void borrow_link_remove_borrower(const char *borrower)
+{
+    int index = borrow_link_index(borrower);
+    int i;
+
+    if (index < 0) {
+        return;
+    }
+    for (i = index; i + 1 < g_borrow_links.count; i++) {
+        strcpy(g_borrow_links.borrower[i], g_borrow_links.borrower[i + 1]);
+        strcpy(g_borrow_links.owner[i], g_borrow_links.owner[i + 1]);
+        g_borrow_links.dead[i] = g_borrow_links.dead[i + 1];
+        g_borrow_links.stack_owner[i] = g_borrow_links.stack_owner[i + 1];
+    }
+    g_borrow_links.count--;
+}
+
+static void borrow_link_add(const char *borrower, const char *owner)
+{
+    int index;
+
+    if (borrower[0] == '\0' || owner[0] == '\0' || strcmp(borrower, owner) == 0) {
+        return;
+    }
+    if (!owner_is_tracked_owned(owner) && !owner_is_local_stack(owner)) {
+        return;
+    }
+    index = borrow_link_index(borrower);
+    if (index < 0) {
+        if (g_borrow_links.count >= MAX_OWNED) {
+            die("too many borrow links in one function");
+        }
+        index = g_borrow_links.count++;
+    }
+    strncpy(g_borrow_links.borrower[index], borrower, NAME_MAX_LEN - 1);
+    g_borrow_links.borrower[index][NAME_MAX_LEN - 1] = '\0';
+    strncpy(g_borrow_links.owner[index], owner, NAME_MAX_LEN - 1);
+    g_borrow_links.owner[index][NAME_MAX_LEN - 1] = '\0';
+    g_borrow_links.dead[index] = 0;
+    g_borrow_links.stack_owner[index] = owner_is_local_stack(owner);
+}
+
+static void borrow_links_invalidate_owner(const char *owner)
+{
+    int i;
+
+    if (owner[0] == '\0') {
+        return;
+    }
+    for (i = 0; i < g_borrow_links.count; i++) {
+        if (strcmp(g_borrow_links.owner[i], owner) == 0) {
+            g_borrow_links.dead[i] = 1;
+        }
+    }
+}
+
+static void check_dead_borrow_use(const char *stmt)
+{
+    int i;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    for (i = 0; i < g_borrow_links.count; i++) {
+        if (g_borrow_links.dead[i] &&
+            word_occurs_after_first_token(stmt, g_borrow_links.borrower[i])) {
+            fprintf(stderr, "c-: type error: borrowed value '%s' is used after owner '%s' was released at %s:%d\n",
+                    g_borrow_links.borrower[i], g_borrow_links.owner[i],
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    }
+}
+
+static void check_borrow_escape_return(const char *stmt)
+{
+    int i;
+    char owner[NAME_MAX_LEN];
+    const char *expr;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    expr = skip_ws(stmt);
+    if (starts_word(expr, "return")) {
+        expr = skip_ws(expr + 6);
+    }
+    if (extract_safe_reference_borrow_owner(expr, owner) &&
+        (owner_is_local_stack(owner) || owner_is_tracked_owned(owner))) {
+        fprintf(stderr, "c-: type error: value '%s' cannot escape through returned safe reference at %s:%d\n",
+                owner, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    for (i = 0; i < g_borrow_links.count; i++) {
+        const char *p = expr;
+        size_t n = strlen(g_borrow_links.borrower[i]);
+
+        if ((g_borrow_links.stack_owner[i] || owner_is_tracked_owned(g_borrow_links.owner[i])) && n > 0 &&
+            strncmp(p, g_borrow_links.borrower[i], n) == 0 &&
+            !is_ident((unsigned char)p[n])) {
+            p = skip_ws(p + n);
+            if (*p != ';' && *p != '\0') {
+                continue;
+            }
+            fprintf(stderr, "c-: type error: borrowed value '%s' from '%s' cannot be returned at %s:%d\n",
+                    g_borrow_links.borrower[i], g_borrow_links.owner[i],
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    }
+}
+
+static int extract_direct_borrow_owner(const char *expr, char *owner)
+{
+    const char *p = skip_ws(expr);
+    const char *end;
+    const char *root_start;
+    const char *root_end;
+
+    owner[0] = '\0';
+    if (*p == '&') {
+        p = skip_ws(p + 1);
+    }
+    if (!is_ident_start((unsigned char)*p)) {
+        return 0;
+    }
+    root_start = p;
+    end = read_name(p, owner);
+    root_end = end;
+    if ((size_t)(root_end - root_start) >= NAME_MAX_LEN) {
+        owner[0] = '\0';
+        return 0;
+    }
+    memcpy(owner, root_start, (size_t)(root_end - root_start));
+    owner[root_end - root_start] = '\0';
+    end = skip_ws(end);
+    while (*end == '.' || (end[0] == '-' && end[1] == '>')) {
+        if (*end == '.') {
+            end++;
+        } else {
+            end += 2;
+        }
+        end = skip_ws(end);
+        if (!is_ident_start((unsigned char)*end)) {
+            return 0;
+        }
+        {
+            char field[NAME_MAX_LEN];
+            end = read_name(end, field);
+        }
+        end = skip_ws(end);
+    }
+    return *end == '\0' || *end == ';' || *end == ',';
+}
+
+static int extract_safe_reference_borrow_owner(const char *expr, char *owner)
+{
+    const char *p = expr;
+
+    owner[0] = '\0';
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+        const char *close;
+        const char *arg_end;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        if ((strcmp(name, "Ref") == 0 || strcmp(name, "Span") == 0) && *skip_ws(name_end) == '<') {
+            char generic_arg[NAME_MAX_LEN];
+            const char *after_generic;
+            const char *dot;
+            char method[NAME_MAX_LEN];
+            const char *method_end;
+
+            if (parse_generic_angle_arg(skip_ws(name_end), generic_arg, &after_generic)) {
+                dot = skip_ws(after_generic);
+                if (*dot == '.') {
+                    const char *method_start = skip_ws(dot + 1);
+                    if (is_ident_start((unsigned char)*method_start)) {
+                        method_end = read_name(method_start, method);
+                        open = skip_ws(method_end);
+                        if (*open == '(' &&
+                            ((strcmp(name, "Ref") == 0 && strcmp(method, "from") == 0) ||
+                             (strcmp(name, "Span") == 0 &&
+                              (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0)))) {
+                            close = matching_paren(open);
+                            if (close == NULL) {
+                                return 0;
+                            }
+                            arg_end = find_top_level_char(open + 1, close, ',');
+                            if (arg_end == NULL) {
+                                arg_end = close;
+                            }
+                            {
+                                char *arg_text = xstrndup(open + 1, (size_t)(arg_end - (open + 1)));
+                                int ok = extract_direct_borrow_owner(arg_text, owner);
+                                free(arg_text);
+                                return ok;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        open = skip_ws(name_end);
+        if (*open == '(' &&
+            (strncmp(name, "Ref_from_", 9) == 0 ||
+             strncmp(name, "Span_from_", 10) == 0 ||
+             strncmp(name, "Span_from_bytes_", 16) == 0)) {
+            close = matching_paren(open);
+            if (close == NULL) {
+                return 0;
+            }
+            arg_end = find_top_level_char(open + 1, close, ',');
+            if (arg_end == NULL) {
+                arg_end = close;
+            }
+            {
+                char *arg = xstrndup(open + 1, (size_t)(arg_end - (open + 1)));
+                int ok = extract_direct_borrow_owner(arg, owner);
+                free(arg);
+                return ok;
+            }
+        }
+        p = name_end;
+    }
+    return 0;
+}
+
 static int word_occurs_after_first_token(const char *stmt, const char *word)
 {
     const char *p = skip_ws(stmt);
@@ -3839,6 +4617,1054 @@ static void check_null_arguments(const char *stmt)
     }
 }
 
+static int parse_int_literal_arg(const char *start, const char *end, long *value)
+{
+    const char *p = skip_ws(start);
+    char *tail;
+    long v;
+
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (p >= end || (!isdigit((unsigned char)*p) && *p != '+')) {
+        return 0;
+    }
+    v = strtol(p, &tail, 10);
+    tail = (char*)skip_ws(tail);
+    if (tail != end) {
+        return 0;
+    }
+    *value = v;
+    return 1;
+}
+
+static int parse_array_expr_arg(const char *start, const char *end, char *label, struct Type *type, int *is_local)
+{
+    const char *p = skip_ws(start);
+    const char *name_end;
+    char name[NAME_MAX_LEN];
+    struct Symbol *sym;
+    struct Type current;
+
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (!is_ident_start((unsigned char)*p)) {
+        return 0;
+    }
+    name_end = read_name(p, name);
+    sym = symbol_find_or_current_param(name);
+    if (sym == NULL) {
+        return 0;
+    }
+    current = sym->type;
+    if (is_local != NULL) {
+        *is_local = sym->var != NULL && sym->var->is_local;
+    }
+    if (label != NULL) {
+        strncpy(label, name, NAME_MAX_LEN - 1);
+        label[NAME_MAX_LEN - 1] = '\0';
+    }
+    p = skip_ws(name_end);
+    while (p < end && (*p == '.' || (p[0] == '-' && p[1] == '>'))) {
+        const char *field_start = skip_ws(*p == '.' ? p + 1 : p + 2);
+        const char *field_end;
+        char field[NAME_MAX_LEN];
+        size_t used;
+
+        if (!is_ident_start((unsigned char)*field_start)) {
+            return 0;
+        }
+        field_end = read_name(field_start, field);
+        if (current.kind != TY_STRUCT || !struct_field_type(current.tag, field, &current)) {
+            return 0;
+        }
+        if (label != NULL) {
+            used = strlen(label);
+            if (used + 1 < NAME_MAX_LEN) {
+                label[used++] = '.';
+                label[used] = '\0';
+                strncat(label, field, NAME_MAX_LEN - used - 1);
+            }
+        }
+        p = skip_ws(field_end);
+    }
+    if (p != end || current.array_len <= 0) {
+        return 0;
+    }
+    if (type != NULL) {
+        *type = current;
+    }
+    return 1;
+}
+
+static int parse_sizeof_array_arg(const char *start, const char *end, char *label, struct Type *type)
+{
+    const char *p = skip_ws(start);
+    const char *open;
+    const char *close;
+
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (!starts_word(p, "sizeof")) {
+        return 0;
+    }
+    open = skip_ws(p + 6);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL || close + 1 != end) {
+        return 0;
+    }
+    return parse_array_expr_arg(open + 1, close, label, type, NULL);
+}
+
+static void check_span_stack_array_call(const char *func_name, const char *args_start, const char *args_end)
+{
+    const char *arg1_end = find_top_level_char(args_start, args_end, ',');
+    const char *arg2_start;
+    const char *arg2_end;
+    char array_label[NAME_MAX_LEN];
+    char sizeof_label[NAME_MAX_LEN];
+    struct Type array_type;
+    struct Type sizeof_type;
+    long value;
+    int is_bytes;
+    long max_bytes;
+    int is_local = 0;
+
+    if (arg1_end == NULL) {
+        return;
+    }
+    arg2_start = arg1_end + 1;
+    arg2_end = find_top_level_char(arg2_start, args_end, ',');
+    if (arg2_end == NULL) {
+        arg2_end = args_end;
+    }
+    if (!parse_array_expr_arg(args_start, arg1_end, array_label, &array_type, &is_local)) {
+        return;
+    }
+    if (strchr(array_label, '.') == NULL && !is_local) {
+        return;
+    }
+    is_bytes = strncmp(func_name, "Span_from_bytes_", 16) == 0;
+    if (is_bytes && parse_sizeof_array_arg(arg2_start, arg2_end, sizeof_label, &sizeof_type)) {
+        if (strcmp(sizeof_label, array_label) == 0 && sizeof_type.array_len == array_type.array_len) {
+            return;
+        }
+    }
+    if (!parse_int_literal_arg(arg2_start, arg2_end, &value)) {
+        return;
+    }
+    if (is_bytes) {
+        max_bytes = (long)array_type.array_len * (long)(array_type.size > 0 ? array_type.size : 1);
+        if (value > max_bytes) {
+            fprintf(stderr, "c-: type error: Span.from_bytes length %ld exceeds array '%s' size %ld bytes at %s:%d\n",
+                    value, array_label, max_bytes, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    } else if (value > array_type.array_len) {
+        fprintf(stderr, "c-: type error: Span.from length %ld exceeds array '%s' length %d at %s:%d\n",
+                value, array_label, array_type.array_len, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+}
+
+static void check_span_stack_array_bounds(const char *stmt)
+{
+    const char *p = stmt;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+        const char *close;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        open = skip_ws(name_end);
+        if (*open == '(' &&
+            (strncmp(name, "Span_from_", 10) == 0 || strncmp(name, "Span_from_bytes_", 16) == 0)) {
+            close = matching_paren(open);
+            if (close == NULL) {
+                return;
+            }
+            check_span_stack_array_call(name, open + 1, close);
+            p = close + 1;
+            continue;
+        }
+        p = name_end;
+    }
+}
+
+static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+        const char *close;
+        struct Type array_type;
+        char array_label[NAME_MAX_LEN];
+        int is_from;
+        int is_from_bytes;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                text_add_ch(out, *p);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            text_add_ch(out, *p++);
+            continue;
+        }
+        name_end = read_name(p, name);
+        open = skip_ws(name_end);
+        is_from = strncmp(name, "Span_from_", 10) == 0 ||
+            strncmp(name, "FixedVec_from_", 14) == 0;
+        is_from_bytes = strncmp(name, "Span_from_bytes_", 16) == 0 ||
+            strncmp(name, "FixedVec_from_bytes_", 20) == 0;
+        if (*open != '(' || (!is_from && !is_from_bytes)) {
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        close = matching_paren(open);
+        if (close == NULL) {
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        if (find_top_level_char(open + 1, close, ',') == NULL &&
+            parse_array_expr_arg(open + 1, close, array_label, &array_type, NULL)) {
+            char tmp[64];
+
+            text_add_n(out, p, (size_t)(close - p));
+            if (is_from_bytes) {
+                text_add(out, ", sizeof(");
+                text_add(out, array_label);
+                text_add_ch(out, ')');
+            } else {
+                snprintf(tmp, sizeof(tmp), ", %d", array_type.array_len);
+                text_add(out, tmp);
+            }
+            text_add_ch(out, ')');
+            p = close + 1;
+            changed = 1;
+            continue;
+        }
+        text_add_n(out, p, (size_t)(close + 1 - p));
+        p = close + 1;
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static void check_safe_array_index_access(const char *stmt)
+{
+    const char *p = stmt;
+    struct DeclInfo decl;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    if (parse_decl(stmt, &decl) && decl.is_decl && decl.is_array) {
+        return;
+    }
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *scan;
+        const char *open;
+        const char *close;
+        struct Type array_type;
+        char array_label[NAME_MAX_LEN];
+        long index;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        scan = name_end;
+        while (1) {
+            const char *dot = skip_ws(scan);
+            if (*dot == '.' || (dot[0] == '-' && dot[1] == '>')) {
+                const char *field_start = skip_ws(*dot == '.' ? dot + 1 : dot + 2);
+                const char *field_end;
+
+                if (!is_ident_start((unsigned char)*field_start)) {
+                    break;
+                }
+                field_end = read_name(field_start, name);
+                scan = field_end;
+                continue;
+            }
+            break;
+        }
+        open = skip_ws(scan);
+        if (*open != '[') {
+            p = name_end;
+            continue;
+        }
+        close = open + 1;
+        {
+            int depth = 1;
+            while (*close != '\0') {
+                if (*close == '[') {
+                    depth++;
+                } else if (*close == ']') {
+                    depth--;
+                    if (depth == 0) {
+                        break;
+                    }
+                }
+                close++;
+            }
+        }
+        if (*close != ']') {
+            return;
+        }
+        if (parse_array_expr_arg(p, open, array_label, &array_type, NULL)) {
+            if (!parse_int_literal_arg(open + 1, close, &index)) {
+                fprintf(stderr, "c-: type error: variable index into fixed array '%s' is not allowed in safe mode at %s:%d; create a Span with Span<T>.from(%s) and index the Span\n",
+                        array_label, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno, array_label);
+                exit(1);
+            }
+            if (index < 0 || index >= array_type.array_len) {
+                fprintf(stderr, "c-: type error: array index %ld is out of range for '%s' length %d at %s:%d\n",
+                        index, array_label, array_type.array_len, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+        }
+        p = close + 1;
+    }
+}
+
+static int is_raw_heap_builtin(const char *name)
+{
+    return strcmp(name, "malloc") == 0 ||
+        strcmp(name, "calloc") == 0 ||
+        strcmp(name, "realloc") == 0 ||
+        strcmp(name, "free") == 0 ||
+        strcmp(name, "strdup") == 0;
+}
+
+static void check_safe_heap_calls(const char *stmt)
+{
+    const char *p = stmt;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        open = skip_ws(name_end);
+        if (*open == '(' && !token_is_control_keyword(name)) {
+            int func_index;
+
+            if (is_raw_heap_builtin(name)) {
+                fprintf(stderr, "c-: type error: raw heap function '%s' is only allowed inside unsafe; use managed new/clone/s\"\" in safe mode at %s:%d\n",
+                        name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            func_index = malloc_func_index(name);
+            if (func_index >= 0 && g_malloc_funcs.is_alloc_attr[func_index]) {
+                fprintf(stderr, "c-: type error: alloc-attributed function '%s' is only allowed inside unsafe; use managed new/clone/s\"\" in safe mode at %s:%d\n",
+                        name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+        }
+        p = name_end;
+    }
+}
+
+static int interrupt_params_are_void_or_empty(const char *s)
+{
+    const char *open = strchr(s, '(');
+    const char *close;
+    const char *p;
+    const char *end;
+
+    if (open == NULL) {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+    p = skip_ws(open + 1);
+    end = close;
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    return p == end || ((size_t)(end - p) == 4 && strncmp(p, "void", 4) == 0);
+}
+
+static int function_decl_has_interrupt(const char *s)
+{
+    char name[NAME_MAX_LEN];
+    struct Type ret;
+    const char *name_pos;
+
+    if (!parse_function_signature(s, name, &ret)) {
+        return 0;
+    }
+    name_pos = find_decl_name_pos(s, name);
+    return name_pos != NULL && has_decl_word_before(s, name_pos, "interrupt");
+}
+
+static int function_decl_has_naked(const char *s)
+{
+    char name[NAME_MAX_LEN];
+    struct Type ret;
+    const char *name_pos;
+
+    if (!parse_function_signature(s, name, &ret)) {
+        return 0;
+    }
+    name_pos = find_decl_name_pos(s, name);
+    return name_pos != NULL && has_decl_word_before(s, name_pos, "naked");
+}
+
+static void validate_interrupt_function_head(const char *s)
+{
+    char name[NAME_MAX_LEN];
+    struct Type ret;
+
+    if (!function_decl_has_interrupt(s)) {
+        return;
+    }
+    if (!parse_function_signature(s, name, &ret) ||
+        ret.kind != TY_VOID || ret.ptr != 0 ||
+        !interrupt_params_are_void_or_empty(s)) {
+        fprintf(stderr, "c-: type error: interrupt functions must be `interrupt void name(void)` at %s:%d\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+}
+
+static struct Text *rewrite_interrupt_function_head(struct Text *in)
+{
+    char name[NAME_MAX_LEN];
+    struct Type ret;
+    const char *name_pos;
+    const char *p;
+    struct Text *out;
+    int changed = 0;
+
+    if (!parse_function_signature(in->text, name, &ret)) {
+        return in;
+    }
+    name_pos = find_decl_name_pos(in->text, name);
+    if (name_pos == NULL || !has_decl_word_before(in->text, name_pos, "interrupt")) {
+        return in;
+    }
+    validate_interrupt_function_head(in->text);
+    out = text_new();
+    text_add(out, "__attribute__((interrupt)) ");
+    p = in->text;
+    while (*p != '\0') {
+        if (!changed && starts_word(p, "interrupt")) {
+            p = skip_ws(p + 9);
+            changed = 1;
+            continue;
+        }
+        text_add_ch(out, *p++);
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static int name_is_no_heap_collection_constructor(const char *name)
+{
+    return strncmp(name, "Vec_new_", 8) == 0 ||
+        strncmp(name, "List_new_", 9) == 0 ||
+        strncmp(name, "Map_new_", 8) == 0 ||
+        strncmp(name, "OwnedVec_new_", 13) == 0 ||
+        strncmp(name, "OwnedList_new_", 14) == 0 ||
+        strncmp(name, "OwnedMap_new_", 13) == 0;
+}
+
+static int source_has_collection_new_syntax(const char *stmt)
+{
+    const char *p = stmt;
+
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *q;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        if (strcmp(name, "Vec") != 0 && strcmp(name, "List") != 0 &&
+            strcmp(name, "Map") != 0 && strcmp(name, "OwnedVec") != 0 &&
+            strcmp(name, "OwnedList") != 0 && strcmp(name, "OwnedMap") != 0) {
+            p = name_end;
+            continue;
+        }
+        q = skip_ws(name_end);
+        if (*q == '<') {
+            int depth = 1;
+            q++;
+            while (*q != '\0' && depth > 0) {
+                if (*q == '<') {
+                    depth++;
+                } else if (*q == '>') {
+                    depth--;
+                }
+                q++;
+            }
+        }
+        q = skip_ws(q);
+        if (*q == '.') {
+            char method[NAME_MAX_LEN];
+            const char *method_end;
+
+            q = skip_ws(q + 1);
+            if (is_ident_start((unsigned char)*q)) {
+                method_end = read_name(q, method);
+                if (strcmp(method, "new") == 0 && *skip_ws(method_end) == '(') {
+                    return 1;
+                }
+            }
+        }
+        p = name_end;
+    }
+    return 0;
+}
+
+static int stmt_has_word_call_or_token(const char *stmt, const char *word)
+{
+    const char *p = stmt;
+    size_t n = strlen(word);
+
+    while ((p = strstr(p, word)) != NULL) {
+        if ((p == stmt || !is_ident((unsigned char)p[-1])) &&
+            !is_ident((unsigned char)p[n])) {
+            return 1;
+        }
+        p += n;
+    }
+    return 0;
+}
+
+static int source_has_heap_new_token(const char *stmt)
+{
+    const char *p = stmt;
+
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!starts_word(p, "new")) {
+            p++;
+            continue;
+        }
+        {
+            const char *q = skip_ws(p + 3);
+            const char *name_end;
+            const char *after;
+            char name[NAME_MAX_LEN];
+
+            if (!is_ident_start((unsigned char)*q)) {
+                return 1;
+            }
+            name_end = read_name(q, name);
+            if (strcmp(name, "Optional") == 0 &&
+                parse_generic_angle_arg(name_end, name, &after)) {
+                const char *member = skip_ws(after);
+                if (*member == '.') {
+                    const char *variant_start = skip_ws(member + 1);
+                    const char *variant_end;
+
+                    if (is_ident_start((unsigned char)*variant_start)) {
+                        variant_end = read_name(variant_start, name);
+                        if (*skip_ws(variant_end) == '(') {
+                            p = variant_end;
+                            continue;
+                        }
+                    }
+                }
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void check_no_heap_safe_expr(const char *stmt)
+{
+    const char *p = stmt;
+    const char *mode = g_current_function_interrupt ? "interrupt" :
+        (g_current_function_naked ? "naked" : "no-heap");
+
+    if (!g_no_heap && !g_current_function_interrupt && !g_current_function_naked) {
+        return;
+    }
+    if (g_unsafe_depth > 0 && !g_current_function_interrupt && !g_current_function_naked) {
+        return;
+    }
+    if (text_has_s_string(stmt)) {
+        fprintf(stderr, "c-: type error: s strings allocate managed heap and are not allowed in %s functions at %s:%d\n",
+                mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    if (source_has_heap_new_token(stmt) || stmt_has_word_call_or_token(stmt, "clone") ||
+        source_has_collection_new_syntax(stmt)) {
+        fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, or Register\n",
+                mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        open = skip_ws(name_end);
+        if (*open == '(' &&
+            (name_is_no_heap_collection_constructor(name) ||
+             strcmp(name, "cminus_gc_malloc") == 0 ||
+             strcmp(name, "cminus_gc_calloc") == 0 ||
+             strcmp(name, "cminus_gc_realloc") == 0 ||
+             strcmp(name, "cminus_string_format") == 0)) {
+            fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, or Register\n",
+                    mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+        p = name_end;
+    }
+}
+
+static int is_safe_banned_c_function(const char *name)
+{
+    static const char *funcs[] = {
+        "strlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat",
+        "strdup", "strstr", "strchr", "strrchr",
+        "memcpy", "memmove", "memset", "memcmp",
+        "fopen", "freopen", "fclose", "fread", "fwrite", "fflush",
+        NULL
+    };
+    int i;
+
+    for (i = 0; funcs[i] != NULL; i++) {
+        if (strcmp(name, funcs[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int is_safe_banned_register_function(const char *name)
+{
+    return strncmp(name, "Register_from_addr_", 19) == 0 ||
+           strncmp(name, "Volatile_from_addr_", 19) == 0;
+}
+
+static void check_safe_c_function_calls(const char *stmt)
+{
+    const char *p = stmt;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        if (strcmp(name, "__asm__") == 0 || strcmp(name, "asm") == 0) {
+            fprintf(stderr, "c-: type error: inline assembly can only be used inside unsafe at %s:%d\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+        open = skip_ws(name_end);
+        if (*open == '(') {
+            if (is_safe_banned_c_function(name)) {
+                fprintf(stderr, "c-: type error: C function '%s' can only be called inside unsafe; use a C- safe wrapper such as string methods or xfopen at %s:%d\n",
+                        name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            if (is_safe_banned_register_function(name)) {
+                fprintf(stderr, "c-: type error: from_addr can only be called inside unsafe at %s:%d; wrap raw address creation in unsafe and expose a safe Register or Volatile value\n",
+                        g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+        }
+        p = name_end;
+    }
+}
+
+static int expr_starts_with_address_of(const char *expr)
+{
+    const char *p = skip_ws(expr);
+
+    return *p == '&';
+}
+
+static int expr_is_managed_constructor(const char *expr)
+{
+    struct Type unused;
+    const char *p = skip_ws(expr);
+
+    return rhs_has_new_expr(p, &unused) ||
+        rhs_has_clone_expr(p, &unused) ||
+        text_has_s_string(p);
+}
+
+static int expr_contains_raw_pointer_symbol(const char *start, const char *end)
+{
+    const char *p = start;
+
+    while (p < end && *p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        struct Symbol *sym;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (p < end && *p != '\0') {
+                if (*p == '\\' && p + 1 < end) {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        sym = symbol_find(name);
+        if (sym != NULL && sym->type.raw_ptr) {
+            return 1;
+        }
+        p = name_end;
+    }
+    return 0;
+}
+
+static int expr_is_raw_pointer_input(const char *start, const char *end)
+{
+    char *expr;
+    struct Type type;
+    int raw = 0;
+
+    while (start < end && isspace((unsigned char)*start)) {
+        start++;
+    }
+    while (end > start && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (start >= end || expr_starts_with_address_of(start) || expr_is_managed_constructor(start)) {
+        return 0;
+    }
+    expr = xstrndup(start, (size_t)(end - start));
+    type = expr_type(expr);
+    free(expr);
+    if (type.raw_ptr) {
+        raw = 1;
+    }
+    if (!raw && expr_contains_raw_pointer_symbol(start, end)) {
+        raw = 1;
+    }
+    if (type.array_len > 0) {
+        raw = 0;
+    }
+    return raw;
+}
+
+static void check_raw_pointer_arg_error(const char *kind)
+{
+    fprintf(stderr, "c-: type error: raw pointer cannot be stored in %s in safe mode; use managed new/clone/s\"\" or unsafe\n",
+            kind);
+    exit(1);
+}
+
+static void check_safe_reference_raw_inputs(const char *stmt)
+{
+    const char *p = stmt;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+        const char *close;
+        const char *arg_end;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        open = skip_ws(name_end);
+        if (*open != '(') {
+            p = name_end;
+            continue;
+        }
+        close = matching_paren(open);
+        if (close == NULL) {
+            return;
+        }
+        arg_end = find_top_level_char(open + 1, close, ',');
+        if (arg_end == NULL) {
+            arg_end = close;
+        }
+        if (strncmp(name, "Ref_from_", 9) == 0) {
+            if (expr_is_raw_pointer_input(open + 1, arg_end)) {
+                check_raw_pointer_arg_error("Ref");
+            }
+        } else if (strncmp(name, "Span_from_", 10) == 0 ||
+                   strncmp(name, "Span_from_bytes_", 16) == 0) {
+            if (expr_is_raw_pointer_input(open + 1, arg_end)) {
+                check_raw_pointer_arg_error("Span");
+            }
+        } else if (strncmp(name, "Optional_", 9) == 0 && strstr(name, "_ptr_") != NULL &&
+                   strstr(name, "_Some") != NULL) {
+            if (expr_is_raw_pointer_input(open + 1, arg_end)) {
+                check_raw_pointer_arg_error("Optional");
+            }
+        }
+        p = close + 1;
+    }
+}
+
+static void check_safe_raw_field_access(const char *stmt)
+{
+    const char *p = stmt;
+
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *scan;
+        const char *dot;
+        struct Symbol *sym;
+        struct Type current;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        name_end = read_name(p, name);
+        sym = symbol_find(name);
+        if (sym == NULL || sym->type.kind != TY_STRUCT) {
+            p = name_end;
+            continue;
+        }
+        current = sym->type;
+        scan = name_end;
+        dot = skip_ws(scan);
+        while (*dot == '.' || (dot[0] == '-' && dot[1] == '>')) {
+            const char *field_start = skip_ws(*dot == '.' ? dot + 1 : dot + 2);
+            const char *field_end;
+            const char *after_field;
+            char field[NAME_MAX_LEN];
+            struct Type field_type;
+
+            if (!is_ident_start((unsigned char)*field_start)) {
+                break;
+            }
+            field_end = read_name(field_start, field);
+            after_field = skip_ws(field_end);
+            if (*after_field == '(' || *after_field == '<') {
+                break;
+            }
+            if (current.kind != TY_STRUCT ||
+                !struct_field_type(current.tag, field, &field_type)) {
+                break;
+            }
+            if (field_type.raw_ptr) {
+                fprintf(stderr, "c-: type error: raw pointer field '%s.%s' cannot be accessed in safe mode at %s:%d; use unsafe or expose a managed safe API\n",
+                        current.tag, field, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            current = field_type;
+            scan = field_end;
+            dot = skip_ws(scan);
+        }
+        p = scan;
+    }
+}
+
 static void finalized_local_add(const char *name, struct Type type)
 {
     owned_add_to(&g_finalized_locals, name, type);
@@ -3855,7 +5681,7 @@ static int malloc_func_index(const char *name)
     return -1;
 }
 
-static void owned_func_add_type(const char *name, struct Type ret)
+static void owned_func_add_type_ex(const char *name, struct Type ret, int is_alloc_attr)
 {
     int index = malloc_func_index(name);
     if (name[0] == '\0') {
@@ -3863,6 +5689,9 @@ static void owned_func_add_type(const char *name, struct Type ret)
     }
     if (index >= 0) {
         g_malloc_funcs.ret[index] = ret;
+        if (is_alloc_attr) {
+            g_malloc_funcs.is_alloc_attr[index] = 1;
+        }
         return;
     }
     if (g_malloc_funcs.count >= MAX_FUNCS) {
@@ -3871,7 +5700,13 @@ static void owned_func_add_type(const char *name, struct Type ret)
     strncpy(g_malloc_funcs.name[g_malloc_funcs.count], name, NAME_MAX_LEN - 1);
     g_malloc_funcs.name[g_malloc_funcs.count][NAME_MAX_LEN - 1] = '\0';
     g_malloc_funcs.ret[g_malloc_funcs.count] = ret;
+    g_malloc_funcs.is_alloc_attr[g_malloc_funcs.count] = is_alloc_attr;
     g_malloc_funcs.count++;
+}
+
+static void owned_func_add_type(const char *name, struct Type ret)
+{
+    owned_func_add_type_ex(name, ret, 0);
 }
 
 static void register_builtin_owned_functions(void)
@@ -3909,12 +5744,36 @@ static void register_owned_function_signature(const char *s)
     }
 }
 
+static int text_has_malloc_attribute(const char *s)
+{
+    const char *p = s;
+
+    while ((p = strstr(p, "__attribute__")) != NULL) {
+        const char *open = skip_ws(p + 13);
+        const char *close;
+
+        if (*open != '(') {
+            p += 13;
+            continue;
+        }
+        close = matching_paren(open);
+        if (close == NULL) {
+            return 0;
+        }
+        if (range_contains_text(open, close, "malloc")) {
+            return 1;
+        }
+        p = close + 1;
+    }
+    return 0;
+}
+
 static void register_malloc_attribute_function(const char *s)
 {
     char name[NAME_MAX_LEN];
     struct Type ret;
 
-    if (strstr(s, "__attribute__") == NULL || strstr(s, "malloc") == NULL) {
+    if (!text_has_malloc_attribute(s)) {
         return;
     }
     if (!parse_function_signature(s, name, &ret)) {
@@ -3924,7 +5783,7 @@ static void register_malloc_attribute_function(const char *s)
         ret = type_make(TY_VOID, 1, NULL);
     }
     ret.owned = 1;
-    owned_func_add_type(name, ret);
+    owned_func_add_type_ex(name, ret, 1);
 }
 
 static int function_name_looks_owned(const char *name)
@@ -3988,6 +5847,7 @@ static void remove_moved_locals(const char *s)
                 if ((size_t)(end - q) < NAME_MAX_LEN) {
                     memcpy(name, q, (size_t)(end - q));
                     name[end - q] = '\0';
+                    borrow_links_invalidate_owner(name);
                     owned_remove(name);
                     moved_local_add(name);
                 }
@@ -4159,6 +6019,8 @@ static void register_function_params(const char *s)
     fn = function_params_get(name);
     fn->count = 0;
     fn->has_defaults = 0;
+    fn->is_unsafe = g_unsafe_depth > 0;
+    fn->ret = ret;
     p = open + 1;
     while (p < close) {
         const char *arg_end = find_top_level_char(p, close, ',');
@@ -4276,6 +6138,137 @@ static void register_function_param_symbols(const char *s)
     }
 }
 
+static const char *unsafe_matching_brace(const char *open)
+{
+    const char *p = open;
+    int depth = 0;
+
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+            if (depth == 0) {
+                return p;
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static void register_unsafe_struct_fields(const char *body)
+{
+    const char *p = body;
+
+    while ((p = strstr(p, "struct")) != NULL) {
+        char tag[NAME_MAX_LEN];
+        const char *name_start;
+        const char *name_end;
+        const char *open;
+        const char *close;
+        const char *field_start;
+
+        if ((p > body && is_ident((unsigned char)p[-1])) || is_ident((unsigned char)p[6])) {
+            p += 6;
+            continue;
+        }
+        name_start = skip_ws(p + 6);
+        if (!is_ident_start((unsigned char)*name_start)) {
+            p += 6;
+            continue;
+        }
+        name_end = read_name(name_start, tag);
+        open = skip_ws(name_end);
+        if (*open != '{') {
+            p = name_end;
+            continue;
+        }
+        close = unsafe_matching_brace(open);
+        if (close == NULL) {
+            return;
+        }
+        tag_add(TY_STRUCT, tag);
+        field_start = open + 1;
+        while (field_start < close) {
+            const char *semi = find_top_level_char(field_start, close, ';');
+            char *field_text;
+            struct DeclInfo decl;
+
+            if (semi == NULL) {
+                break;
+            }
+            field_text = xstrndup(field_start, (size_t)(semi - field_start + 1));
+            if (parse_decl(field_text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+                struct_clone_add_field(tag, decl.name, decl.type, decl.is_array);
+                if (decl.type.owned || type_has_finalizer(decl.type)) {
+                    struct_finalizer_add_field(tag, decl.name, decl.type);
+                }
+            }
+            free(field_text);
+            field_start = semi + 1;
+        }
+        p = close + 1;
+    }
+}
+
+static void register_unsafe_function_heads(const char *body)
+{
+    const char *p = body;
+
+    while ((p = strchr(p, '{')) != NULL) {
+        const char *line_start = p;
+        const char *line_end = p;
+        char *head;
+        char name[NAME_MAX_LEN];
+        struct Type ret;
+
+        while (line_start > body && line_start[-1] != '\n' && line_start[-1] != '}' && line_start[-1] != ';') {
+            line_start--;
+        }
+        while (line_start < line_end && isspace((unsigned char)*line_start)) {
+            line_start++;
+        }
+        if (line_start == line_end && line_start > body) {
+            line_end = line_start - 1;
+            while (line_end > body && isspace((unsigned char)line_end[-1])) {
+                line_end--;
+            }
+            line_start = line_end;
+            while (line_start > body && line_start[-1] != '\n' && line_start[-1] != '}' && line_start[-1] != ';') {
+                line_start--;
+            }
+        }
+        head = xstrndup(line_start, (size_t)(line_end - line_start));
+        if (parse_function_signature(head, name, &ret)) {
+            register_function_params(head);
+            register_owned_function_signature(head);
+            register_malloc_attribute_function(head);
+        }
+        free(head);
+        p++;
+    }
+}
+
+static void register_unsafe_metadata(const char *body)
+{
+    register_unsafe_struct_fields(body);
+    register_unsafe_function_heads(body);
+}
+
 static struct Text *strip_default_parameters(struct Text *in)
 {
     const char *open = strchr(in->text, '(');
@@ -4340,6 +6333,488 @@ static int range_contains_text(const char *start, const char *end, const char *n
     return 0;
 }
 
+static struct Text *rewrite_os_attributes(struct Text *in)
+{
+    const char *p = in->text;
+    const char *body_start;
+    struct Text *attrs;
+    struct Text *out;
+    int count = 0;
+
+    while (isspace((unsigned char)*p)) {
+        p++;
+    }
+    body_start = p;
+    attrs = text_new();
+    while (is_ident_start((unsigned char)*p)) {
+        char word[NAME_MAX_LEN];
+        const char *name_end = read_name(p, word);
+        const char *next = skip_ws(name_end);
+
+        if (!os_attribute_name(word) || !os_attribute_can_start_decl(word, name_end)) {
+            break;
+        }
+        if (count > 0) {
+            text_add(attrs, ", ");
+        }
+        if (strcmp(word, "section") == 0 || strcmp(word, "aligned") == 0) {
+            const char *close;
+            if (*next != '(') {
+                fprintf(stderr, "c-: type error: %s requires an argument at %s:%d\n",
+                        word, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            close = matching_paren(next);
+            if (close == NULL) {
+                fprintf(stderr, "c-: type error: unterminated %s attribute at %s:%d\n",
+                        word, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            text_add(attrs, word);
+            text_add_n(attrs, next, (size_t)(close + 1 - next));
+            p = skip_ws(close + 1);
+        } else {
+            if (strcmp(word, "no_return") == 0) {
+                text_add(attrs, "noreturn");
+            } else if (strcmp(word, "export") == 0) {
+                text_add(attrs, "used, externally_visible");
+            } else {
+                text_add(attrs, word);
+            }
+            p = next;
+        }
+        count++;
+    }
+    if (count == 0) {
+        text_free(attrs);
+        return in;
+    }
+    out = text_new();
+    text_add_n(out, in->text, (size_t)(body_start - in->text));
+    text_add(out, "__attribute__((");
+    text_add(out, attrs->text);
+    text_add(out, ")) ");
+    text_add(out, p);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(attrs);
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_compile_time_os_ops(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                text_add_ch(out, *p);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (starts_word(p, "static_assert")) {
+            const char *next = skip_ws(p + 13);
+            if (*next == '(') {
+                text_add(out, "_Static_assert");
+                p += 13;
+                changed = 1;
+                continue;
+            }
+        }
+        if (starts_word(p, "offset_of")) {
+            const char *next = skip_ws(p + 9);
+            if (*next == '(') {
+                const char *close = matching_paren(next);
+                const char *comma;
+
+                if (close == NULL) {
+                    fprintf(stderr, "c-: type error: unterminated offset_of at %s:%d\n",
+                            g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                    exit(1);
+                }
+                comma = find_top_level_char(next + 1, close, ',');
+                if (comma != NULL) {
+                    char type_name[NAME_MAX_LEN];
+                    const char *type_start = skip_ws(next + 1);
+                    const char *type_end = comma;
+                    int i;
+                    int known_struct = 0;
+
+                    while (type_end > type_start && isspace((unsigned char)type_end[-1])) {
+                        type_end--;
+                    }
+                    if (type_end > type_start &&
+                        (size_t)(type_end - type_start) < sizeof(type_name) &&
+                        is_ident_start((unsigned char)*type_start)) {
+                        const char *read_end = read_name(type_start, type_name);
+                        if (read_end == type_end) {
+                            for (i = 0; i < g_tags.count; i++) {
+                                if (g_tags.tag[i].kind == TY_STRUCT &&
+                                    strcmp(g_tags.tag[i].name, type_name) == 0) {
+                                    known_struct = 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    text_add(out, "__builtin_offsetof(");
+                    if (known_struct) {
+                        text_add(out, "struct ");
+                    }
+                    text_add_n(out, type_start, (size_t)(type_end - type_start));
+                    text_add(out, ",");
+                    text_add_n(out, comma + 1, (size_t)(close - comma - 1));
+                    text_add_ch(out, ')');
+                    p = close + 1;
+                } else {
+                    text_add(out, "__builtin_offsetof");
+                    p += 9;
+                }
+                changed = 1;
+                continue;
+            }
+        }
+        text_add_ch(out, *p++);
+    }
+    if (!changed) {
+        out->ast = NULL;
+        text_free(out);
+        return in;
+    }
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static int linker_symbol_index(const char *name)
+{
+    int i;
+
+    for (i = 0; i < g_linker_symbols.count; i++) {
+        if (strcmp(g_linker_symbols.name[i], name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void linker_symbol_add(const char *name)
+{
+    if (name[0] == '\0' || linker_symbol_index(name) >= 0) {
+        return;
+    }
+    if (g_linker_symbols.count >= MAX_TAGS) {
+        die("too many linker symbols");
+    }
+    strncpy(g_linker_symbols.name[g_linker_symbols.count], name, NAME_MAX_LEN - 1);
+    g_linker_symbols.name[g_linker_symbols.count][NAME_MAX_LEN - 1] = '\0';
+    g_linker_symbols.count++;
+}
+
+static int parse_linker_symbol_decl(const char *s, char *name)
+{
+    const char *p = skip_ws(s);
+    const char *end;
+
+    name[0] = '\0';
+    if (!starts_word(p, "linker_symbol")) {
+        return 0;
+    }
+    p = skip_ws(p + 13);
+    if (!is_ident_start((unsigned char)*p)) {
+        fprintf(stderr, "c-: type error: linker_symbol requires a symbol name at %s:%d\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    end = read_name(p, name);
+    if (*skip_ws(end) != ';') {
+        fprintf(stderr, "c-: type error: linker_symbol syntax is `linker_symbol name;` at %s:%d\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    return 1;
+}
+
+static struct Text *rewrite_linker_symbol_decl(struct Text *in)
+{
+    char name[NAME_MAX_LEN];
+    struct Text *out;
+
+    if (!parse_linker_symbol_decl(in->text, name)) {
+        return in;
+    }
+    linker_symbol_add(name);
+    out = text_new();
+    text_add(out, "\nextern char ");
+    text_add(out, name);
+    text_add(out, "[];\n");
+    out->tail_return = in->tail_return;
+    out->ast = ast_raw(ND_DECL, out->text);
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_linker_address_ops(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                text_add_ch(out, *p);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (starts_word(p, "addr_of")) {
+            const char *open = skip_ws(p + 7);
+            const char *close;
+            const char *name_start;
+            const char *name_end;
+            char name[NAME_MAX_LEN];
+
+            if (*open != '(') {
+                text_add_ch(out, *p++);
+                continue;
+            }
+            close = matching_paren(open);
+            if (close == NULL) {
+                fprintf(stderr, "c-: type error: unterminated addr_of at %s:%d\n",
+                        g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            name_start = skip_ws(open + 1);
+            name_end = close;
+            while (name_end > name_start && isspace((unsigned char)name_end[-1])) {
+                name_end--;
+            }
+            if (name_end <= name_start ||
+                (size_t)(name_end - name_start) >= NAME_MAX_LEN ||
+                !is_ident_start((unsigned char)*name_start) ||
+                read_name(name_start, name) != name_end) {
+                fprintf(stderr, "c-: type error: addr_of expects one linker symbol name at %s:%d\n",
+                        g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            if (linker_symbol_index(name) < 0) {
+                fprintf(stderr, "c-: type error: addr_of(%s) requires `linker_symbol %s;` first at %s:%d\n",
+                        name, name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            text_add(out, "((unsigned long)(");
+            text_add(out, name);
+            text_add(out, "))");
+            p = close + 1;
+            changed = 1;
+            continue;
+        }
+        text_add_ch(out, *p++);
+    }
+    if (!changed) {
+        out->ast = NULL;
+        text_free(out);
+        return in;
+    }
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_alignment_calls(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                text_add_ch(out, *p);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (starts_word(p, "align_up") || starts_word(p, "align_down") || starts_word(p, "is_aligned")) {
+            char name[NAME_MAX_LEN];
+            const char *name_end = read_name(p, name);
+            const char *open = skip_ws(name_end);
+            const char *close;
+            const char *comma;
+            char tmp[64];
+
+            if (*open != '(') {
+                text_add_n(out, p, (size_t)(name_end - p));
+                p = name_end;
+                continue;
+            }
+            close = matching_paren(open);
+            if (close == NULL) {
+                fprintf(stderr, "c-: type error: unterminated %s call at %s:%d\n",
+                        name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            comma = find_top_level_char(open + 1, close, ',');
+            if (comma == NULL) {
+                fprintf(stderr, "c-: type error: %s expects two arguments at %s:%d\n",
+                        name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            if (strcmp(name, "align_up") == 0) {
+                text_add(out, "cminus_align_up_impl");
+            } else if (strcmp(name, "align_down") == 0) {
+                text_add(out, "cminus_align_down_impl");
+            } else {
+                text_add(out, "cminus_is_aligned_impl");
+            }
+            text_add_ch(out, '(');
+            text_add(out, "(unsigned long)(");
+            text_add_n(out, open + 1, (size_t)(comma - open - 1));
+            text_add(out, "), (unsigned long)(");
+            text_add_n(out, comma + 1, (size_t)(close - comma - 1));
+            text_add(out, "), \"");
+            text_add(out, g_input_path == NULL ? "<unknown>" : g_input_path);
+            text_add(out, "\", ");
+            snprintf(tmp, sizeof(tmp), "%d", yylineno);
+            text_add(out, tmp);
+            text_add_ch(out, ')');
+            p = close + 1;
+            changed = 1;
+            continue;
+        }
+        text_add_ch(out, *p++);
+    }
+    if (!changed) {
+        out->ast = NULL;
+        text_free(out);
+        return in;
+    }
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_mmio_field_decl(struct Text *in, struct DeclInfo *decl)
+{
+    const char *start = skip_ws(in->text);
+    const char *name_pos;
+    const char *type_end;
+    const char *after_name;
+    struct Text *out;
+
+    if (decl == NULL || !decl->is_decl || decl->is_function || decl->name[0] == '\0') {
+        return in;
+    }
+    if (decl->type.kind == TY_STRUCT &&
+        (strcmp(decl->type.tag, "Register") == 0 || strncmp(decl->type.tag, "Register_", 9) == 0)) {
+        return in;
+    }
+    if (decl->is_array || decl->type.ptr > 0) {
+        fprintf(stderr, "c-: type error: mmio struct fields must be scalar register values at %s:%d; use Register<T> explicitly for unusual layouts\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    if (!(decl->type.kind == TY_CHAR || decl->type.kind == TY_SHORT ||
+          decl->type.kind == TY_INT || decl->type.kind == TY_LONG ||
+          decl->type.kind == TY_ENUM || decl->type.kind == TY_BITFLAGS)) {
+        fprintf(stderr, "c-: type error: mmio struct field '%s' must use an integer, enum, or bitflags type at %s:%d\n",
+                decl->name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    name_pos = find_decl_name_pos(in->text, decl->name);
+    if (name_pos == NULL) {
+        return in;
+    }
+    type_end = name_pos;
+    while (type_end > start && isspace((unsigned char)type_end[-1])) {
+        type_end--;
+    }
+    after_name = skip_ws(name_pos + strlen(decl->name));
+    if (*after_name != ';' && *after_name != '\0') {
+        fprintf(stderr, "c-: type error: mmio struct fields cannot have initializers or declarator suffixes at %s:%d\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    out = text_new();
+    text_add_n(out, in->text, (size_t)(start - in->text));
+    text_add(out, "Register<");
+    text_add_n(out, start, (size_t)(type_end - start));
+    text_add(out, "> ");
+    text_add(out, decl->name);
+    text_add(out, ";");
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    out = rewrite_generics(out);
+    return out;
+}
+
+static struct Text *strip_mmio_modifier(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        if (starts_word(p, "mmio")) {
+            const char *next = skip_ws(p + 4);
+            text_add(out, next);
+            changed = 1;
+            break;
+        }
+        text_add_ch(out, *p++);
+    }
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
 static struct Text *strip_attributes(struct Text *in)
 {
     struct Text *out = text_new();
@@ -4362,7 +6837,16 @@ static struct Text *strip_attributes(struct Text *in)
                     }
                     j++;
                 } while (in->text[j] != '\0' && depth > 0);
-                if (range_contains_text(in->text + attr_start, in->text + j, "unused")) {
+                if (range_contains_text(in->text + attr_start, in->text + j, "unused") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "interrupt") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "section") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "aligned") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "packed") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "used") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "naked") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "noreturn") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "weak") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "externally_visible")) {
                     text_add_n(out, in->text + attr_start, j - attr_start);
                 }
                 i = j;
@@ -4755,6 +7239,7 @@ static int parse_new_expr(const char *rhs, const char **new_start, const char **
     *type = base;
     type->ptr += ptr + 1;
     type->owned = 1;
+    type->raw_ptr = 0;
 
     {
         struct Type alloc_type = base;
@@ -5009,6 +7494,7 @@ static int parse_clone_expr(const char *rhs, const char **clone_start, const cha
                 type->owned = 1;
             }
         }
+        type->raw_ptr = 0;
     }
     if (clone_start != NULL) {
         *clone_start = p;
@@ -5494,7 +7980,7 @@ static int build_s_format(const char *quote, struct Text *fmt, struct Text *args
     return 0;
 }
 
-static struct Text *build_asprintf_statement(const char *lhs_name, const char *rhs, const char *original)
+static struct Text *build_s_string_format_statement(const char *lhs_name, const char *rhs, const char *original)
 {
     const char *quote = find_s_string_literal(rhs);
     struct Text *stmt = text_new();
@@ -5509,9 +7995,8 @@ static struct Text *build_asprintf_statement(const char *lhs_name, const char *r
 
     append_indent_from(original, indent);
     text_add(stmt, indent->text);
-    text_add(stmt, "asprintf(&");
     text_add(stmt, lhs_name);
-    text_add(stmt, ", ");
+    text_add(stmt, " = cminus_string_format(");
     text_add(stmt, fmt->text);
     text_add(stmt, args->text);
     text_add(stmt, ");");
@@ -5523,7 +8008,7 @@ static struct Text *build_asprintf_statement(const char *lhs_name, const char *r
     return stmt;
 }
 
-static void append_asprintf_for_quote(struct Text *out, const char *name, const char *quote, const char *indent)
+static void append_s_string_format_for_quote(struct Text *out, const char *name, const char *quote, const char *indent)
 {
     struct Text *fmt = text_new();
     struct Text *args = text_new();
@@ -5533,9 +8018,8 @@ static void append_asprintf_for_quote(struct Text *out, const char *name, const 
         exit(1);
     }
     text_add(out, indent);
-    text_add(out, "asprintf(&");
     text_add(out, name);
-    text_add(out, ", ");
+    text_add(out, " = cminus_string_format(");
     text_add(out, fmt->text);
     text_add(out, args->text);
     text_add(out, ");\n");
@@ -5608,7 +8092,7 @@ static struct Text *rewrite_s_string_temporaries(struct Text *stmt)
         text_add(prefix, "char* ");
         text_add(prefix, tmp);
         text_add(prefix, " = NULL;\n");
-        append_asprintf_for_quote(prefix, tmp, quote_start, indent->text);
+        append_s_string_format_for_quote(prefix, tmp, quote_start, indent->text);
 
         if (!moved && !escapes_to_object_initializer && !escapes_to_push) {
             text_add(suffix, "\n");
@@ -5761,10 +8245,13 @@ static int try_rewrite_string_method(const char *s, const char **end, struct Tex
     const char *close;
     char method[NAME_MAX_LEN];
 
-    if (*s != '"') {
+    if (*s == 's' && s[1] == '"') {
+        receiver_end = scan_string_end(s + 1);
+    } else if (*s == '"') {
+        receiver_end = scan_string_end(s);
+    } else {
         return 0;
     }
-    receiver_end = scan_string_end(s);
     if (receiver_end == NULL) {
         return 0;
     }
@@ -5786,7 +8273,25 @@ static int try_rewrite_string_method(const char *s, const char **end, struct Tex
         return 0;
     }
 
-    text_add(replacement, method);
+    if (strcmp(method, "len") == 0) {
+        text_add(replacement, "cminus_string_len");
+    } else if (strcmp(method, "is_empty") == 0) {
+        text_add(replacement, "cminus_string_is_empty");
+    } else if (strcmp(method, "cmp") == 0) {
+        text_add(replacement, "cminus_string_cmp");
+    } else if (strcmp(method, "eq") == 0) {
+        text_add(replacement, "cminus_string_eq");
+    } else if (strcmp(method, "contains") == 0) {
+        text_add(replacement, "cminus_string_contains");
+    } else if (strcmp(method, "starts_with") == 0) {
+        text_add(replacement, "cminus_string_starts_with");
+    } else if (strcmp(method, "ends_with") == 0) {
+        text_add(replacement, "cminus_string_ends_with");
+    } else if (strcmp(method, "strcmp") == 0) {
+        text_add(replacement, "cminus_string_cmp");
+    } else {
+        return 0;
+    }
     text_add_ch(replacement, '(');
     text_add_n(replacement, s, (size_t)(receiver_end - s));
     if (close > open + 1) {
@@ -5796,6 +8301,202 @@ static int try_rewrite_string_method(const char *s, const char **end, struct Tex
     text_add_ch(replacement, ')');
     *end = close + 1;
     return 1;
+}
+
+static int try_rewrite_critical_static_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *p = s;
+    const char *dot;
+    const char *method_start;
+    const char *method_end;
+    const char *open;
+    const char *close;
+    char method[NAME_MAX_LEN];
+
+    if (!starts_word(p, "Critical")) {
+        return 0;
+    }
+    dot = skip_ws(p + 8);
+    if (*dot != '.') {
+        return 0;
+    }
+    method_start = skip_ws(dot + 1);
+    if (!is_ident_start((unsigned char)*method_start)) {
+        return 0;
+    }
+    method_end = read_name(method_start, method);
+    open = skip_ws(method_end);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+    if (strcmp(method, "enter") != 0) {
+        return 0;
+    }
+    text_add(replacement, "Critical_enter(");
+    if (close > open + 1) {
+        text_add_n(replacement, open + 1, (size_t)(close - open - 1));
+    }
+    text_add_ch(replacement, ')');
+    *end = close + 1;
+    return 1;
+}
+
+static int try_rewrite_string_symbol_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *name_end;
+    const char *dot;
+    const char *method_start;
+    const char *method_end;
+    const char *open;
+    const char *close;
+    char name[NAME_MAX_LEN];
+    char method[NAME_MAX_LEN];
+    struct Symbol *sym;
+
+    if (!is_ident_start((unsigned char)*s)) {
+        return 0;
+    }
+    name_end = read_name(s, name);
+    sym = symbol_find(name);
+    if (sym == NULL || !type_is_string_like(sym->type)) {
+        return 0;
+    }
+    dot = skip_ws(name_end);
+    if (*dot != '.') {
+        return 0;
+    }
+    method_start = skip_ws(dot + 1);
+    if (!is_ident_start((unsigned char)*method_start)) {
+        return 0;
+    }
+    method_end = read_name(method_start, method);
+    open = skip_ws(method_end);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+    if (strcmp(method, "len") == 0) {
+        text_add(replacement, "cminus_string_len");
+    } else if (strcmp(method, "is_empty") == 0) {
+        text_add(replacement, "cminus_string_is_empty");
+    } else if (strcmp(method, "cmp") == 0) {
+        text_add(replacement, "cminus_string_cmp");
+    } else if (strcmp(method, "eq") == 0) {
+        text_add(replacement, "cminus_string_eq");
+    } else if (strcmp(method, "contains") == 0) {
+        text_add(replacement, "cminus_string_contains");
+    } else if (strcmp(method, "starts_with") == 0) {
+        text_add(replacement, "cminus_string_starts_with");
+    } else if (strcmp(method, "ends_with") == 0) {
+        text_add(replacement, "cminus_string_ends_with");
+    } else if (strcmp(method, "strcmp") == 0) {
+        text_add(replacement, "cminus_string_cmp");
+    } else {
+        return 0;
+    }
+    text_add_ch(replacement, '(');
+    text_add_n(replacement, s, (size_t)(name_end - s));
+    if (close > open + 1) {
+        text_add(replacement, ", ");
+        text_add_n(replacement, open + 1, (size_t)(close - open - 1));
+    }
+    text_add_ch(replacement, ')');
+    *end = close + 1;
+    return 1;
+}
+
+static int append_string_method_name(struct Text *replacement, const char *method)
+{
+    if (strcmp(method, "len") == 0) {
+        text_add(replacement, "cminus_string_len");
+    } else if (strcmp(method, "is_empty") == 0) {
+        text_add(replacement, "cminus_string_is_empty");
+    } else if (strcmp(method, "cmp") == 0) {
+        text_add(replacement, "cminus_string_cmp");
+    } else if (strcmp(method, "eq") == 0) {
+        text_add(replacement, "cminus_string_eq");
+    } else if (strcmp(method, "contains") == 0) {
+        text_add(replacement, "cminus_string_contains");
+    } else if (strcmp(method, "starts_with") == 0) {
+        text_add(replacement, "cminus_string_starts_with");
+    } else if (strcmp(method, "ends_with") == 0) {
+        text_add(replacement, "cminus_string_ends_with");
+    } else if (strcmp(method, "strcmp") == 0) {
+        text_add(replacement, "cminus_string_cmp");
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+static int try_rewrite_string_expr_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *name_end;
+    const char *dot;
+    char name[NAME_MAX_LEN];
+    struct Symbol *sym;
+    struct Type current;
+
+    if (!is_ident_start((unsigned char)*s)) {
+        return 0;
+    }
+    name_end = read_name(s, name);
+    sym = symbol_find(name);
+    if (sym == NULL) {
+        return 0;
+    }
+    current = sym->type;
+    dot = skip_ws(name_end);
+    while (*dot == '.' || (dot[0] == '-' && dot[1] == '>')) {
+        const char *field_start = skip_ws(*dot == '.' ? dot + 1 : dot + 2);
+        const char *field_end;
+        const char *after_field;
+        char field[NAME_MAX_LEN];
+        struct Type field_type;
+
+        if (!is_ident_start((unsigned char)*field_start)) {
+            return 0;
+        }
+        field_end = read_name(field_start, field);
+        after_field = skip_ws(field_end);
+        if (type_is_string_like(current)) {
+            const char *close;
+
+            if (*after_field != '(') {
+                return 0;
+            }
+            close = matching_paren(after_field);
+            if (close == NULL) {
+                return 0;
+            }
+            if (!append_string_method_name(replacement, field)) {
+                return 0;
+            }
+            text_add_ch(replacement, '(');
+            text_add_n(replacement, s, (size_t)(dot - s));
+            if (close > after_field + 1) {
+                text_add(replacement, ", ");
+                text_add_n(replacement, after_field + 1, (size_t)(close - after_field - 1));
+            }
+            text_add_ch(replacement, ')');
+            *end = close + 1;
+            return 1;
+        }
+        if (current.kind != TY_STRUCT || *after_field == '(' ||
+            !struct_field_type(current.tag, field, &field_type)) {
+            return 0;
+        }
+        current = field_type;
+        dot = skip_ws(field_end);
+    }
+    return 0;
 }
 
 static int try_rewrite_struct_method(const char *s, const char **end, struct Text *replacement)
@@ -5820,7 +8521,7 @@ static int try_rewrite_struct_method(const char *s, const char **end, struct Tex
         return 0;
     }
     name_end = read_name(s, obj);
-    sym = symbol_find(obj);
+    sym = symbol_find_or_current_param(obj);
     if (sym == NULL || sym->type.kind != TY_STRUCT) {
         return 0;
     }
@@ -5912,6 +8613,9 @@ static struct Text *rewrite_method_calls(struct Text *in)
         struct Text *replacement = text_new();
 
         if (try_rewrite_string_method(p, &end, replacement) ||
+            try_rewrite_critical_static_method(p, &end, replacement) ||
+            try_rewrite_string_expr_method(p, &end, replacement) ||
+            try_rewrite_string_symbol_method(p, &end, replacement) ||
             try_rewrite_struct_method(p, &end, replacement)) {
             text_add(out, replacement->text);
             p = end;
@@ -5931,7 +8635,7 @@ static struct Text *rewrite_method_calls(struct Text *in)
     out->tail_return = in->tail_return;
     out->ast = in->ast;
     text_free(in);
-    return out;
+    return rewrite_method_calls(out);
 }
 
 static int skip_unknown_field_error_for_tag(const char *tag)
@@ -5940,6 +8644,7 @@ static int skip_unknown_field_error_for_tag(const char *tag)
         strncmp(tag, "Vec_", 4) == 0 ||
         strncmp(tag, "List_", 5) == 0 ||
         strncmp(tag, "Map_", 4) == 0 ||
+        strncmp(tag, "FixedVec_", 9) == 0 ||
         strncmp(tag, "Span_", 5) == 0 ||
         strncmp(tag, "Ref_", 4) == 0 ||
         strncmp(tag, "Optional_", 9) == 0 ||
@@ -6031,7 +8736,8 @@ static struct Text *rewrite_auto_field_access(struct Text *in)
             }
             text_add(out, current.ptr > 0 ? "->" : ".");
             text_add_n(out, field_start, (size_t)(field_end - field_start));
-            if (*dot == '.' && current.ptr > 0) {
+            if ((*dot == '.' && current.ptr > 0) ||
+                (dot[0] == '-' && dot[1] == '>' && current.ptr == 0)) {
                 changed = 1;
             }
             current = field_type;
@@ -6113,6 +8819,7 @@ static int collection_index_call_expr(struct Type receiver_type,
     }
     if (strcmp(struct_tmpl->name, "Vec") != 0 &&
         strcmp(struct_tmpl->name, "List") != 0 &&
+        strcmp(struct_tmpl->name, "FixedVec") != 0 &&
         strcmp(struct_tmpl->name, "OwnedVec") != 0 &&
         strcmp(struct_tmpl->name, "OwnedList") != 0) {
         return 0;
@@ -6699,6 +9406,12 @@ static struct Text *rewrite_division_checks(struct Text *in)
     struct Text *out = text_new();
     int changed = 0;
 
+    if (strncmp(g_current_function_name, "cminus_", 7) == 0 ||
+        strncmp(g_current_function_name, "__cminus", 8) == 0 ||
+        strncmp(g_current_function_name, "__CMinus", 8) == 0) {
+        text_free(out);
+        return in;
+    }
     while (*p != '\0') {
         if (*p == '"' || *p == '\'') {
             char quote = *p;
@@ -6811,6 +9524,31 @@ static int param_index(struct FunctionParams *fn, const char *name)
     return -1;
 }
 
+static struct Symbol *symbol_find_or_current_param(const char *name)
+{
+    struct Symbol *sym = symbol_find(name);
+    static struct Symbol param_sym;
+    struct FunctionParams *fn;
+    int pindex;
+
+    if (sym != NULL || g_current_function_name[0] == '\0') {
+        return sym;
+    }
+    fn = function_params_find(g_current_function_name);
+    if (fn == NULL) {
+        return NULL;
+    }
+    pindex = param_index(fn, name);
+    if (pindex < 0) {
+        return NULL;
+    }
+    memset(&param_sym, 0, sizeof(param_sym));
+    strncpy(param_sym.name, name, NAME_MAX_LEN - 1);
+    param_sym.name[NAME_MAX_LEN - 1] = '\0';
+    param_sym.type = fn->param[pindex].type;
+    return &param_sym;
+}
+
 static struct Text *build_parameter_call(struct FunctionParams *fn, const char *args_start, const char *args_end)
 {
     struct Text *values[MAX_PARAMS];
@@ -6874,6 +9612,11 @@ static struct Text *build_parameter_call(struct FunctionParams *fn, const char *
             text_add(out, ", ");
         }
         if (values[i] != NULL) {
+            if (g_unsafe_depth == 0 && expr_is_raw_pointer_input(values[i]->text, values[i]->text + values[i]->len)) {
+                fprintf(stderr, "c-: type error: raw pointer taint cannot be passed to function '%s' in safe mode; use unsafe or a managed safe wrapper\n",
+                        fn->name);
+                exit(1);
+            }
             if (rhs_is_null_literal(values[i]->text)) {
                 if (!type_is_optional(fn->param[i].type)) {
                     fprintf(stderr, "c-: type error: NULL argument for parameter '%s' in function '%s' is only allowed for Optional in safe mode\n",
@@ -6900,6 +9643,26 @@ static struct Text *build_parameter_call(struct FunctionParams *fn, const char *
     return out;
 }
 
+static int args_contain_raw_pointer_input(const char *args_start, const char *args_end)
+{
+    const char *p = args_start;
+
+    while (p < args_end) {
+        const char *arg_end = find_top_level_char(p, args_end, ',');
+        if (arg_end == NULL) {
+            arg_end = args_end;
+        }
+        if (expr_is_raw_pointer_input(p, arg_end)) {
+            return 1;
+        }
+        p = arg_end;
+        if (p < args_end && *p == ',') {
+            p++;
+        }
+    }
+    return 0;
+}
+
 static struct Text *rewrite_parameter_calls(struct Text *in)
 {
     const char *p = in->text;
@@ -6916,7 +9679,15 @@ static struct Text *rewrite_parameter_calls(struct Text *in)
             if (fn != NULL && *open == '(') {
                 const char *close = find_matching_paren(open);
                 if (close != NULL) {
-                    if (!fn->has_defaults && !args_contain_top_level_null(open + 1, close)) {
+                    if (g_unsafe_depth == 0 && fn->is_unsafe &&
+                        strncmp(name, "cminus_", 7) != 0 &&
+                        strncmp(name, "__cminus", 8) != 0) {
+                        fprintf(stderr, "c-: type error: unsafe function '%s' can only be called inside unsafe\n",
+                                name);
+                        exit(1);
+                    }
+                    if (!fn->has_defaults && !args_contain_top_level_null(open + 1, close) &&
+                        !args_contain_raw_pointer_input(open + 1, close)) {
                         text_add_n(out, p, (size_t)(close + 1 - p));
                         p = close + 1;
                         continue;
@@ -6969,7 +9740,7 @@ static struct Text *build_condition_expr(const char *expr, size_t len)
         text_add(prefix, "char* ");
         text_add(prefix, tmp);
         text_add(prefix, " = NULL; ");
-        append_asprintf_for_quote(prefix, tmp, quote_start, "");
+        append_s_string_format_for_quote(prefix, tmp, quote_start, "");
         if (prefix->len > 0 && prefix->text[prefix->len - 1] == '\n') {
             prefix->text[--prefix->len] = '\0';
             text_add_ch(prefix, ' ');
@@ -7093,15 +9864,27 @@ static struct Text *process_control_head(struct Text *head)
     }
     check_safe_pointer_deref(head->text);
     check_casts(head->text);
+    check_safe_heap_calls(head->text);
+    check_no_heap_safe_expr(head->text);
+    check_safe_raw_field_access(head->text);
     check_moved_local_use(head->text);
+    check_dead_borrow_use(head->text);
     head = rewrite_generics(head);
     check_safe_pointer_decl(head->text);
     head = rewrite_method_calls(head);
+    head = rewrite_inferred_array_from_calls(head);
+    check_safe_c_function_calls(head->text);
+    check_no_heap_safe_expr(head->text);
+    check_safe_reference_raw_inputs(head->text);
+    check_safe_raw_field_access(head->text);
+    check_safe_array_index_access(head->text);
     head = rewrite_auto_field_access(head);
     head = rewrite_span_operators(head);
     head = rewrite_sizeof_types(head);
     head = rewrite_index_access(head);
     head = rewrite_parameter_calls(head);
+    check_safe_reference_raw_inputs(head->text);
+    check_null_arguments(head->text);
     head = rewrite_division_checks(head);
     head = rewrite_control_condition(head);
     head->ast = ast_raw(kind, head->text);
@@ -7259,6 +10042,48 @@ static void append_stack_enter(struct Text *out, const char *indent)
     text_add(out, "size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);\n");
 }
 
+static struct Text *rewrite_returns_with_stack_leave(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                text_add_ch(out, *p);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (starts_word(p, "return")) {
+            text_add(out, "cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);\n    ");
+            text_add(out, "return");
+            p += 6;
+            changed = 1;
+            continue;
+        }
+        text_add_ch(out, *p++);
+    }
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    text_free(in);
+    return out;
+}
+
 static int clone_uses_managed_heap(const char *tag)
 {
     return strncmp(tag, "__CMinus", 8) != 0;
@@ -7305,8 +10130,17 @@ static int function_signature_is_internal(const char *head)
         "cminus_",
         "Ref_",
         "Span_",
+        "FixedVec_",
+        "Register_",
+        "Atomic_",
+        "Volatile_",
+        "StaticCell_",
+        "Critical_",
+        "Iterator_",
         "Vec_",
+        "VecIterator_",
         "List_",
+        "ListIterator_",
         "Map_",
         "OwnedVec_",
         "OwnedList_",
@@ -7323,6 +10157,27 @@ static int function_signature_is_internal(const char *head)
         }
     }
     return 0;
+}
+
+static int type_is_nonowning_value_view(struct Type type)
+{
+    return type.kind == TY_STRUCT && type.ptr == 0 &&
+        (strcmp(type.tag, "Ref") == 0 ||
+         strncmp(type.tag, "Ref_", 4) == 0 ||
+         strncmp(type.tag, "Optional_", 9) == 0 ||
+         strcmp(type.tag, "Register") == 0 ||
+         strncmp(type.tag, "Register_", 9) == 0 ||
+         strcmp(type.tag, "Atomic") == 0 ||
+         strncmp(type.tag, "Atomic_", 7) == 0 ||
+         strcmp(type.tag, "Volatile") == 0 ||
+         strncmp(type.tag, "Volatile_", 9) == 0 ||
+         strcmp(type.tag, "StaticCell") == 0 ||
+         strncmp(type.tag, "StaticCell_", 11) == 0 ||
+         strcmp(type.tag, "Critical") == 0 ||
+         strcmp(type.tag, "Span") == 0 ||
+         strncmp(type.tag, "Span_", 5) == 0 ||
+         strcmp(type.tag, "FixedVec") == 0 ||
+         strncmp(type.tag, "FixedVec_", 9) == 0);
 }
 
 static int parse_cast_type_prefix(const char *s, const char *end, const char **after)
@@ -7462,6 +10317,12 @@ static int function_needs_stack_guard(const char *name)
         "cminus_",
         "Ref_",
         "Span_",
+        "FixedVec_",
+        "Register_",
+        "Atomic_",
+        "Volatile_",
+        "StaticCell_",
+        "Critical_",
         "Vec_",
         "List_",
         "Map_",
@@ -7578,6 +10439,12 @@ static void append_struct_clone_field(struct Text *out, struct Type type, const 
         text_add(out, ", sizeof(copy->");
         text_add(out, field_name);
         text_add(out, "));\n");
+    } else if (type_is_nonowning_value_view(type)) {
+        text_add(out, "    copy->");
+        text_add(out, field_name);
+        text_add(out, " = ");
+        text_add(out, expr->text);
+        text_add(out, ";\n");
     } else if (type.kind == TY_STRUCT && type.ptr == 0) {
         char tmp[NAME_MAX_LEN];
 
@@ -7813,6 +10680,9 @@ static void check_safe_pointer_deref(const char *stmt)
             struct Symbol *sym;
 
             if (is_ident_start((unsigned char)*name_start)) {
+                const char *name_end = read_name(name_start, name);
+                const char *operand_end = name_end;
+                const char *after_name;
                 read_name(name_start, name);
                 sym = symbol_find(name);
                 if (sym != NULL) {
@@ -7829,12 +10699,28 @@ static void check_safe_pointer_deref(const char *stmt)
                         continue;
                     }
                 }
+                after_name = skip_ws(name_end);
+                if (*after_name == '(') {
+                    const char *close = matching_paren(after_name);
+                    if (close != NULL) {
+                        char *expr = xstrndup(name_start, (size_t)(close + 1 - name_start));
+                        struct Type type = expr_type(expr);
+                        free(expr);
+                        operand_end = close + 1;
+                        if (type.ptr > 0 || type.raw_ptr) {
+                            fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe for expression near '%s'\n", name);
+                            exit(1);
+                        }
+                    }
+                }
                 if (sym != NULL &&
                     (sym->type.ptr > 0 ||
                      (sym->type.kind == TY_STRUCT && strstr(name_start, "->") != NULL))) {
                     fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe for pointer '%s'\n", name);
                     exit(1);
                 }
+                p = operand_end;
+                continue;
             }
         }
         p++;
@@ -7873,6 +10759,7 @@ static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct
     struct Text *out;
 
     if (is_unsafe_head(head->text)) {
+        register_unsafe_metadata(body->text);
         out = text_join3(lb, body, rb);
         if (g_unsafe_depth > 0) {
             g_unsafe_depth--;
@@ -7944,6 +10831,10 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     struct Text *all = text_join(decl, semi);
     int is_func_sig;
 
+    all = rewrite_linker_symbol_decl(all);
+    if (parse_linker_symbol_decl(all->text, func_name)) {
+        return all;
+    }
     if (is_uniq_decl(all->text)) {
         if (!g_emit_uniq) {
             return uniq_extern_decl(all);
@@ -7957,6 +10848,7 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     }
     is_func_sig = parse_function_signature(all->text, func_name, &ret);
     if (is_func_sig) {
+        validate_interrupt_function_head(all->text);
         register_function_params(all->text);
         register_owned_function_signature(all->text);
         register_malloc_attribute_function(all->text);
@@ -7967,7 +10859,13 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     all->ast = ast_raw(ND_DECL, all->text);
     if (is_func_sig) {
         all = strip_default_parameters(all);
+        all = rewrite_interrupt_function_head(all);
     }
+    all = rewrite_os_attributes(all);
+    all = rewrite_sizeof_types(all);
+    all = rewrite_compile_time_os_ops(all);
+    all = rewrite_linker_address_ops(all);
+    all = rewrite_alignment_calls(all);
     return remove_percent(strip_attributes(all));
 }
 
@@ -7992,12 +10890,14 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     int owned_rvalue_call = 0;
     int is_borrowed = 0;
     char moved_name[NAME_MAX_LEN];
+    char borrow_owner[NAME_MAX_LEN];
 
     post_free_name[0] = '\0';
     owned_name[0] = '\0';
     func_name[0] = '\0';
     lhs_name[0] = '\0';
     moved_name[0] = '\0';
+    borrow_owner[0] = '\0';
     post_free_type = type_unknown();
     owned_assign_type = type_unknown();
     new_type = type_unknown();
@@ -8016,28 +10916,48 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = rewrite_optional_null_assignment(all);
     eq = find_assignment(all->text);
     if (!g_in_function) {
+        if (g_in_aggregate_struct && g_current_struct_mmio &&
+            parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+            all = rewrite_mmio_field_decl(all, &decl);
+        }
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0' &&
             parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' &&
             decl.type.ptr >= 0) {
+            if (g_unsafe_depth == 0 && type_is_stored_safe_reference(decl.type)) {
+                fprintf(stderr, "c-: type error: Ref/Span fields are not allowed in safe structs for field '%s.%s' at %s:%d; keep safe references local or store owned data\n",
+                        g_current_struct_tag, decl.name, g_input_path ? g_input_path : "<stdin>", yylineno);
+                exit(1);
+            }
             struct_clone_add_field(g_current_struct_tag, decl.name, decl.type, decl.is_array);
             if (decl.type.owned || type_has_finalizer(decl.type)) {
-            struct_finalizer_add_field(g_current_struct_tag, decl.name, decl.type);
+                struct_finalizer_add_field(g_current_struct_tag, decl.name, decl.type);
             }
         }
         all->tail_return = 0;
         all->ast = ast_raw(ND_RAW, all->text);
+        all = rewrite_os_attributes(all);
+        all = rewrite_sizeof_types(all);
+        all = rewrite_compile_time_os_ops(all);
+        all = rewrite_linker_address_ops(all);
+        all = rewrite_alignment_calls(all);
         return remove_percent(strip_attributes(all));
     }
     check_null_assignment(all->text);
     if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
         moved_local_remove(decl.name);
+        borrow_link_remove_borrower(decl.name);
     }
     check_moved_local_use(all->text);
     if (eq >= 0 && extract_lhs_name(all->text, eq, lhs_name)) {
         moved_local_remove(lhs_name);
+        borrow_link_remove_borrower(lhs_name);
     }
+    check_dead_borrow_use(all->text);
     check_safe_pointer_deref(all->text);
     check_casts(all->text);
+    check_safe_heap_calls(all->text);
+    check_no_heap_safe_expr(all->text);
+    check_safe_raw_field_access(all->text);
     if (text_has_word(all->text, "move")) {
         g_function_returns_move = 1;
         if (g_current_function_name[0] != '\0' && g_current_function_ret.ptr > 0) {
@@ -8055,6 +10975,11 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         }
         if (decl.has_init) {
             rhs_type = expr_type(decl.init);
+            if ((is_borrowed && extract_direct_borrow_owner(decl.init, borrow_owner)) ||
+                (is_safe_reference_type(decl.type) &&
+                 extract_safe_reference_borrow_owner(decl.init, borrow_owner))) {
+                borrow_link_add(decl.name, borrow_owner);
+            }
             if (extract_move_name(decl.init, moved_name)) {
                 if (decl.type.ptr <= 0) {
                     fprintf(stderr, "c-: type error: move result requires a pointer declaration for '%s'\n", decl.name);
@@ -8086,7 +11011,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 check_assignment_type(decl.name, decl.type, rhs_type);
                 symbol_add(decl.name, decl.type);
                 out = build_decl_without_initializer(all->text, eq);
-                call = build_asprintf_statement(decl.name, decl.init, all->text);
+                call = build_s_string_format_statement(decl.name, decl.init, all->text);
                 text_add_ch(out, '\n');
                 out = text_join(out, call);
                 if (post_free) {
@@ -8150,13 +11075,25 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         }
         all->tail_return = 0;
         all->ast = ast_raw(ND_DECL, all->text);
+        all = rewrite_os_attributes(all);
         all = remove_percent(strip_attributes(all));
         all = rewrite_method_calls(all);
+        all = rewrite_inferred_array_from_calls(all);
+        check_safe_c_function_calls(all->text);
+        check_no_heap_safe_expr(all->text);
+        check_safe_reference_raw_inputs(all->text);
+        check_safe_raw_field_access(all->text);
+        check_safe_array_index_access(all->text);
+        check_span_stack_array_bounds(all->text);
         all = rewrite_auto_field_access(all);
         all = rewrite_parameter_calls(all);
+        check_safe_reference_raw_inputs(all->text);
         check_null_arguments(all->text);
         all = rewrite_span_operators(all);
         all = rewrite_sizeof_types(all);
+        all = rewrite_compile_time_os_ops(all);
+        all = rewrite_linker_address_ops(all);
+        all = rewrite_alignment_calls(all);
         all = rewrite_index_access(all);
         all = rewrite_division_checks(all);
         all = rewrite_control_condition(all);
@@ -8199,6 +11136,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 owned_assign_lhs = slice_lhs_expr(all->text, eq);
             }
         }
+        borrow_links_invalidate_owner(moved_name);
     } else if (eq >= 0 && rhs_has_s_string(all->text + eq + 1)) {
         char *lhs_expr;
 
@@ -8232,10 +11170,13 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             strcpy(post_free_name, lhs_name);
             post_free_type = lhs_type;
         }
-        all = build_asprintf_statement(lhs_expr, all->text + eq + 1, all->text);
+        all = build_s_string_format_statement(lhs_expr, all->text + eq + 1, all->text);
         free(lhs_expr);
         if (owned_assign) {
             all = prepend_owned_assignment_release(all, all->text, owned_assign_lhs, owned_assign_type);
+            if (extract_direct_borrow_owner(owned_assign_lhs, borrow_owner)) {
+                borrow_links_invalidate_owner(borrow_owner);
+            }
             free(owned_assign_lhs);
             owned_assign_lhs = NULL;
         }
@@ -8362,20 +11303,38 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
             rhs_type = expr_type(all->text + eq + 1);
             check_assignment_type(lhs_name, lhs_type, rhs_type);
+            if (!lhs->type.owned &&
+                (extract_direct_borrow_owner(all->text + eq + 1, borrow_owner) ||
+                 (is_safe_reference_type(lhs->type) &&
+                  extract_safe_reference_borrow_owner(all->text + eq + 1, borrow_owner)))) {
+                borrow_link_add(lhs_name, borrow_owner);
+            }
         }
     } else if (eq < 0 && rhs_has_malloc_call(all->text, func_name)) {
         owned_rvalue_call = 1;
     }
     all->tail_return = 0;
     all->ast = ast_raw(eq >= 0 ? ND_ASSIGN : ND_EXPR_STMT, all->text);
+    all = rewrite_os_attributes(all);
     all = remove_percent(strip_attributes(all));
     all = rewrite_payload_enum_constructors(all);
     all = rewrite_method_calls(all);
+    all = rewrite_inferred_array_from_calls(all);
+    check_safe_c_function_calls(all->text);
+    check_no_heap_safe_expr(all->text);
+    check_safe_reference_raw_inputs(all->text);
+    check_safe_raw_field_access(all->text);
+    check_safe_array_index_access(all->text);
+    check_span_stack_array_bounds(all->text);
     all = rewrite_auto_field_access(all);
     all = rewrite_span_operators(all);
     all = rewrite_sizeof_types(all);
+    all = rewrite_compile_time_os_ops(all);
+    all = rewrite_linker_address_ops(all);
+    all = rewrite_alignment_calls(all);
     all = rewrite_index_access(all);
     all = rewrite_parameter_calls(all);
+    check_safe_reference_raw_inputs(all->text);
     check_null_arguments(all->text);
     all = rewrite_division_checks(all);
     all = rewrite_clone_expressions(all);
@@ -8387,6 +11346,9 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     }
     if (owned_assign) {
         all = prepend_owned_assignment_release(all, all->text, owned_assign_lhs, owned_assign_type);
+        if (extract_direct_borrow_owner(owned_assign_lhs, borrow_owner)) {
+            borrow_links_invalidate_owner(borrow_owner);
+        }
         free(owned_assign_lhs);
         owned_assign_lhs = NULL;
     }
@@ -8417,7 +11379,12 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     }
     check_safe_pointer_deref(all->text);
     check_casts(all->text);
+    check_safe_heap_calls(all->text);
+    check_no_heap_safe_expr(all->text);
+    check_safe_raw_field_access(all->text);
     check_moved_local_use(all->text);
+    check_dead_borrow_use(all->text);
+    check_borrow_escape_return(all->text);
     remove_moved_locals(all->text);
     all = rewrite_generics(all);
     all = rewrite_payload_enum_constructors(all);
@@ -8434,13 +11401,46 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
                     g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
             exit(1);
         }
+        if (expr_start != NULL && g_unsafe_depth == 0) {
+            const char *expr_end = expr_start + strlen(expr_start);
+            char *expr_text;
+            struct Type return_type;
+
+            while (expr_end > expr_start && isspace((unsigned char)expr_end[-1])) {
+                expr_end--;
+            }
+            if (expr_end > expr_start && expr_end[-1] == ';') {
+                expr_end--;
+            }
+            while (expr_end > expr_start && isspace((unsigned char)expr_end[-1])) {
+                expr_end--;
+            }
+            expr_text = xstrndup(expr_start, (size_t)(expr_end - expr_start));
+            return_type = expr_type(expr_text);
+            free(expr_text);
+            if (return_type.raw_ptr) {
+                fprintf(stderr, "c-: type error: raw pointer taint cannot be returned from safe function '%s'; use unsafe or a managed safe wrapper\n",
+                        g_current_function_name);
+                exit(1);
+            }
+        }
     }
     all = rewrite_method_calls(all);
+    all = rewrite_inferred_array_from_calls(all);
+    check_safe_c_function_calls(all->text);
+    check_safe_reference_raw_inputs(all->text);
+    check_safe_raw_field_access(all->text);
+    check_safe_array_index_access(all->text);
+    check_span_stack_array_bounds(all->text);
     all = rewrite_auto_field_access(all);
     all = rewrite_span_operators(all);
     all = rewrite_sizeof_types(all);
+    all = rewrite_compile_time_os_ops(all);
+    all = rewrite_linker_address_ops(all);
+    all = rewrite_alignment_calls(all);
     all = rewrite_index_access(all);
     all = rewrite_parameter_calls(all);
+    check_safe_reference_raw_inputs(all->text);
     check_null_arguments(all->text);
     all = rewrite_division_checks(all);
     all = remove_percent(strip_attributes(all));
@@ -8489,6 +11489,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     struct Type ret;
 
     if (is_unsafe_head(head->text)) {
+        register_unsafe_metadata(body->text);
         cminus_unsafe_pop();
         out = body;
         text_free(head);
@@ -8496,6 +11497,23 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         text_free(rb);
         g_top_block_is_function = 0;
         g_in_function = 0;
+        return out;
+    }
+
+    if (g_current_bitflags) {
+        bitflags_add(g_current_bitflags_name, g_current_bitflags_base);
+        out = emit_bitflags_decl(g_current_bitflags_name, g_current_bitflags_base, body->text);
+        g_current_bitflags = 0;
+        g_top_block_is_function = 0;
+        g_in_aggregate_struct = 0;
+        g_current_struct_tag[0] = '\0';
+        g_current_bitflags_name[0] = '\0';
+        g_current_bitflags_base[0] = '\0';
+        g_skip_next_semi = 1;
+        text_free(head);
+        text_free(lb);
+        text_free(body);
+        text_free(rb);
         return out;
     }
 
@@ -8555,6 +11573,8 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
             g_in_function = 0;
             g_owned.count = 0;
             g_finalized_locals.count = 0;
+            g_moved_locals.count = 0;
+            g_borrow_links.count = 0;
             g_locals.count = 0;
             text_free(lb);
             text_free(body);
@@ -8568,6 +11588,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         struct StructFinalizer *fin = struct_finalizer_find(g_current_struct_tag);
         struct StructFinalizer *clone = struct_clone_find(g_current_struct_tag);
         register_tags_in_text(head->text);
+        head = strip_mmio_modifier(head);
         out = text_join3(head, lb, body);
         out = text_join(out, rb);
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0') {
@@ -8581,12 +11602,14 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         out->ast = ast_block(body_ast);
         g_top_block_is_function = 0;
         g_in_aggregate_struct = 0;
+        g_current_struct_mmio = 0;
         g_current_struct_tag[0] = '\0';
         return out;
     }
 
     head = rewrite_generics(head);
     head = rewrite_safe_reference_decl(head);
+    validate_interrupt_function_head(head->text);
     register_function_params(head->text);
     register_owned_function_signature(head->text);
     register_malloc_attribute_function(head->text);
@@ -8595,6 +11618,8 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         owned_func_add_type(name, ret);
     }
     head = strip_default_parameters(head);
+    head = rewrite_interrupt_function_head(head);
+    head = rewrite_os_attributes(head);
     head = remove_percent(strip_attributes(head));
     {
         struct Text *prologue = text_new();
@@ -8619,10 +11644,14 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     out->ast = ast_block(body_ast);
     g_owned.count = 0;
     g_finalized_locals.count = 0;
+    g_moved_locals.count = 0;
+    g_borrow_links.count = 0;
     g_locals.count = 0;
     g_function_returns_move = 0;
     g_current_function_name[0] = '\0';
     g_current_function_ret = type_unknown();
+    g_current_function_interrupt = 0;
+    g_current_function_naked = 0;
     g_in_function = 0;
     return out;
 }
@@ -8706,8 +11735,12 @@ static void emit_generic_function_instances(FILE *out)
             fputs(concrete_head->text, out);
             fputs("{", out);
             if (head_function_name(concrete_head->text, func_name) &&
-                function_needs_stack_guard(func_name)) {
+                function_needs_stack_guard(func_name) &&
+                strstr(concrete_head->text, "Iterator_next_") == NULL &&
+                strstr(concrete_head->text, "VecIterator_next_") == NULL &&
+                strstr(concrete_head->text, "ListIterator_next_") == NULL) {
                 fputs("    char __cminus_stack_anchor;\n    size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);\n", out);
+                concrete_body = rewrite_returns_with_stack_leave(concrete_body);
             } else {
                 func_name[0] = '\0';
             }
@@ -8855,7 +11888,8 @@ static void emit_payload_enum_instances(FILE *out)
 
             for (v = 0; v < en->variant_count; v++) {
                 struct PayloadVariant *variant = &en->variant[v];
-                int pointer_enum = strcmp(en->name, "__CMinusIndex") != 0;
+                int pointer_enum = strcmp(en->name, "__CMinusIndex") != 0 &&
+                    strcmp(en->name, "Optional") != 0;
 
                 fputs("static __attribute__((unused)) struct ", out);
                 fputs(inst->concrete, out);
@@ -9053,18 +12087,21 @@ int main(int argc, char **argv)
     const char *input_path = NULL;
 
     g_bare_metal = 0;
+    g_no_heap = 0;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-bare") == 0) {
             g_bare_metal = 1;
+        } else if (strcmp(argv[i], "-no-heap") == 0) {
+            g_no_heap = 1;
         } else if (input_path == NULL) {
             input_path = argv[i];
         } else {
-            fputs("usage: c- [-bare] input.c- > output.c\n", stderr);
+            fputs("usage: c- [-bare] [-no-heap] input.c- > output.c\n", stderr);
             return 2;
         }
     }
     if (input_path == NULL) {
-        fputs("usage: c- [-bare] input.c- > output.c\n", stderr);
+        fputs("usage: c- [-bare] [-no-heap] input.c- > output.c\n", stderr);
         return 2;
     }
 
@@ -9080,7 +12117,10 @@ int main(int argc, char **argv)
     text_add(g_defines, "void cminus_panic(const char* message, const char* file, int line);\n");
     text_add(g_defines, "int cminus_ptr_classify(void* mem, unsigned long* stack_id_out);\n");
     text_add(g_defines, "void cminus_ptr_require_alive(void* mem, unsigned long kind, unsigned long stack_id, const char* file, int line);\n");
-    text_add(g_defines, "void* cminus_gc_calloc_impl(unsigned long count, unsigned long size, const char* file, int line);\n");
+    text_add(g_defines, "__SIZE_TYPE__ cminus_stack_enter_impl(const char* file, int line, void* anchor);\n");
+    text_add(g_defines, "void cminus_stack_leave_impl(__SIZE_TYPE__ id, const char* file, int line);\n");
+    text_add(g_defines, "void* cminus_gc_calloc_impl(__SIZE_TYPE__ count, __SIZE_TYPE__ size, const char* file, int line);\n");
+    text_add(g_defines, "void cminus_gc_free_impl(void* mem, const char* file, int line);\n");
     g_malloc_funcs.count = 0;
     register_builtin_owned_functions();
     g_right_value_id = 0;

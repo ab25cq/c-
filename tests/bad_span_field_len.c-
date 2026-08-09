@@ -1,0 +1,11 @@
+struct Holder {
+    int data[3];
+};
+
+int main(void)
+{
+    Holder holder;
+    Span<int> values = Span<int>.from(holder.data, 4);
+
+    return values.len();
+}

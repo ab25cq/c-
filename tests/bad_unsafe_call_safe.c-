@@ -1,0 +1,12 @@
+unsafe {
+int read_raw(int* value)
+{
+    return *value;
+}
+}
+
+int main(void)
+{
+    int value = 3;
+    return read_raw(&value);
+}

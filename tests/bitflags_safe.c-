@@ -1,0 +1,21 @@
+bitflags PageFlags : unsigned int {
+    Present = 1u,
+    Write = 2u,
+    User = 4u,
+};
+
+bitflags IrqFlags : unsigned int {
+    Timer = 1u,
+};
+
+int main(void)
+{
+    PageFlags flags = PageFlags_Present | PageFlags_Write;
+    PageFlags more = PageFlags_User;
+
+    flags = more;
+    if ((flags & PageFlags_User) == 0u) {
+        return 1;
+    }
+    return 0;
+}

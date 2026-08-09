@@ -30,6 +30,9 @@
 #define CPM_BARE_PROGRAM_FLAGS "-nostdlib -fno-stack-protector " \
     "-fno-asynchronous-unwind-tables -fno-ident -no-pie -Wl,-e,_start " \
     "-Wl,--build-id=none -Wl,-z,noseparate-code -Wl,-z,norelro"
+#define CPM_BARE_CROSS_PROGRAM_FLAGS "-nostdlib -fno-stack-protector " \
+    "-fno-asynchronous-unwind-tables -fno-ident -Wl,-e,_start " \
+    "-Wl,--build-id=none"
 
 /*
  * The runtime object holds the actual definitions and IS compiled freestanding
@@ -52,8 +55,10 @@ struct Manifest {
     char compiler[VALUE_MAX_LEN];
     char cflags[VALUE_MAX_LEN];
     char ldflags[VALUE_MAX_LEN];
+    char run[VALUE_MAX_LEN];
     int bare;
     int bare_runtime;
+    int no_heap;
     int strip;
     int strip_sections;
 };
@@ -620,10 +625,16 @@ static void read_manifest(struct Manifest *m)
                 unquote_value(m->cflags, sizeof(m->cflags), value);
             } else if (strcmp(section, "build") == 0 && strcmp(key, "ldflags") == 0) {
                 unquote_value(m->ldflags, sizeof(m->ldflags), value);
+            } else if (strcmp(section, "run") == 0 && strcmp(key, "command") == 0) {
+                unquote_value(m->run, sizeof(m->run), value);
             } else if (strcmp(section, "build") == 0 && strcmp(key, "bare") == 0) {
                 char unquoted[VALUE_MAX_LEN];
                 unquote_value(unquoted, sizeof(unquoted), value);
                 m->bare = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "no_heap") == 0) {
+                char unquoted[VALUE_MAX_LEN];
+                unquote_value(unquoted, sizeof(unquoted), value);
+                m->no_heap = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
             } else if (strcmp(section, "build") == 0 && strcmp(key, "bare_runtime") == 0) {
                 char unquoted[VALUE_MAX_LEN];
                 unquote_value(unquoted, sizeof(unquoted), value);
@@ -1245,8 +1256,8 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
         snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", c_path);
         shell_quote(q_src, sizeof(q_src), sources.path[i]);
         shell_quote(q_c, sizeof(q_c), tmp_path);
-        snprintf(cmd, sizeof(cmd), "C_MINUS_EMIT_UNIQ=%d %s%s %s > %s",
-                 emit_uniq, q_translator, m.bare ? " -bare" : "", q_src, q_c);
+        snprintf(cmd, sizeof(cmd), "C_MINUS_EMIT_UNIQ=%d %s%s%s %s > %s",
+                 emit_uniq, q_translator, m.bare ? " -bare" : "", m.no_heap ? " -no-heap" : "", q_src, q_c);
         if (run_cmd(cmd) != 0) {
             return 1;
         }
@@ -1293,7 +1304,7 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
     {
         const char *opt = optimize ? CPM_SIZE_OPT_FLAGS : "";
         const char *extra = (extra_cflags != NULL) ? extra_cflags : "";
-        const char *bare = m.bare ? (m.bare_runtime ? CPM_BARE_PROGRAM_FLAGS : CPM_BARE_NO_RUNTIME_PROGRAM_FLAGS) : "";
+        const char *bare = m.bare ? (m.bare_runtime ? (strstr(m.compiler, "none-eabi") != NULL ? CPM_BARE_CROSS_PROGRAM_FLAGS : CPM_BARE_PROGRAM_FLAGS) : CPM_BARE_NO_RUNTIME_PROGRAM_FLAGS) : "";
         snprintf(cmd, sizeof(cmd), "%s %s %s %s %s %s -Itarget/debug",
                  m.compiler, m.cflags, extra, opt, bare, CPM_GC_SECTIONS_FLAGS);
     }
@@ -1349,6 +1360,19 @@ static int run_manifest_output(int argc, char **argv, const char *prefix)
     int i;
 
     read_manifest(&m);
+    if ((prefix == NULL || prefix[0] == '\0') && m.run[0] != '\0') {
+        snprintf(cmd, sizeof(cmd), "%s", m.run);
+        for (i = 0; i < argc; i++) {
+            char q_arg[PATH_MAX_LEN * 2];
+            shell_quote(q_arg, sizeof(q_arg), argv[i]);
+            if (strlen(cmd) + strlen(q_arg) + 2 >= sizeof(cmd)) {
+                die("cpm: command too long");
+            }
+            strcat(cmd, " ");
+            strcat(cmd, q_arg);
+        }
+        return run_cmd(cmd);
+    }
     shell_quote(q_out, sizeof(q_out), m.out);
     if (prefix != NULL && prefix[0] != '\0') {
         snprintf(cmd, sizeof(cmd), "%s %s", prefix, q_out);

@@ -3,5 +3,6 @@
 tests/*.out
 tests/*.out.o
 tests/*.err
+tests/*.out.log
 *.o
 /a.out

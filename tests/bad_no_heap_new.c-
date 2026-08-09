@@ -1,0 +1,9 @@
+struct Data {
+    int value;
+};
+
+int main(void)
+{
+    Data data = new Data;
+    return data.value;
+}

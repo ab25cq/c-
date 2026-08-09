@@ -1,0 +1,19 @@
+unsafe {
+#include <stdlib.h>
+
+char* raw_make(void)
+{
+    return malloc(8);
+}
+}
+
+Optional<char*> make_optional(void)
+{
+    return new Optional<char*>.Some(raw_make());
+}
+
+int main(void)
+{
+    make_optional();
+    return 0;
+}

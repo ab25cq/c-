@@ -1,0 +1,14 @@
+int main(void)
+{
+    Critical guard = Critical.enter();
+
+    if (!guard.is_active()) {
+        return 1;
+    }
+    guard.leave();
+    if (guard.is_active()) {
+        return 2;
+    }
+    guard.leave();
+    return 0;
+}

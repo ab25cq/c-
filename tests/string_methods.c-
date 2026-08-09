@@ -1,0 +1,27 @@
+int main(void)
+{
+    string text = s"hello";
+
+    if (text.len() != 5) {
+        return 1;
+    }
+    if (!text.eq("hello")) {
+        return 2;
+    }
+    if (text.cmp("hello") != 0) {
+        return 3;
+    }
+    if (!text.contains("ell")) {
+        return 4;
+    }
+    if (!text.starts_with("he")) {
+        return 5;
+    }
+    if (!text.ends_with("lo")) {
+        return 6;
+    }
+    if (!s"abc".eq("abc")) {
+        return 7;
+    }
+    return 0;
+}

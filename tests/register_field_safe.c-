@@ -1,0 +1,20 @@
+struct Uart {
+    Register<unsigned int> status;
+    Register<unsigned int> data;
+};
+
+int main(void)
+{
+    unsigned int status_cell = 0;
+    unsigned int data_cell = 0;
+    stack Uart uart;
+
+    unsafe {
+        uart.status = Register<unsigned int>.from_addr((unsigned long)&status_cell);
+        uart.data = Register<unsigned int>.from_addr((unsigned long)&data_cell);
+    }
+
+    uart.status.write(0x01u);
+    uart.data.write(0x41u);
+    return uart.status.read() == 1u && uart.data.read() == 0x41u ? 0 : 1;
+}

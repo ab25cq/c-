@@ -1,0 +1,13 @@
+linker_symbol __kernel_start;
+linker_symbol __kernel_end;
+
+export char __kernel_start[1];
+export char __kernel_end[1];
+
+int main(void)
+{
+    unsigned long start = addr_of(__kernel_start);
+    unsigned long end = addr_of(__kernel_end);
+
+    return start != 0u && end != 0u ? 0 : 1;
+}

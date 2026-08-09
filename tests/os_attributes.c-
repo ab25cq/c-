@@ -1,0 +1,24 @@
+section(".vectors") used int vectors[4];
+aligned(4096) int page_table[1024];
+
+naked void trampoline(void)
+{
+    unsafe {
+        __asm__ volatile("");
+    }
+}
+
+struct Packet {
+    char tag;
+    int value;
+};
+
+int main(void)
+{
+    aligned(16) int stack_word;
+
+    vectors[0] = 7;
+    page_table[0] = vectors[0];
+    stack_word = page_table[0];
+    return stack_word;
+}

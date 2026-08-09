@@ -24,7 +24,7 @@ int main(void)
     if (copy->name == person->name) {
         return 2;
     }
-    if (strcmp(copy->name, "Alice") != 0 || copy->age != 42) {
+    if (!copy.name.eq("Alice") || copy->age != 42) {
         return 3;
     }
     return 0;

@@ -1,0 +1,7 @@
+int main(void)
+{
+    int data[3];
+    Span<int> values = Span<int>.from(data, 4);
+
+    return values.len();
+}

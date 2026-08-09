@@ -1,0 +1,9 @@
+unsafe {
+#include <stdlib.h>
+}
+
+int main(void)
+{
+    malloc(16);
+    return 0;
+}

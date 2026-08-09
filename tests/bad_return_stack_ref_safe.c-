@@ -1,0 +1,13 @@
+Ref<int> make_ref(void)
+{
+    int value = 123;
+
+    return Ref<int>.from(&value);
+}
+
+int main(void)
+{
+    Ref<int> ref = make_ref();
+
+    return ref.get();
+}

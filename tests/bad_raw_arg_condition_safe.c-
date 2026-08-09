@@ -1,0 +1,21 @@
+unsafe {
+#include <stdlib.h>
+
+char* raw_make(void)
+{
+    return malloc(8);
+}
+}
+
+int present(borrow string text)
+{
+    return text != NULL;
+}
+
+int main(void)
+{
+    if (present(raw_make())) {
+        return 1;
+    }
+    return 0;
+}

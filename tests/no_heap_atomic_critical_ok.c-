@@ -1,0 +1,9 @@
+int main(void)
+{
+    Atomic<unsigned int> value = Atomic<unsigned int>.init(0u);
+    Critical guard = Critical.enter();
+
+    value.store(42u);
+    guard.leave();
+    return value.load() == 42u ? 0 : 1;
+}

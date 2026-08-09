@@ -1,0 +1,19 @@
+unsafe {
+#include <stdlib.h>
+
+char* raw_make(void)
+{
+    return malloc(8);
+}
+}
+
+int take(borrow string value)
+{
+    return value != NULL;
+}
+
+int main(void)
+{
+    take(raw_make());
+    return 0;
+}

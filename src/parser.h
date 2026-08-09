@@ -45,11 +45,12 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 382 "src/parser.y"
+#line 461 "src/parser.y"
 
 struct Text;
+struct DeclInfo;
 
-#line 53 "src/parser.h"
+#line 54 "src/parser.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -92,11 +93,11 @@ struct Text;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 386 "src/parser.y"
+#line 466 "src/parser.y"
 
     struct Text *node;
 
-#line 100 "src/parser.h"
+#line 101 "src/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

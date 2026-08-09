@@ -1,0 +1,8 @@
+int main(void)
+{
+    unsafe {
+        char* p = malloc(8);
+    }
+    Span<char> values = Span<char>.from(p + 1, 4);
+    return 0;
+}

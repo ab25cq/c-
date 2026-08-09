@@ -1,0 +1,36 @@
+unsafe {
+#include <stdio.h>
+}
+
+int sum_iter(Iterator<int> it)
+{
+    struct __CMinusIndex<int> item;
+    int sum = 0;
+
+    while (1) {
+        item = it.next();
+        if (item.is_None()) {
+            break;
+        }
+        sum += item.get_Some();
+    }
+    return sum;
+}
+
+int main(void)
+{
+    Vec<int> xs = Vec<int>.new();
+    List<int> ys = List<int>.new();
+    int total;
+
+    xs.push(1);
+    xs.push(2);
+    xs.push(3);
+
+    ys.push(10);
+    ys.push(20);
+
+    total = sum_iter(xs.iter()) + sum_iter(ys.iter());
+    printf("%d\n", total);
+    return total == 36 ? 0 : 1;
+}

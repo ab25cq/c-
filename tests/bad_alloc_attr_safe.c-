@@ -1,0 +1,18 @@
+unsafe {
+#include <stdlib.h>
+}
+
+void* raw_alloc(size_t size) __attribute__((malloc));
+
+unsafe {
+void* raw_alloc(size_t size)
+{
+    return malloc(size);
+}
+}
+
+int main(void)
+{
+    raw_alloc(16);
+    return 0;
+}

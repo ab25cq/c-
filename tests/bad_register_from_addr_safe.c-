@@ -1,0 +1,5 @@
+int main(void)
+{
+    Register<unsigned int> reg = Register<unsigned int>.from_addr(0x1000u);
+    return reg.is_null();
+}

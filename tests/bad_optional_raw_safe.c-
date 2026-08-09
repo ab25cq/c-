@@ -1,0 +1,8 @@
+int main(void)
+{
+    unsafe {
+        char* p = malloc(8);
+    }
+    Optional<char*> value = new Optional<char*>.Some(p);
+    return 0;
+}

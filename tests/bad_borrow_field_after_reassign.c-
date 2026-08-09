@@ -1,0 +1,18 @@
+unsafe {
+#include <string.h>
+}
+
+struct Holder {
+    string text;
+};
+
+int main(void)
+{
+    Holder holder = new Holder;
+    holder.text = s"abc";
+
+    borrow string view = holder.text;
+    holder.text = s"def";
+
+    return view.len();
+}

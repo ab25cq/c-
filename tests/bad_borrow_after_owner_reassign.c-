@@ -1,0 +1,12 @@
+unsafe {
+#include <string.h>
+}
+
+int main(void)
+{
+    owned string text = s"abc";
+    borrow string view = text;
+
+    text = s"def";
+    return view.len();
+}

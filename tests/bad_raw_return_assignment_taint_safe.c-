@@ -1,0 +1,19 @@
+unsafe {
+#include <stdlib.h>
+
+char* raw_make(void)
+{
+    return malloc(8);
+}
+}
+
+char* pass_raw(void)
+{
+    return raw_make();
+}
+
+int main(void)
+{
+    pass_raw();
+    return 0;
+}

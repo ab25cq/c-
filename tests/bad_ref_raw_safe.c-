@@ -1,0 +1,8 @@
+int main(void)
+{
+    unsafe {
+        char* p = malloc(8);
+    }
+    Ref<char> value = Ref<char>.from(p);
+    return 0;
+}

@@ -1,0 +1,8 @@
+struct Holder {
+    Span<int> values;
+};
+
+int main(void)
+{
+    return 0;
+}

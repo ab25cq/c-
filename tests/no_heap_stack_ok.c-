@@ -1,0 +1,14 @@
+struct Data {
+    int value;
+    int items[2];
+};
+
+int main(void)
+{
+    stack Data data;
+
+    data.value = 9;
+    data.items[0] = 1;
+    data.items[1] = 8;
+    return data.value == data.items[0] + data.items[1] ? 0 : 1;
+}

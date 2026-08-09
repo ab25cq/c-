@@ -1,0 +1,19 @@
+struct Holder {
+    string text;
+};
+
+borrow string leak(void)
+{
+    Holder holder = new Holder;
+    holder.text = s"abc";
+
+    borrow string view = holder.text;
+    return view;
+}
+
+int main(void)
+{
+    borrow string value = leak();
+
+    return value[0];
+}

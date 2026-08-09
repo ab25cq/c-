@@ -1,0 +1,15 @@
+int main(void)
+{
+    StaticCell<int> cell = StaticCell<int>.uninit();
+    int old;
+
+    if (cell.is_initialized()) {
+        return 1;
+    }
+    cell.set(10);
+    old = cell.replace(20);
+    if (old != 10) {
+        return 2;
+    }
+    return cell.get() == 20 ? 0 : 3;
+}

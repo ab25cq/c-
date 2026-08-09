@@ -1,0 +1,8 @@
+mmio struct BadDevice {
+    unsigned int raw[2];
+};
+
+int main(void)
+{
+    return 0;
+}

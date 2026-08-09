@@ -1,0 +1,16 @@
+[package]
+name = "minux"
+version = "0.4.0"
+edition = "2026"
+
+[build]
+src = "src/kernel.c-"
+out = "target/debug/kernel.elf"
+compiler = "arm-none-eabi-gcc"
+cflags = "-mcpu=arm1176jzf-s -marm -ffreestanding -fno-builtin -fno-stack-protector -Os"
+ldflags = "-T qemu/linker.ld qemu/boot.S qemu/board.c -lgcc"
+bare = true
+no_heap = true
+
+[run]
+command = "qemu-system-arm -M raspi0 -kernel target/debug/kernel.elf -serial stdio -display none -no-reboot"

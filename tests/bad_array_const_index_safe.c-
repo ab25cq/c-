@@ -1,0 +1,6 @@
+int main(void)
+{
+    int data[3];
+
+    return data[3];
+}

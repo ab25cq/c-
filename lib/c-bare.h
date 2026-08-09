@@ -73,10 +73,19 @@ extern int fprintf(FILE* stream, const char* fmt, ...);
 extern FILE* fopen(const char* path, const char* mode);
 extern int puts(const char* s);
 extern int asprintf(char** out, const char* fmt, ...);
+extern char* cminus_string_format(const char* fmt, ...);
 extern int backtrace(void** buffer, int size);
 extern void backtrace_symbols_fd(void* const* buffer, int size, int fd);
 extern void abort(void);
 extern void exit(int status);
+extern void cminus_panic(const char* message, const char* file, int line);
+extern unsigned long cminus_align_up_impl(unsigned long value, unsigned long alignment, const char* file, int line);
+extern unsigned long cminus_align_down_impl(unsigned long value, unsigned long alignment, const char* file, int line);
+extern int cminus_is_aligned_impl(unsigned long value, unsigned long alignment, const char* file, int line);
+
+#define align_up(value, alignment) cminus_align_up_impl((unsigned long)(value), (unsigned long)(alignment), __FILE__, __LINE__)
+#define align_down(value, alignment) cminus_align_down_impl((unsigned long)(value), (unsigned long)(alignment), __FILE__, __LINE__)
+#define is_aligned(value, alignment) cminus_is_aligned_impl((unsigned long)(value), (unsigned long)(alignment), __FILE__, __LINE__)
 
 /* ----------------------------------------------------------------------- */
 /* definitions (compiled once into the runtime object)                     */
@@ -610,6 +619,36 @@ CMINUS_BARE_API int asprintf(char** out, const char* fmt, ...)
     return len;
 }
 
+CMINUS_BARE_API char* cminus_string_format(const char* fmt, ...)
+{
+    struct cminus_bare_sink sink;
+    va_list ap;
+    int len;
+    char* buf;
+
+    sink.buf = NULL;
+    sink.cap = 0;
+    sink.len = 0;
+    sink.console = 0;
+    va_start(ap, fmt);
+    len = cminus_bare_vformat(&sink, fmt, ap);
+    va_end(ap);
+
+    buf = (char*)calloc((size_t)len + 1, sizeof(char));
+    if (buf == NULL) {
+        return NULL;
+    }
+    sink.buf = buf;
+    sink.cap = (size_t)len + 1;
+    sink.len = 0;
+    sink.console = 0;
+    va_start(ap, fmt);
+    cminus_bare_vformat(&sink, fmt, ap);
+    va_end(ap);
+    buf[len] = '\0';
+    return buf;
+}
+
 /* control ------------------------------------------------------------- */
 
 /*
@@ -641,6 +680,41 @@ CMINUS_BARE_API void exit(int status)
     (void)status;
     for (;;) {
     }
+}
+
+CMINUS_BARE_API unsigned long cminus_align_up_impl(unsigned long value, unsigned long alignment, const char* file, int line)
+{
+    unsigned long rem;
+    unsigned long add;
+
+    if (alignment == 0u) {
+        cminus_panic("alignment is zero", file, line);
+    }
+    rem = value % alignment;
+    if (rem == 0u) {
+        return value;
+    }
+    add = alignment - rem;
+    if (value > ~0UL - add) {
+        cminus_panic("alignment overflow", file, line);
+    }
+    return value + add;
+}
+
+CMINUS_BARE_API unsigned long cminus_align_down_impl(unsigned long value, unsigned long alignment, const char* file, int line)
+{
+    if (alignment == 0u) {
+        cminus_panic("alignment is zero", file, line);
+    }
+    return value - (value % alignment);
+}
+
+CMINUS_BARE_API int cminus_is_aligned_impl(unsigned long value, unsigned long alignment, const char* file, int line)
+{
+    if (alignment == 0u) {
+        cminus_panic("alignment is zero", file, line);
+    }
+    return value % alignment == 0u;
 }
 
 /*

@@ -1,0 +1,6 @@
+int main(void)
+{
+    Vec<int> xs = Vec<int>.new();
+    xs.push(1);
+    return xs.len();
+}

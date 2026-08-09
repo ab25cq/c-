@@ -1,0 +1,13 @@
+bitflags PageFlags : unsigned int {
+    Present = 1u,
+};
+
+bitflags IrqFlags : unsigned int {
+    Timer = 1u,
+};
+
+int main(void)
+{
+    PageFlags flags = IrqFlags_Timer;
+    return 0;
+}

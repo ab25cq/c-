@@ -1,0 +1,9 @@
+struct Data {
+    int value;
+};
+
+interrupt void timer_irq(void)
+{
+    Data data = new Data;
+    data.value = 1;
+}

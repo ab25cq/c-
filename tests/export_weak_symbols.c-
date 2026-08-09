@@ -1,0 +1,16 @@
+export section(".init.text") void kernel_entry(void)
+{
+}
+
+weak int board_timer_init(void)
+{
+    return 7;
+}
+
+export weak int board_magic = 42;
+
+int main(void)
+{
+    kernel_entry();
+    return board_timer_init() == 7 && board_magic == 42 ? 0 : 1;
+}

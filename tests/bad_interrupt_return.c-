@@ -1,0 +1,4 @@
+interrupt int timer_irq(void)
+{
+    return 0;
+}

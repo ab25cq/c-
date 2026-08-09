@@ -1,0 +1,51 @@
+int strlen_safe(Span<int> text)
+{
+    int i = 0;
+
+    while (i < text.len()) {
+        if (text.get(i) == 0) {
+            return i;
+        }
+        i++;
+    }
+    return text.len();
+}
+
+void console_write(Span<int> text)
+{
+    int i = 0;
+    int len = strlen_safe(text);
+
+    while (i < len) {
+        putchar(text.get(i));
+        i++;
+    }
+}
+
+void write_literal_minux(void)
+{
+    int msg[16];
+    Span<int> text = Span<int>.from(msg, 16);
+
+    text.set(0, 'm');
+    text.set(1, 'i');
+    text.set(2, 'n');
+    text.set(3, 'u');
+    text.set(4, 'x');
+    text.set(5, ' ');
+    text.set(6, 'q');
+    text.set(7, 'e');
+    text.set(8, 'm');
+    text.set(9, 'u');
+    text.set(10, '\n');
+    text.set(11, 0);
+    console_write(text);
+}
+
+int main(void)
+{
+    write_literal_minux();
+    while (1) {
+    }
+    return 0;
+}

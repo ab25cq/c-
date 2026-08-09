@@ -4,7 +4,7 @@ unsafe {
 
 int borrowed_len(borrow string text)
 {
-    return strlen(text);
+    return text.len();
 }
 
 int main(void)

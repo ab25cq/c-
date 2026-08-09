@@ -1,0 +1,12 @@
+unsafe {
+struct Holder {
+    char* raw;
+};
+}
+
+int main(void)
+{
+    Holder holder = new Holder();
+    Span<char> values = Span<char>.from(holder.raw, 4);
+    return 0;
+}

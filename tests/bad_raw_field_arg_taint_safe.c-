@@ -1,0 +1,17 @@
+unsafe {
+struct Holder {
+    char* raw;
+};
+
+void take_raw(char* value)
+{
+    (void)value;
+}
+}
+
+int main(void)
+{
+    Holder holder = new Holder();
+    take_raw(holder.raw);
+    return 0;
+}

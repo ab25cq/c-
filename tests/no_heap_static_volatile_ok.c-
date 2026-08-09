@@ -1,0 +1,14 @@
+int main(void)
+{
+    unsigned int raw = 0u;
+    StaticCell<int> cell = StaticCell<int>.init(5);
+    Volatile<unsigned int> vol;
+    int value;
+
+    unsafe {
+        vol = Volatile<unsigned int>.from_addr((unsigned long)&raw);
+    }
+    value = cell.get();
+    vol.write(value);
+    return raw == 5u ? 0 : 1;
+}

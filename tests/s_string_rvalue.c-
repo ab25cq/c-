@@ -6,6 +6,7 @@ unsafe {
 
 int main(void)
 {
-    int ok = strcmp(s"abc", "abc") == 0;
+    string text = s"abc";
+    int ok = text.eq("abc");
     return ok ? 0 : 1;
 }

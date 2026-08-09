@@ -1,0 +1,9 @@
+int main(void)
+{
+    unsigned long up = align_up(13u, 8u);
+    unsigned long down = align_down(13u, 8u);
+    int ok1 = is_aligned(up, 8u);
+    int ok2 = !is_aligned(13u, 8u);
+
+    return up == 16u && down == 8u && ok1 && ok2 ? 0 : 1;
+}

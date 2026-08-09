@@ -1,0 +1,21 @@
+unsafe {
+#include <stdio.h>
+}
+
+generic<T>
+T pick(T first, T second, int use_first)
+{
+    if (use_first) {
+        return first;
+    }
+    return second;
+}
+
+int main(void)
+{
+    int a = pick<int>(10, 20, 1);
+    int b = pick<int>(10, 20, 0);
+
+    printf("%d\n", a + b);
+    return a == 10 && b == 20 ? 0 : 1;
+}

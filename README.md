@@ -114,8 +114,11 @@ Managed allocations are explicit:
 - `clone` is also managed.
 - Raw C allocations such as `malloc`, `calloc`, and `strdup` stay outside the
   managed heap unless they are wrapped by an owning language feature.
-- The managed heap is swept incrementally through `cminus_gc_step()`, and leak
-  reports come from `cminus_gc_report_leaks()`.
+- Managed heap blocks keep an allocation header, live/dead state, and allocation
+  site. Freed blocks are kept for reuse, double-free is ignored for already-dead
+  managed blocks, and leak reports come from `cminus_gc_report_leaks()`.
+- The runtime is not reference counted; ownership cleanup and `borrow`/safe
+  references are the intended safety model.
 - `cpm leak` prefers AddressSanitizer where available and falls back to
   Valgrind; `cpm val` always runs Valgrind.
 
@@ -130,15 +133,68 @@ unsafe {
 }
 ```
 
+The compiler deliberately performs aggressive static checks so generated code is
+easy for AI tools to write and debug. Prefer a compile-time error over a latent
+segmentation fault, and prefer a precise source-location diagnostic over a
+runtime surprise. Safe mode rejects unsafe lifetime escapes, raw pointer taint
+crossing safe boundaries, invalid `NULL` use, unsafe pointer dereference, raw
+heap calls, and many borrow-after-release patterns before C code is compiled.
+
 Outside `unsafe`, pointer arithmetic on pointer variables is a compile-time
 error. This applies to borrowed and owned pointers. Use field access on structs,
 checked collection indexing, `Span<T>` views, checked `/` and `%`, and
 higher-level library types instead of pointer arithmetic in safe code. Division
 or modulo by zero calls `cminus_panic` with the source file and line number.
+Pointer dereference is also rejected in safe code for variables and pointer
+return values; use `Span<T>` indexing or an unsafe wrapper that validates the
+operation.
 
 Safe code uses `Span` for contiguous views, `Ref` for non-owning references, and
 `Optional` for nullable/absent values. Raw pointers and C-compatible memory
 operations remain available inside `unsafe`.
+
+Inline assembly does not have a separate C- surface syntax yet. Use the target
+C compiler's inline assembly inside `unsafe`:
+
+```c
+unsafe {
+    __asm__ volatile("dsb sy" : : : "memory");
+}
+```
+
+This keeps CPU instructions, register constraints, and clobber lists behind an
+explicit unsafe boundary while still letting kernels and board support code use
+the compiler's native `__asm__` form. Outside `unsafe`, inline assembly is
+treated like other C-compatible low-level code and should not be used.
+
+Safe references cannot escape the lifetime of their source. Returning
+`Ref<T>`/`Span<T>` values that directly refer to a local stack variable, local
+stack array, or owning local is a compile-time error. Borrowed locals that refer
+to an owned value also become invalid after the owner is moved or reassigned;
+later use is rejected at compile time, including in `if`/`while`/`foreach`
+headers and other control expressions.
+
+Safe structs cannot contain `Ref<T>` or `Span<T>` fields. C- does not yet have
+lifetime parameters for stored references, so safe references must stay in local
+variables, parameters, and return values that the compiler can check directly.
+Store owned data in structs and create `Ref`/`Span` views at the call site.
+
+Safe/unsafe boundaries are checked conservatively. Raw pointer taint from unsafe
+functions cannot be passed to safe function parameters, including calls nested
+inside control conditions; use a managed wrapper, `Optional`, `Span`, or
+`Ref`-based API instead.
+Raw pointer fields declared inside an `unsafe` struct also cannot be accessed
+from safe code. Wrap the operation in `unsafe` or expose a safe method that
+returns managed data, `Optional`, `Span`, or `Ref`.
+Functions declared inside `unsafe` are unsafe functions. Safe code cannot call
+them directly; the call site must be inside `unsafe`, matching Rust's explicit
+boundary style.
+C string, memory, and file APIs such as `strlen`, `strcmp`, `strcpy`, `memcpy`,
+`memset`, `strdup`, `fopen`, `fread`, and `fwrite` are also unsafe-only in safe
+mode. Use Rust-style string methods such as `text.len()`, `text.cmp(other)`,
+`text.eq(other)`, `text.contains(part)`, `text.starts_with(prefix)`, and
+`text.ends_with(suffix)`. File operations stay procedural and use wrappers such
+as `xfopen(path, mode)`.
 
 ```c
 uniq int gGlobalVar = 777;
@@ -327,6 +383,9 @@ struct Item* item = calloc(1, sizeof(struct Item));
 
 The generated cleanup releases `item` at the end of the current function.
 On an early `return`, other tracked locals are released before the return.
+Generated generic function instances also insert stack-frame cleanup before
+early `return`, so stack lifetime tracking remains balanced across generic
+code paths.
 
 Use `move` to transfer ownership out of a variable:
 
@@ -487,20 +546,343 @@ int first = ptr->first();
 
 Generic method blocks are intentionally not part of this feature.
 
-The standard library currently provides `Ref<T>`, `Span<T>`, `Vec<T>`,
-`List<T>`, and `Map<K,V>`.
+The standard library currently provides `Ref<T>`, `Span<T>`, `Iterator<T>`,
+`Vec<T>`, `List<T>`, and `Map<K,V>`.
 `Ref<T>` is a non-owning one-value reference with `from`, `is_null`, `get`, and
-`set`.
+`set`. It is a value type: a local `Ref<T>` stores only checked reference
+metadata in the current stack frame and does not allocate.
 `Span<T>` is a non-owning contiguous view with `from`, `empty`, `len`,
 `is_empty`, `get`, `get_opt`, checked indexed access, and `foreach`.
 `Span<T>` also supports checked pointer-like operators: `span + n` and
 `span - n` return shifted spans, `*span` reads `span[0]`, and `span[i]` can be
 read or assigned through a bounds-checked pointer.
+`Iterator<T>` is a function-pointer interface value. It has no inheritance and
+stores only an opaque `self` pointer plus a generated `next` function. `next`
+returns `__CMinusIndex<T>.Some(value)` or `None`.
 `Vec<T>.as_span()` returns a non-owning view of the vector storage.
+`Vec<T>.iter()` and `List<T>.iter()` return `Iterator<T>` values:
+
+```c
+Iterator<int> it = nums.iter();
+struct __CMinusIndex<int> item;
+
+while (1) {
+    item = it.next();
+    if (item.is_None()) {
+        break;
+    }
+    sum += item.get_Some();
+}
+```
+
 `List<T>.to_span(buffer, cap)` serializes list elements into caller-owned
 storage and returns a `Span<T>` view. `Map<K,V>.keys_to_span(buffer, cap)` and
 `Map<K,V>.values_to_span(buffer, cap)` serialize active keys or values into a
 caller-owned buffer and return `Span<K>` or `Span<V>`.
+
+For microcontroller-style fixed storage, keep the storage as a normal fixed
+array and create checked views over it:
+
+```c
+struct Packet {
+    unsigned char bytes[64];
+};
+
+stack Packet pkt;
+Span<unsigned char> all = Span<unsigned char>.from(pkt.bytes);
+FixedVec<unsigned char> used = FixedVec<unsigned char>.from(pkt.bytes);
+
+used.push(0x12);
+used.push(0x34);
+int n = used.len();
+unsigned char first = used[0];
+```
+
+`Span<T>.from(array)` and `FixedVec<T>.from(array)` infer the element count
+from a fixed array, including struct fields such as `pkt.bytes`. The explicit
+forms `from(array, len)` and `from_bytes(array, bytes)` are still available.
+`Span<T>` and `FixedVec<T>` are value types: declaring a local variable stores
+their metadata directly in the stack frame instead of allocating a managed heap
+object. Methods still validate the referenced memory before access, but the
+view/container header itself does not require heap storage.
+Use `span.get(index)` and `span.set(index, value)` when code needs explicit
+checked reads and writes, especially in low-level code where nested expressions
+should stay easy for the compiler to diagnose.
+Safe direct indexing of fixed arrays only allows compile-time constant indexes
+that are in range. Out-of-range constants are compile-time errors, and variable
+indexes must go through `Span<T>` or `FixedVec<T>` so bounds checks are always
+present. This keeps embedded code heap-light while avoiding unchecked C array
+access in safe mode.
+
+`stack Type name;` declares a user struct as an actual stack object in safe
+mode. Normal `Type name = new Type;` still creates managed heap storage, while
+`stack Type name;` emits a plain `struct Type name = {0};` and uses `.` field
+access. Stack structs are useful for packet buffers, device state, and fixed
+work areas where a microcontroller program must avoid dynamic allocation.
+
+For stricter embedded builds, pass `-no-heap` to `c-` or set this in
+`C-.toml`:
+
+```toml
+[build]
+no_heap = true
+```
+
+In no-heap safe mode, managed heap-producing expressions such as `new`,
+`clone`, `s"..."`, and heap-backed `Vec/List/Map` constructors are compile-time
+errors. Use stack structs, fixed arrays, `Optional<T>`, `Ref<T>`,
+`Span<T>` views, `FixedVec<T>`, `StaticCell<T>`, `Volatile<T>`,
+`Register<T>`, `Atomic<T>`, and `Critical` storage-oriented APIs instead. This
+mode is intended to keep safe C- code predictable on microcontrollers by making
+accidental heap use visible at build time. `Optional<T>` variants,
+`Ref<T>.from(...)`, `Span<T>.from(...)`, and `FixedVec<T>.from(...)` are allowed
+in no-heap mode because they return value-type metadata and do not allocate.
+The embedded value types above also keep their metadata directly in the stack
+or global object that stores them.
+
+MMIO registers should be exposed through `Register<T>`. Creating a register
+from a raw address is an unsafe boundary, but volatile register access after
+that is safe:
+
+```c
+struct Uart {
+    Register<unsigned int> status;
+    Register<unsigned int> data;
+};
+
+int main(void)
+{
+    stack Uart uart;
+
+    unsafe {
+        uart.status = Register<unsigned int>.from_addr(0x10000000u);
+        uart.data = Register<unsigned int>.from_addr(0x10000004u);
+    }
+
+    uart.data.write(0x41u);
+    uart.status.set_bits(0x01u);
+    uart.status.replace_bits(0x06u, 0x04u);
+    unsigned int ready = uart.status.read();
+    return ready;
+}
+```
+
+`Register<T>` is also a value type, so a peripheral map can be stack-allocated
+or embedded as fields without heap metadata. `from_addr` is rejected outside
+`unsafe`; this keeps raw board addresses concentrated in a small hardware
+abstraction layer while drivers use checked C- methods.
+
+For register blocks, `mmio struct` is shorthand for `Register<T>` fields:
+
+```c
+mmio struct Uart {
+    unsigned int status;
+    unsigned int data;
+};
+
+int main(void)
+{
+    stack Uart uart;
+
+    unsafe {
+        uart.status = Register<unsigned int>.from_addr(0x10000000u);
+        uart.data = Register<unsigned int>.from_addr(0x10000004u);
+    }
+
+    uart.data.write(0x41u);
+    return uart.status.read();
+}
+```
+
+Each scalar integer, enum, or bitflags field in a `mmio struct` is lowered to a
+`Register<T>` field. Pointer fields, arrays, and initializer-like declarators
+are rejected; use explicit `Register<T>` fields or an `unsafe` wrapper for
+unusual layouts. This keeps board register maps compact while preserving safe
+volatile access at the driver call site.
+
+For volatile memory that is not a named device register, use `Volatile<T>`.
+Like `Register<T>`, creating it from a raw address requires `unsafe`, while
+`read()` and `write()` are safe after construction:
+
+```c
+unsigned int raw = 0u;
+Volatile<unsigned int> cell;
+
+unsafe {
+    cell = Volatile<unsigned int>.from_addr((unsigned long)&raw);
+}
+cell.write(42u);
+```
+
+For heap-free shared storage, use `StaticCell<T>` instead of raw mutable global
+state. It is a value type with explicit initialization state:
+
+```c
+StaticCell<int> boot_count = StaticCell<int>.uninit();
+
+int main(void)
+{
+    boot_count.set(1);
+    return boot_count.get();
+}
+```
+
+`get()` and `replace()` panic if the cell has not been initialized. `set()`
+initializes or overwrites the value.
+
+Interrupt handlers can be declared with `interrupt void name(void)`. C- emits a
+target compiler interrupt attribute, rejects non-`void` returns or parameters,
+and treats the handler as an implicit no-heap function:
+
+```c
+Register<unsigned int> IRQ_STATUS;
+
+interrupt void timer_irq(void)
+{
+    IRQ_STATUS.set_bits(0x01u);
+}
+```
+
+Inside an interrupt handler, `new`, `clone`, `s"..."`, and heap-backed
+collection constructors are compile-time errors, even inside nested `unsafe`
+blocks. This keeps ISR code bounded and suitable for kernel or bare-metal
+paths.
+
+Kernel and board code can use a small set of declaration attributes without
+spelling raw compiler attributes directly:
+
+```c
+export section(".vectors") int vectors[4];
+aligned(4096) int page_table[1024];
+
+weak int board_timer_init(void)
+{
+    return 0;
+}
+
+naked void trampoline(void)
+{
+    unsafe {
+        __asm__ volatile("" : : : "memory");
+    }
+}
+```
+
+`section("name")`, `aligned(n)`, `packed`, `used`, `export`, `weak`, and
+`naked` are lowered to the target C compiler's `__attribute__` form. These
+attributes are intended for vector tables, page tables, boot stacks, packed
+hardware layouts, assembly trampolines, and board override hooks. `export`
+emits `used, externally_visible` so linker garbage collection and LTO are less
+likely to discard an entry symbol. `weak` emits a weak symbol suitable for
+default interrupt handlers, board hooks, and runtime stubs that platform code
+may override. `naked` functions do not receive C- stack lifetime guards and are
+treated as no-heap functions, so managed allocation is rejected in their body.
+
+For kernel ABI checks, C- also provides compile-time layout helpers:
+
+```c
+struct TrapFrame {
+    unsigned int r0;
+    unsigned int r1;
+    unsigned int pc;
+};
+
+static_assert(sizeof(TrapFrame) == 12, "trap frame size");
+static_assert(offset_of(TrapFrame, pc) == 8, "pc offset");
+
+no_return void halt_forever(void)
+{
+    for (;;) {
+    }
+}
+```
+
+`static_assert(...)` lowers to `_Static_assert(...)`. `offset_of(Type, field)`
+lowers to the compiler builtin `__builtin_offsetof(...)`; for known C- structs,
+the `struct` keyword is inserted automatically. `no_return` lowers to the C
+compiler's `noreturn` function attribute. These checks are intended for trap
+frames, syscall ABI structs, page-table entries, boot headers, and other places
+where a layout mismatch should be a compile-time error instead of a boot-time
+failure.
+
+Linker-script symbols can be declared without exposing raw pointers to safe
+code:
+
+```c
+linker_symbol __kernel_start;
+linker_symbol __kernel_end;
+
+unsigned long start = addr_of(__kernel_start);
+unsigned long end = addr_of(__kernel_end);
+```
+
+`linker_symbol name;` lowers to `extern char name[];`. `addr_of(name)` lowers
+to an `unsigned long` address value and is accepted only after a matching
+`linker_symbol` declaration. This is intended for section bounds such as
+kernel image ranges, `.bss` clearing, init arrays, physical memory maps, and
+bootloader handoff data. Safe code receives an integer address; turning that
+address into a pointer still belongs inside `unsafe`.
+
+Address alignment helpers are available for page tables, section ranges, DMA
+buffers, and allocator boundaries:
+
+```c
+unsigned long page = align_up(addr, 4096u);
+unsigned long base = align_down(addr, 4096u);
+int ok = is_aligned(page, 4096u);
+```
+
+`align_up`, `align_down`, and `is_aligned` take `unsigned long` values. An
+alignment of zero panics with the caller's source file and line. `align_up`
+also panics on unsigned overflow instead of wrapping an address across the
+address space.
+
+Typed flag sets can be declared with `bitflags`:
+
+```c
+bitflags PageFlags : unsigned int {
+    Present = 1u,
+    Write = 2u,
+    User = 4u,
+};
+
+PageFlags flags = PageFlags_Present | PageFlags_Write;
+```
+
+This lowers to a C `typedef` plus prefixed constants such as
+`PageFlags_Present`. C- keeps the flag set as a distinct type during checking,
+so assigning `IrqFlags_Timer` to a `PageFlags` variable is a compile-time type
+error. This is intended for page-table bits, interrupt masks, CPU status bits,
+file modes, and other OS flag values where accidental mixing is easy.
+
+For shared state between normal code and interrupts, use `StaticCell<T>` for
+one-time or guarded storage, and value-type atomics plus critical-section
+guards for concurrent updates:
+
+```c
+Atomic<unsigned int> ticks = Atomic<unsigned int>.init(0u);
+
+interrupt void timer_irq(void)
+{
+    ticks.fetch_add(1u);
+}
+
+int read_ticks(void)
+{
+    Critical guard = Critical.enter();
+    unsigned int now = ticks.load();
+
+    guard.leave();
+    return (int)now;
+}
+```
+
+`Atomic<T>` uses compiler atomic builtins and is intended for integer or
+pointer-sized scalar types. `Critical.enter()` returns a `Critical` value token
+and `leave()` is idempotent. The default runtime hooks are no-ops for hosted
+tests; a kernel or board layer can replace the interrupt save/restore
+implementation when integrating the runtime.
+
 `Vec<T>` and `List<T>` support `new`, `push`, `len`, `is_empty`, `clear`,
 `first`, `last`, `get`, `set`, checked indexed access, automatic deletion for
 owning local variables, and `foreach`. `Vec<T>` also supports `capacity`,
@@ -566,8 +948,10 @@ generated for every variant. `get_Variant()` is generated for variants with
 one payload value.
 
 `Optional<T>` is built in as the standard nullable/absent value type. It is a
-payload enum with `Some(T)` and `None`, and can be written without a leading
-`struct`:
+value-type payload enum with `Some(T)` and `None`, and can be written without a
+leading `struct`. The `new Optional<T>.Variant(...)` syntax is accepted for
+consistency with payload enums, but `Optional<T>` lowers to a stack value and
+does not allocate managed heap storage:
 
 ```c
 Optional<int> value = new Optional<int>.Some(123);
