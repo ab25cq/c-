@@ -1,0 +1,19 @@
+RingBuffer<int> make_ring(void)
+{
+    int raw[2] = { 1, 2 };
+    RingBuffer<int> values = RingBuffer<int>.from_bytes(raw, sizeof(raw));
+
+    values.push(1);
+    return values;
+}
+
+int main(void)
+{
+    RingBuffer<int> values = make_ring();
+    __CMinusIndex<int> value = values.peek_opt();
+
+    if (value.is_None()) {
+        return 1;
+    }
+    return value.get_Some();
+}

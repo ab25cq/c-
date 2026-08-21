@@ -1,10 +1,12 @@
 [package]
 name = "mytest"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2026"
 
 [build]
 src = "src/main.c-"
 compiler = "cc"
+std = ""
 cflags = "-std=gnu99 -Wall -Wextra"
 ldflags = ""
+threads = false

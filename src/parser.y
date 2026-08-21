@@ -49,6 +49,7 @@ struct Type {
     int ptr;
     int owned;
     int raw_ptr;
+    int is_array;
     int array_len;
     int size;
     int align;
@@ -131,6 +132,7 @@ struct Obj {
     char name[NAME_MAX_LEN];
     struct Type *ty;
     int is_local;
+    int is_param;
     int is_function;
 };
 
@@ -283,9 +285,12 @@ static int g_foreach_id;
 static int g_index_id;
 static int g_need_stdio_h;
 static int g_need_execinfo_h;
+static int g_need_pthread_h;
+static int g_need_sched_h;
 static int g_unsafe_depth;
 static int g_bare_metal;
 static int g_no_heap;
+static int g_c_compat;
 static int g_emit_uniq;
 static int g_function_returns_move;
 static int g_current_function_interrupt;
@@ -301,6 +306,7 @@ static const char *g_input_path;
 
 int yylex(void);
 void cminus_push_include(FILE *fp, int unsafe);
+int cminus_include_depth(void);
 void cminus_unsafe_push(void);
 void cminus_unsafe_pop(void);
 static void yyerror(const char *msg);
@@ -334,6 +340,7 @@ static int source_has_cminus_include(FILE *fp);
 static struct Text *process_pp_line(struct Text *line);
 static struct Text *process_standalone_semi(struct Text *semi);
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
+static struct Text *finish_c_compat_braced_decl(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb, struct Text *suffix, struct Text *semi);
 static struct Text *process_statement(struct Text *stmt, struct Text *semi);
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi);
 static struct Text *process_external_decl(struct Text *decl, struct Text *semi);
@@ -389,6 +396,8 @@ static void check_safe_c_function_calls(const char *stmt);
 static void check_safe_array_index_access(const char *stmt);
 static struct Text *rewrite_inferred_array_from_calls(struct Text *in);
 static void register_unsafe_metadata(const char *body);
+static void emit_generic_default_macro(FILE *out, const char *func_name, struct FunctionParams *fn);
+static void emit_generic_default_undef(FILE *out, const char *func_name, struct FunctionParams *fn);
 static int range_contains_text(const char *start, const char *end, const char *needle);
 static struct Text *rewrite_os_attributes(struct Text *in);
 static struct Text *rewrite_compile_time_os_ops(struct Text *in);
@@ -406,6 +415,7 @@ static void validate_interrupt_function_head(const char *s);
 static struct Text *rewrite_interrupt_function_head(struct Text *in);
 static void check_safe_pointer_deref(const char *stmt);
 static int is_unsafe_head(const char *s);
+static int is_inline_c_head(const char *s);
 static void begin_stmt_block(struct Text *head);
 static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
 static int struct_field_type(const char *tag, const char *field, struct Type *type);
@@ -433,7 +443,6 @@ static int is_generic_decl_head(const char *s);
 static int parse_generic_struct_head(const char *s, char *param, char *name);
 static int parse_generic_function_head(const char *s, char *param, char *name);
 static int parse_generic_angle_arg(const char *p, char *arg, const char **after);
-static void emit_generic_instances(FILE *out);
 static int parse_payload_enum_head(const char *s, char *param, char *name);
 static int parse_bitflags_head(const char *s, char *name, char *base);
 static struct Text *emit_bitflags_decl(const char *name, const char *base, const char *body);
@@ -493,6 +502,8 @@ external_item
         { $$ = process_standalone_semi($1); }
     | top_seq SEMI
         { $$ = process_external_decl($1, $2); }
+    | top_seq LBRACE compound_items RBRACE top_seq SEMI
+        { $$ = finish_c_compat_braced_decl($1, $2, $3, $4, $5, $6); }
     | top_seq LBRACE
         { begin_top_block($1); }
       compound_items RBRACE
@@ -1842,6 +1853,7 @@ static struct Type type_make(enum TypeKind kind, int ptr, const char *tag)
     t.ptr = ptr;
     t.owned = 0;
     t.raw_ptr = 0;
+    t.is_array = 0;
     t.array_len = 0;
     t.size = 0;
     t.align = 1;
@@ -2142,6 +2154,17 @@ static void symbol_add_to(struct Symbols *symbols, const char *name, struct Type
     symbols->sym[symbols->count].var = var;
     var_scope_push(name, var);
     symbols->count++;
+}
+
+static void symbol_add_param_to(struct Symbols *symbols, const char *name, struct Type type)
+{
+    struct Symbol *sym;
+
+    symbol_add_to(symbols, name, type);
+    sym = symbol_find_in(symbols, name);
+    if (sym != NULL && sym->var != NULL) {
+        sym->var->is_param = 1;
+    }
 }
 
 static void symbol_add(const char *name, struct Type type)
@@ -2541,6 +2564,7 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     decl->type = base_type;
     decl->type.ptr += ptr;
     if (decl->is_array) {
+        decl->type.is_array = 1;
         decl->type.array_len = array_len;
     }
     decl->type.owned = base_type.owned || strchr(base_end, '%') != NULL ||
@@ -2592,11 +2616,16 @@ static int is_safe_reference_type(struct Type type)
         strcmp(type.tag, "Ref") == 0 || strncmp(type.tag, "Ref_", 4) == 0 ||
         strcmp(type.tag, "Span") == 0 || strncmp(type.tag, "Span_", 5) == 0 ||
         strcmp(type.tag, "FixedVec") == 0 || strncmp(type.tag, "FixedVec_", 9) == 0 ||
+        strcmp(type.tag, "RingBuffer") == 0 || strncmp(type.tag, "RingBuffer_", 11) == 0 ||
         strcmp(type.tag, "Register") == 0 || strncmp(type.tag, "Register_", 9) == 0 ||
         strcmp(type.tag, "Atomic") == 0 || strncmp(type.tag, "Atomic_", 7) == 0 ||
         strcmp(type.tag, "Volatile") == 0 || strncmp(type.tag, "Volatile_", 9) == 0 ||
         strcmp(type.tag, "StaticCell") == 0 || strncmp(type.tag, "StaticCell_", 11) == 0 ||
-        strcmp(type.tag, "Critical") == 0) {
+        strcmp(type.tag, "Bitmap") == 0 ||
+        strcmp(type.tag, "Critical") == 0 ||
+        strcmp(type.tag, "Thread") == 0 ||
+        strcmp(type.tag, "Mutex") == 0 ||
+        strcmp(type.tag, "Cond") == 0) {
         return 0;
     }
     return type.kind == TY_STRUCT;
@@ -2793,6 +2822,9 @@ static void check_safe_pointer_decl(const char *s)
     struct DeclInfo decl;
     const char *name_pos;
 
+    if (g_c_compat && g_unsafe_depth == 0) {
+        return;
+    }
     if (g_unsafe_depth > 0) {
         return;
     }
@@ -2804,7 +2836,7 @@ static void check_safe_pointer_decl(const char *s)
         return;
     }
     if (pointer_token_before(s, name_pos)) {
-        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
         exit(1);
     }
 }
@@ -2821,6 +2853,9 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
     char func_name[NAME_MAX_LEN];
     struct Type ret_type;
 
+    if (g_c_compat && g_unsafe_depth == 0) {
+        return in;
+    }
     if (g_unsafe_depth > 0) {
         return in;
     }
@@ -2836,7 +2871,7 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
                 return in;
             }
             if (pointer_token_before(in->text, name_pos)) {
-                fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+                fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
                 exit(1);
             }
             if (parse_base_type_prefix(base, &base_end, &base_type) &&
@@ -2869,7 +2904,7 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
         return in;
     }
     if (pointer_token_before(in->text, name_pos)) {
-        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
         exit(1);
     }
     string_start = find_string_decl_keyword(base, &string_borrowed);
@@ -3087,7 +3122,7 @@ static struct Type expr_type(const char *s)
     if (is_ident_start((unsigned char)*p)) {
         const char *end = read_name(p, name);
         p = skip_ws(end);
-        sym = symbol_find(name);
+        sym = symbol_find_or_current_param(name);
         if (sym != NULL) {
             t = sym->type;
             while (*p == '.' || (*p == '-' && p[1] == '>')) {
@@ -3240,14 +3275,15 @@ static struct Text *rewrite_generics(struct Text *in)
 	                                char concrete_func_name[NAME_MAX_LEN];
 	                                struct Type ret;
 	                                const char *func_head = generic_template_body_start(func_tmpl->head, func_param);
-	                                struct Text *concrete_head = replace_param_and_generics(func_head,
-	                                                                                         func_tmpl->param,
-	                                                                                         arg,
-	                                                                                         func_tmpl->name,
-	                                                                                         func_inst->concrete);
-	                                if (parse_function_signature(concrete_head->text, concrete_func_name, &ret) &&
-	                                    ret.owned) {
-	                                    owned_func_add_type(concrete_func_name, ret);
+		                                struct Text *concrete_head = replace_param_and_generics(func_head,
+		                                                                                         func_tmpl->param,
+		                                                                                         arg,
+		                                                                                         func_tmpl->name,
+		                                                                                         func_inst->concrete);
+		                                register_function_params(concrete_head->text);
+		                                if (parse_function_signature(concrete_head->text, concrete_func_name, &ret) &&
+		                                    ret.owned) {
+		                                    owned_func_add_type(concrete_func_name, ret);
 	                                }
 	                                text_free(concrete_head);
 	                                text_add(out, func_inst->concrete);
@@ -3316,6 +3352,15 @@ static struct Text *rewrite_generics(struct Text *in)
 
             if (tmpl != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
                 struct GenericInstance *inst = generic_instance_get(tmpl, arg);
+                char func_param[NAME_MAX_LEN];
+                const char *func_head = generic_template_body_start(tmpl->head, func_param);
+                struct Text *concrete_head = replace_param_and_generics(func_head,
+                                                                        tmpl->param,
+                                                                        arg,
+                                                                        tmpl->name,
+                                                                        inst->concrete);
+                register_function_params(concrete_head->text);
+                text_free(concrete_head);
                 call = skip_ws(after);
                 if (*call == '(') {
                     text_add(out, inst->concrete);
@@ -3559,6 +3604,7 @@ static int struct_field_type(const char *tag, const char *field, struct Type *ty
         for (i = 0; i < clone->count; i++) {
             if (strcmp(clone->fields[i].name, field) == 0) {
                 *type = clone->fields[i].type;
+                type->is_array = clone->fields[i].is_array;
                 return 1;
             }
         }
@@ -3685,7 +3731,7 @@ static void begin_top_block(struct Text *head)
     g_current_bitflags_name[0] = '\0';
     g_current_bitflags_base[0] = '\0';
     g_current_struct_mmio = 0;
-    if (is_unsafe_head(head->text)) {
+    if (is_unsafe_head(head->text) || is_inline_c_head(head->text)) {
         cminus_unsafe_push();
         g_top_block_is_function = 0;
         g_in_function = 0;
@@ -3834,6 +3880,28 @@ static int is_execinfo_include(const char *line)
     return strncmp(p, "<execinfo.h>", 12) == 0;
 }
 
+static int is_pthread_include(const char *line)
+{
+    const char *p = skip_ws(line);
+
+    if (strncmp(p, "#include", 8) != 0) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    return strncmp(p, "<pthread.h>", 11) == 0;
+}
+
+static int is_sched_include(const char *line)
+{
+    const char *p = skip_ws(line);
+
+    if (strncmp(p, "#include", 8) != 0) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    return strncmp(p, "<sched.h>", 9) == 0;
+}
+
 static int is_cbare_include(const char *line)
 {
     const char *p = skip_ws(line);
@@ -3890,6 +3958,27 @@ static struct Text *process_pp_line(struct Text *line)
     struct Text *out;
     const char *p = skip_ws(line->text);
 
+    if (g_c_compat && !g_bare_metal && cminus_include_depth() == 0) {
+        if (parse_cminus_include(line->text, include_path, sizeof(include_path))) {
+            fp = open_cminus_include(include_path);
+            if (fp == NULL) {
+                fprintf(stderr, "c-: include not found: %s\n", include_path);
+                text_free(line);
+                exit(1);
+            }
+            cminus_push_include(fp, 1);
+            out = text_new();
+            text_free(line);
+            return out;
+        }
+        return line;
+    }
+    if (strncmp(p, "#define CMINUS_THREAD_LOCAL", 27) == 0 && g_bare_metal) {
+        text_add(g_defines, "#define CMINUS_THREAD_LOCAL\n");
+        out = text_new();
+        text_free(line);
+        return out;
+    }
     if (strncmp(p, "#define", 7) == 0) {
         text_add(g_defines, line->text);
         if (line->len == 0 || line->text[line->len - 1] != '\n') {
@@ -3919,6 +4008,18 @@ static struct Text *process_pp_line(struct Text *line)
     }
     if (is_execinfo_include(line->text)) {
         g_need_execinfo_h = 1;
+        out = text_new();
+        text_free(line);
+        return out;
+    }
+    if (is_pthread_include(line->text)) {
+        g_need_pthread_h = 1;
+        out = text_new();
+        text_free(line);
+        return out;
+    }
+    if (is_sched_include(line->text)) {
+        g_need_sched_h = 1;
         out = text_new();
         text_free(line);
         return out;
@@ -4081,7 +4182,7 @@ static int owner_is_local_stack(const char *owner)
         return 0;
     }
     sym = symbol_find(owner);
-    return sym != NULL && sym->var != NULL && sym->var->is_local && !sym->type.owned;
+    return sym != NULL && sym->var != NULL && sym->var->is_local && !sym->var->is_param && !sym->type.owned;
 }
 
 static void borrow_link_remove_borrower(const char *borrower)
@@ -4269,7 +4370,8 @@ static int extract_safe_reference_borrow_owner(const char *expr, char *owner)
             continue;
         }
         name_end = read_name(p, name);
-        if ((strcmp(name, "Ref") == 0 || strcmp(name, "Span") == 0) && *skip_ws(name_end) == '<') {
+        if ((strcmp(name, "Ref") == 0 || strcmp(name, "Span") == 0 || strcmp(name, "RingBuffer") == 0) &&
+            *skip_ws(name_end) == '<') {
             char generic_arg[NAME_MAX_LEN];
             const char *after_generic;
             const char *dot;
@@ -4286,6 +4388,8 @@ static int extract_safe_reference_borrow_owner(const char *expr, char *owner)
                         if (*open == '(' &&
                             ((strcmp(name, "Ref") == 0 && strcmp(method, "from") == 0) ||
                              (strcmp(name, "Span") == 0 &&
+                            (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0 || strcmp(method, "map_from") == 0)) ||
+                             (strcmp(name, "RingBuffer") == 0 &&
                               (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0)))) {
                             close = matching_paren(open);
                             if (close == NULL) {
@@ -4310,7 +4414,13 @@ static int extract_safe_reference_borrow_owner(const char *expr, char *owner)
         if (*open == '(' &&
             (strncmp(name, "Ref_from_", 9) == 0 ||
              strncmp(name, "Span_from_", 10) == 0 ||
-             strncmp(name, "Span_from_bytes_", 16) == 0)) {
+             strncmp(name, "Span_from_bytes_", 16) == 0 ||
+             strncmp(name, "Span_map_from_", 14) == 0 ||
+             strncmp(name, "RingBuffer_from_", 16) == 0 ||
+             strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+             strcmp(name, "Bitmap_from") == 0 ||
+             strcmp(name, "Bitmap_from_words") == 0 ||
+             strcmp(name, "Bitmap_from_bytes") == 0)) {
             close = matching_paren(open);
             if (close == NULL) {
                 return 0;
@@ -4659,7 +4769,7 @@ static int parse_array_expr_arg(const char *start, const char *end, char *label,
     }
     current = sym->type;
     if (is_local != NULL) {
-        *is_local = sym->var != NULL && sym->var->is_local;
+        *is_local = sym->var != NULL && sym->var->is_local && !sym->var->is_param;
     }
     if (label != NULL) {
         strncpy(label, name, NAME_MAX_LEN - 1);
@@ -4682,14 +4792,21 @@ static int parse_array_expr_arg(const char *start, const char *end, char *label,
         if (label != NULL) {
             used = strlen(label);
             if (used + 1 < NAME_MAX_LEN) {
-                label[used++] = '.';
+                if (p[0] == '-' && p[1] == '>') {
+                    label[used++] = '-';
+                    if (used + 1 < NAME_MAX_LEN) {
+                        label[used++] = '>';
+                    }
+                } else {
+                    label[used++] = '.';
+                }
                 label[used] = '\0';
                 strncat(label, field, NAME_MAX_LEN - used - 1);
             }
         }
         p = skip_ws(field_end);
     }
-    if (p != end || current.array_len <= 0) {
+    if (p != end || !current.is_array) {
         return 0;
     }
     if (type != NULL) {
@@ -4721,6 +4838,31 @@ static int parse_sizeof_array_arg(const char *start, const char *end, char *labe
     return parse_array_expr_arg(open + 1, close, label, type, NULL);
 }
 
+static int parse_local_stack_lvalue_arg(const char *start, const char *end, char *label);
+
+static int parse_sizeof_local_lvalue_arg(const char *start, const char *end, char *label)
+{
+    const char *p = skip_ws(start);
+    const char *open;
+    const char *close;
+
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (!starts_word(p, "sizeof")) {
+        return 0;
+    }
+    open = skip_ws(p + 6);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL || close + 1 != end) {
+        return 0;
+    }
+    return parse_local_stack_lvalue_arg(open + 1, close, label);
+}
+
 static void check_span_stack_array_call(const char *func_name, const char *args_start, const char *args_end)
 {
     const char *arg1_end = find_top_level_char(args_start, args_end, ',');
@@ -4746,10 +4888,13 @@ static void check_span_stack_array_call(const char *func_name, const char *args_
     if (!parse_array_expr_arg(args_start, arg1_end, array_label, &array_type, &is_local)) {
         return;
     }
-    if (strchr(array_label, '.') == NULL && !is_local) {
+    if (strchr(array_label, '.') == NULL && strstr(array_label, "->") == NULL && !is_local) {
         return;
     }
-    is_bytes = strncmp(func_name, "Span_from_bytes_", 16) == 0;
+    is_bytes = strncmp(func_name, "Span_from_bytes_", 16) == 0 ||
+        strncmp(func_name, "Span_map_from_", 14) == 0 ||
+        strncmp(func_name, "RingBuffer_from_bytes_", 22) == 0 ||
+        strcmp(func_name, "Bitmap_from_bytes") == 0;
     if (is_bytes && parse_sizeof_array_arg(arg2_start, arg2_end, sizeof_label, &sizeof_type)) {
         if (strcmp(sizeof_label, array_label) == 0 && sizeof_type.array_len == array_type.array_len) {
             return;
@@ -4758,15 +4903,28 @@ static void check_span_stack_array_call(const char *func_name, const char *args_
     if (!parse_int_literal_arg(arg2_start, arg2_end, &value)) {
         return;
     }
-    if (is_bytes) {
+    if (strcmp(func_name, "Bitmap_from") == 0) {
+        max_bytes = (long)array_type.array_len * (long)(array_type.size > 0 ? array_type.size : 1) * 8L;
+        if (value > max_bytes) {
+            fprintf(stderr, "c-: type error: Bitmap.from bit length %ld exceeds array '%s' capacity %ld bits at %s:%d\n",
+                    value, array_label, max_bytes, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    } else if (strcmp(func_name, "Bitmap_from_words") == 0) {
+        if (value > array_type.array_len) {
+            fprintf(stderr, "c-: type error: Bitmap.from_words length %ld exceeds array '%s' length %d at %s:%d\n",
+                    value, array_label, array_type.array_len, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    } else if (is_bytes) {
         max_bytes = (long)array_type.array_len * (long)(array_type.size > 0 ? array_type.size : 1);
         if (value > max_bytes) {
-            fprintf(stderr, "c-: type error: Span.from_bytes length %ld exceeds array '%s' size %ld bytes at %s:%d\n",
+            fprintf(stderr, "c-: type error: buffer from_bytes length %ld exceeds array '%s' size %ld bytes at %s:%d\n",
                     value, array_label, max_bytes, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
             exit(1);
         }
     } else if (value > array_type.array_len) {
-        fprintf(stderr, "c-: type error: Span.from length %ld exceeds array '%s' length %d at %s:%d\n",
+        fprintf(stderr, "c-: type error: buffer from length %ld exceeds array '%s' length %d at %s:%d\n",
                 value, array_label, array_type.array_len, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
         exit(1);
     }
@@ -4805,7 +4963,11 @@ static void check_span_stack_array_bounds(const char *stmt)
         name_end = read_name(p, name);
         open = skip_ws(name_end);
         if (*open == '(' &&
-            (strncmp(name, "Span_from_", 10) == 0 || strncmp(name, "Span_from_bytes_", 16) == 0)) {
+            (strncmp(name, "Span_from_", 10) == 0 || strncmp(name, "Span_from_bytes_", 16) == 0 ||
+             strncmp(name, "Span_map_from_", 14) == 0 ||
+             strncmp(name, "RingBuffer_from_", 16) == 0 || strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+             strcmp(name, "Bitmap_from") == 0 || strcmp(name, "Bitmap_from_words") == 0 ||
+             strcmp(name, "Bitmap_from_bytes") == 0)) {
             close = matching_paren(open);
             if (close == NULL) {
                 return;
@@ -4816,6 +4978,207 @@ static void check_span_stack_array_bounds(const char *stmt)
         }
         p = name_end;
     }
+}
+
+static int is_stack_lifetime_from_call(const char *name)
+{
+    return strncmp(name, "Ref_from_", 9) == 0 ||
+        strncmp(name, "Span_from_", 10) == 0 ||
+        strncmp(name, "Span_from_bytes_", 16) == 0 ||
+        strncmp(name, "Span_map_from_", 14) == 0 ||
+        strncmp(name, "FixedVec_from_", 14) == 0 ||
+        strncmp(name, "FixedVec_from_bytes_", 20) == 0 ||
+        strncmp(name, "RingBuffer_from_", 16) == 0 ||
+        strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+        strcmp(name, "Bitmap_from") == 0 ||
+        strcmp(name, "Bitmap_from_words") == 0 ||
+        strcmp(name, "Bitmap_from_bytes") == 0;
+}
+
+static int parse_local_stack_lvalue_arg(const char *start, const char *end, char *label)
+{
+    const char *p = skip_ws(start);
+    const char *name_end;
+    char name[NAME_MAX_LEN];
+    struct Symbol *sym;
+    struct Type current;
+
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (!is_ident_start((unsigned char)*p)) {
+        return 0;
+    }
+    name_end = read_name(p, name);
+    sym = symbol_find(name);
+    if (sym == NULL || sym->var == NULL || !sym->var->is_local || sym->var->is_param) {
+        return 0;
+    }
+    current = sym->type;
+    strncpy(label, name, NAME_MAX_LEN - 1);
+    label[NAME_MAX_LEN - 1] = '\0';
+    p = skip_ws(name_end);
+    while (p < end && *p == '.') {
+        const char *field_start = skip_ws(p + 1);
+        const char *field_end;
+        char field[NAME_MAX_LEN];
+        size_t used;
+
+        if (!is_ident_start((unsigned char)*field_start)) {
+            return 0;
+        }
+        field_end = read_name(field_start, field);
+        if (current.kind != TY_STRUCT || !struct_field_type(current.tag, field, &current)) {
+            return 0;
+        }
+        used = strlen(label);
+        if (used + 1 < NAME_MAX_LEN) {
+            label[used++] = '.';
+            label[used] = '\0';
+            strncat(label, field, NAME_MAX_LEN - used - 1);
+        }
+        p = skip_ws(field_end);
+    }
+    return p == end;
+}
+
+static int stack_lifetime_note_arg(const char *func_name, const char *args_start, const char *args_end, char *expr, int *needs_address)
+{
+    const char *arg1_end = find_top_level_char(args_start, args_end, ',');
+    const char *first_end = arg1_end == NULL ? args_end : arg1_end;
+    const char *arg2_start = arg1_end == NULL ? NULL : arg1_end + 1;
+    const char *arg2_end = NULL;
+    char label[NAME_MAX_LEN];
+    char sizeof_label[NAME_MAX_LEN];
+    struct Type array_type;
+    int is_local = 0;
+    int is_bytes_call;
+
+    if (needs_address != NULL) {
+        *needs_address = 0;
+    }
+    if (arg2_start != NULL) {
+        arg2_end = find_top_level_char(arg2_start, args_end, ',');
+        if (arg2_end == NULL) {
+            arg2_end = args_end;
+        }
+    }
+    if (strncmp(func_name, "Ref_from_", 9) == 0) {
+        const char *p = skip_ws(args_start);
+
+        if (*p != '&') {
+            return 0;
+        }
+        if (!parse_local_stack_lvalue_arg(p + 1, first_end, label)) {
+            return 0;
+        }
+        if (strstr(label, "->") != NULL) {
+            return 0;
+        }
+        snprintf(expr, NAME_MAX_LEN, "%s", label);
+        if (needs_address != NULL) {
+            *needs_address = 1;
+        }
+        return 1;
+    }
+    is_bytes_call = strncmp(func_name, "Span_from_bytes_", 16) == 0 ||
+        strncmp(func_name, "Span_map_from_", 14) == 0 ||
+        strncmp(func_name, "FixedVec_from_bytes_", 20) == 0 ||
+        strncmp(func_name, "RingBuffer_from_bytes_", 22) == 0 ||
+        strcmp(func_name, "Bitmap_from_bytes") == 0;
+    if (!parse_array_expr_arg(args_start, first_end, label, &array_type, &is_local) || !is_local) {
+        if (!parse_local_stack_lvalue_arg(args_start, first_end, label)) {
+            return 0;
+        }
+        if (is_bytes_call && arg2_start != NULL &&
+            parse_sizeof_local_lvalue_arg(arg2_start, arg2_end, sizeof_label) &&
+            strcmp(label, sizeof_label) != 0) {
+            return 0;
+        }
+    }
+    if (strstr(label, "->") != NULL) {
+        return 0;
+    }
+    (void)array_type;
+    snprintf(expr, NAME_MAX_LEN, "%s", label);
+    return 1;
+}
+
+static struct Text *rewrite_stack_lifetime_from_calls(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+        const char *close;
+        char note_expr[NAME_MAX_LEN];
+        int needs_address = 0;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                text_add_ch(out, *p);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            text_add_ch(out, *p++);
+            continue;
+        }
+        name_end = read_name(p, name);
+        open = skip_ws(name_end);
+        if (*open != '(' || !is_stack_lifetime_from_call(name)) {
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        close = matching_paren(open);
+        if (close == NULL) {
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        if (!stack_lifetime_note_arg(name, open + 1, close, note_expr, &needs_address)) {
+            text_add_n(out, p, (size_t)(close + 1 - p));
+            p = close + 1;
+            continue;
+        }
+        text_add(out, "({ cminus_stack_note_caller_range(");
+        if (needs_address) {
+            text_add_ch(out, '&');
+        }
+        text_add(out, note_expr);
+        text_add(out, ", sizeof(");
+        text_add(out, note_expr);
+        text_add(out, ")); ");
+        text_add_n(out, p, (size_t)(close + 1 - p));
+        text_add(out, "; })");
+        p = close + 1;
+        changed = 1;
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
 }
 
 static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
@@ -4857,9 +5220,15 @@ static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
         name_end = read_name(p, name);
         open = skip_ws(name_end);
         is_from = strncmp(name, "Span_from_", 10) == 0 ||
-            strncmp(name, "FixedVec_from_", 14) == 0;
+            strncmp(name, "FixedVec_from_", 14) == 0 ||
+            strncmp(name, "RingBuffer_from_", 16) == 0 ||
+            strcmp(name, "Bitmap_from") == 0 ||
+            strcmp(name, "Bitmap_from_words") == 0;
         is_from_bytes = strncmp(name, "Span_from_bytes_", 16) == 0 ||
-            strncmp(name, "FixedVec_from_bytes_", 20) == 0;
+            strncmp(name, "Span_map_from_", 14) == 0 ||
+            strncmp(name, "FixedVec_from_bytes_", 20) == 0 ||
+            strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+            strcmp(name, "Bitmap_from_bytes") == 0;
         if (*open != '(' || (!is_from && !is_from_bytes)) {
             text_add_n(out, p, (size_t)(name_end - p));
             p = name_end;
@@ -4871,18 +5240,56 @@ static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
             p = name_end;
             continue;
         }
+        if (strncmp(name, "Span_map_from_", 14) == 0) {
+            const char *arg1_end = find_top_level_char(open + 1, close, ',');
+
+            if (arg1_end != NULL &&
+                find_top_level_char(arg1_end + 1, close, ',') == NULL &&
+                parse_array_expr_arg(open + 1, arg1_end, array_label, &array_type, NULL)) {
+                (void)array_type;
+                text_add_n(out, p, (size_t)(arg1_end - p));
+                text_add(out, ", sizeof(");
+                text_add(out, array_label);
+                text_add_ch(out, ')');
+                text_add_n(out, arg1_end, (size_t)(close + 1 - arg1_end));
+                p = close + 1;
+                changed = 1;
+                continue;
+            }
+        }
         if (find_top_level_char(open + 1, close, ',') == NULL &&
             parse_array_expr_arg(open + 1, close, array_label, &array_type, NULL)) {
             char tmp[64];
 
             text_add_n(out, p, (size_t)(close - p));
-            if (is_from_bytes) {
+            if (strcmp(name, "Bitmap_from") == 0) {
+                text_add(out, ", (int)(sizeof(");
+                text_add(out, array_label);
+                text_add(out, ") * 8)");
+            } else if (is_from_bytes) {
                 text_add(out, ", sizeof(");
                 text_add(out, array_label);
                 text_add_ch(out, ')');
-            } else {
+            } else if (array_type.array_len > 0) {
                 snprintf(tmp, sizeof(tmp), ", %d", array_type.array_len);
                 text_add(out, tmp);
+            } else if (array_type.size == 1) {
+                text_add(out, ", (int)sizeof(");
+                text_add(out, array_label);
+                text_add_ch(out, ')');
+            } else if (array_type.size == 2 || array_type.size == 4 || array_type.size == 8) {
+                int shift = array_type.size == 2 ? 1 : (array_type.size == 4 ? 2 : 3);
+                snprintf(tmp, sizeof(tmp), ", (int)(sizeof(");
+                text_add(out, tmp);
+                text_add(out, array_label);
+                snprintf(tmp, sizeof(tmp), ") >> %d)", shift);
+                text_add(out, tmp);
+            } else {
+                text_add(out, ", (int)(sizeof(");
+                text_add(out, array_label);
+                text_add(out, ") / sizeof((");
+                text_add(out, array_label);
+                text_add(out, ")[0]))");
             }
             text_add_ch(out, ')');
             p = close + 1;
@@ -5319,7 +5726,7 @@ static void check_no_heap_safe_expr(const char *stmt)
     }
     if (source_has_heap_new_token(stmt) || stmt_has_word_call_or_token(stmt, "clone") ||
         source_has_collection_new_syntax(stmt)) {
-        fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, or Register\n",
+        fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, RingBuffer, or Register\n",
                 mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
         exit(1);
     }
@@ -5353,7 +5760,7 @@ static void check_no_heap_safe_expr(const char *stmt)
              strcmp(name, "cminus_gc_calloc") == 0 ||
              strcmp(name, "cminus_gc_realloc") == 0 ||
              strcmp(name, "cminus_string_format") == 0)) {
-            fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, or Register\n",
+            fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, RingBuffer, or Register\n",
                     mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
             exit(1);
         }
@@ -5482,7 +5889,7 @@ static int expr_contains_raw_pointer_symbol(const char *start, const char *end)
             continue;
         }
         name_end = read_name(p, name);
-        sym = symbol_find(name);
+        sym = symbol_find_or_current_param(name);
         if (sym != NULL && sym->type.raw_ptr) {
             return 1;
         }
@@ -5578,9 +5985,15 @@ static void check_safe_reference_raw_inputs(const char *stmt)
                 check_raw_pointer_arg_error("Ref");
             }
         } else if (strncmp(name, "Span_from_", 10) == 0 ||
-                   strncmp(name, "Span_from_bytes_", 16) == 0) {
+                   strncmp(name, "Span_from_bytes_", 16) == 0 ||
+                   strncmp(name, "RingBuffer_from_", 16) == 0 ||
+                   strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+                   strcmp(name, "Bitmap_from") == 0 ||
+                   strcmp(name, "Bitmap_from_words") == 0 ||
+                   strcmp(name, "Bitmap_from_bytes") == 0) {
             if (expr_is_raw_pointer_input(open + 1, arg_end)) {
-                check_raw_pointer_arg_error("Span");
+                check_raw_pointer_arg_error(strncmp(name, "RingBuffer_", 11) == 0 ? "RingBuffer" :
+                                            (strncmp(name, "Bitmap_", 7) == 0 ? "Bitmap" : "Span"));
             }
         } else if (strncmp(name, "Optional_", 9) == 0 && strstr(name, "_ptr_") != NULL &&
                    strstr(name, "_Some") != NULL) {
@@ -6127,7 +6540,7 @@ static void register_function_param_symbols(const char *s)
                 if (decl_has_borrow(tmp)) {
                     decl.type.owned = 0;
                 }
-                symbol_add_to(&g_locals, decl.name, decl.type);
+                symbol_add_param_to(&g_locals, decl.name, decl.type);
             }
             free(tmp);
         }
@@ -6315,6 +6728,79 @@ static struct Text *strip_default_parameters(struct Text *in)
     out->ast = in->ast;
     text_free(in);
     return out;
+}
+
+static int function_params_trailing_default_start(struct FunctionParams *fn)
+{
+    int i;
+
+    if (fn == NULL || fn->count < 1 || fn->param[fn->count - 1].def[0] == '\0') {
+        return -1;
+    }
+    i = fn->count - 1;
+    while (i > 0 && fn->param[i - 1].def[0] != '\0') {
+        i--;
+    }
+    return i;
+}
+
+static void emit_macro_param_list(FILE *out, struct FunctionParams *fn, int count)
+{
+    int i;
+
+    for (i = 0; i < count; i++) {
+        if (i != 0) {
+            fputs(", ", out);
+        }
+        fputs(fn->param[i].name[0] != '\0' ? fn->param[i].name : "arg", out);
+    }
+}
+
+static void emit_generic_default_macro(FILE *out, const char *func_name, struct FunctionParams *fn)
+{
+    int i;
+    int n;
+    int start;
+    int argc;
+
+    start = function_params_trailing_default_start(fn);
+    if (start < 0) {
+        return;
+    }
+    n = fn->count;
+    fprintf(out, "#define __CMINUS_DEFAULT_SELECT_%s(", func_name);
+    for (i = 0; i < n; i++) {
+        fprintf(out, "_%d, ", i + 1);
+    }
+    fprintf(out, "NAME, ...) NAME\n");
+    for (argc = start; argc <= n; argc++) {
+        fprintf(out, "#define __CMINUS_DEFAULT_%s_%d(", func_name, argc);
+        emit_macro_param_list(out, fn, argc);
+        fprintf(out, ") %s(", func_name);
+        for (i = 0; i < n; i++) {
+            if (i != 0) {
+                fputs(", ", out);
+            }
+            if (i < argc) {
+                fputs(fn->param[i].name[0] != '\0' ? fn->param[i].name : "arg", out);
+            } else {
+                fputs(fn->param[i].def, out);
+            }
+        }
+        fputs(")\n", out);
+    }
+    fprintf(out, "#define %s(...) __CMINUS_DEFAULT_SELECT_%s(__VA_ARGS__", func_name, func_name);
+    for (argc = n; argc >= start; argc--) {
+        fprintf(out, ", __CMINUS_DEFAULT_%s_%d", func_name, argc);
+    }
+    fputs(")(__VA_ARGS__)\n", out);
+}
+
+static void emit_generic_default_undef(FILE *out, const char *func_name, struct FunctionParams *fn)
+{
+    if (function_params_trailing_default_start(fn) >= 0) {
+        fprintf(out, "#undef %s\n", func_name);
+    }
 }
 
 static int range_contains_text(const char *start, const char *end, const char *needle)
@@ -8345,6 +8831,104 @@ static int try_rewrite_critical_static_method(const char *s, const char **end, s
     return 1;
 }
 
+static int try_rewrite_bitmap_static_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *p = s;
+    const char *dot;
+    const char *method_start;
+    const char *method_end;
+    const char *open;
+    const char *close;
+    char method[NAME_MAX_LEN];
+
+    if (!starts_word(p, "Bitmap")) {
+        return 0;
+    }
+    dot = skip_ws(p + 6);
+    if (*dot != '.') {
+        return 0;
+    }
+    method_start = skip_ws(dot + 1);
+    if (!is_ident_start((unsigned char)*method_start)) {
+        return 0;
+    }
+    method_end = read_name(method_start, method);
+    open = skip_ws(method_end);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+    if (strcmp(method, "from") == 0) {
+        text_add(replacement, "Bitmap_from(");
+    } else if (strcmp(method, "from_words") == 0) {
+        text_add(replacement, "Bitmap_from_words(");
+    } else if (strcmp(method, "from_bytes") == 0) {
+        text_add(replacement, "Bitmap_from_bytes(");
+    } else {
+        return 0;
+    }
+    if (close > open + 1) {
+        text_add_n(replacement, open + 1, (size_t)(close - open - 1));
+    }
+    text_add_ch(replacement, ')');
+    *end = close + 1;
+    return 1;
+}
+
+static int try_rewrite_thread_static_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *dot;
+    const char *method_start;
+    const char *method_end;
+    const char *open;
+    const char *close;
+    const char *type_end;
+    char type[NAME_MAX_LEN];
+    char method[NAME_MAX_LEN];
+
+    if (!starts_word(s, "Thread") && !starts_word(s, "Mutex") && !starts_word(s, "Cond")) {
+        return 0;
+    }
+    type_end = read_name(s, type);
+    dot = skip_ws(type_end);
+    if (*dot != '.') {
+        return 0;
+    }
+    method_start = skip_ws(dot + 1);
+    if (!is_ident_start((unsigned char)*method_start)) {
+        return 0;
+    }
+    method_end = read_name(method_start, method);
+    open = skip_ws(method_end);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+    if (strcmp(type, "Thread") == 0 && strcmp(method, "spawn") == 0) {
+        text_add(replacement, "Thread_spawn(");
+    } else if (strcmp(type, "Thread") == 0 && strcmp(method, "yield") == 0) {
+        text_add(replacement, "Thread_yield(");
+    } else if (strcmp(type, "Mutex") == 0 && strcmp(method, "init") == 0) {
+        text_add(replacement, "Mutex_init(");
+    } else if (strcmp(type, "Cond") == 0 && strcmp(method, "init") == 0) {
+        text_add(replacement, "Cond_init(");
+    } else {
+        return 0;
+    }
+    if (close > open + 1) {
+        text_add_n(replacement, open + 1, (size_t)(close - open - 1));
+    }
+    text_add_ch(replacement, ')');
+    *end = close + 1;
+    return 1;
+}
+
 static int try_rewrite_string_symbol_method(const char *s, const char **end, struct Text *replacement)
 {
     const char *name_end;
@@ -8499,6 +9083,58 @@ static int try_rewrite_string_expr_method(const char *s, const char **end, struc
     return 0;
 }
 
+static void append_auto_field_expr(struct Text *out, const char *start, const char *end)
+{
+    const char *p = start;
+    const char *name_end;
+    char name[NAME_MAX_LEN];
+    struct Symbol *sym;
+    struct Type current;
+
+    p = skip_ws(p);
+    if (!is_ident_start((unsigned char)*p)) {
+        text_add_n(out, start, (size_t)(end - start));
+        return;
+    }
+    name_end = read_name(p, name);
+    sym = symbol_find_or_current_param(name);
+    if (sym == NULL || sym->type.kind != TY_STRUCT) {
+        text_add_n(out, start, (size_t)(end - start));
+        return;
+    }
+    text_add_n(out, start, (size_t)(name_end - start));
+    current = sym->type;
+    p = skip_ws(name_end);
+    while (p < end && (*p == '.' || (p[0] == '-' && p[1] == '>'))) {
+        const char *field_start = skip_ws(*p == '.' ? p + 1 : p + 2);
+        const char *field_end;
+        char field[NAME_MAX_LEN];
+        struct Type field_type;
+
+        if (!is_ident_start((unsigned char)*field_start)) {
+            text_add_n(out, p, (size_t)(end - p));
+            return;
+        }
+        field_end = read_name(field_start, field);
+        if (current.kind != TY_STRUCT ||
+            !struct_field_type(current.tag, field, &field_type)) {
+            text_add_n(out, p, (size_t)(end - p));
+            return;
+        }
+        if (current.ptr > 0 || (p[0] == '-' && p[1] == '>')) {
+            text_add(out, "->");
+        } else {
+            text_add_ch(out, '.');
+        }
+        text_add_n(out, field_start, (size_t)(field_end - field_start));
+        current = field_type;
+        p = skip_ws(field_end);
+    }
+    if (p < end) {
+        text_add_n(out, p, (size_t)(end - p));
+    }
+}
+
 static int try_rewrite_struct_method(const char *s, const char **end, struct Text *replacement)
 {
     const char *p;
@@ -8582,15 +9218,15 @@ found_method:
     }
     text_add_ch(replacement, '(');
     if (recv_type.ptr > 0 || (!chained && *dot == '-')) {
-        text_add_n(replacement, s, (size_t)(receiver_end - s));
+        append_auto_field_expr(replacement, s, receiver_end);
     } else {
         text_add_ch(replacement, '&');
         if (chained) {
             text_add_ch(replacement, '(');
-            text_add_n(replacement, s, (size_t)(receiver_end - s));
+            append_auto_field_expr(replacement, s, receiver_end);
             text_add_ch(replacement, ')');
         } else {
-            text_add_n(replacement, s, (size_t)(receiver_end - s));
+            append_auto_field_expr(replacement, s, receiver_end);
         }
     }
     if (close > open + 1) {
@@ -8614,6 +9250,8 @@ static struct Text *rewrite_method_calls(struct Text *in)
 
         if (try_rewrite_string_method(p, &end, replacement) ||
             try_rewrite_critical_static_method(p, &end, replacement) ||
+            try_rewrite_bitmap_static_method(p, &end, replacement) ||
+            try_rewrite_thread_static_method(p, &end, replacement) ||
             try_rewrite_string_expr_method(p, &end, replacement) ||
             try_rewrite_string_symbol_method(p, &end, replacement) ||
             try_rewrite_struct_method(p, &end, replacement)) {
@@ -9862,6 +10500,10 @@ static struct Text *process_control_head(struct Text *head)
     } else if (starts_word(p, "do")) {
         kind = ND_DO;
     }
+    if (g_c_compat && g_unsafe_depth == 0) {
+        head->ast = ast_raw(kind, head->text);
+        return head;
+    }
     check_safe_pointer_deref(head->text);
     check_casts(head->text);
     check_safe_heap_calls(head->text);
@@ -10131,10 +10773,12 @@ static int function_signature_is_internal(const char *head)
         "Ref_",
         "Span_",
         "FixedVec_",
+        "RingBuffer_",
         "Register_",
         "Atomic_",
         "Volatile_",
         "StaticCell_",
+        "Bitmap_",
         "Critical_",
         "Iterator_",
         "Vec_",
@@ -10173,11 +10817,17 @@ static int type_is_nonowning_value_view(struct Type type)
          strncmp(type.tag, "Volatile_", 9) == 0 ||
          strcmp(type.tag, "StaticCell") == 0 ||
          strncmp(type.tag, "StaticCell_", 11) == 0 ||
+         strcmp(type.tag, "Bitmap") == 0 ||
          strcmp(type.tag, "Critical") == 0 ||
+         strcmp(type.tag, "Thread") == 0 ||
+         strcmp(type.tag, "Mutex") == 0 ||
+         strcmp(type.tag, "Cond") == 0 ||
          strcmp(type.tag, "Span") == 0 ||
          strncmp(type.tag, "Span_", 5) == 0 ||
          strcmp(type.tag, "FixedVec") == 0 ||
-         strncmp(type.tag, "FixedVec_", 9) == 0);
+         strncmp(type.tag, "FixedVec_", 9) == 0 ||
+         strcmp(type.tag, "RingBuffer") == 0 ||
+         strncmp(type.tag, "RingBuffer_", 11) == 0);
 }
 
 static int parse_cast_type_prefix(const char *s, const char *end, const char **after)
@@ -10318,10 +10968,12 @@ static int function_needs_stack_guard(const char *name)
         "Ref_",
         "Span_",
         "FixedVec_",
+        "RingBuffer_",
         "Register_",
         "Atomic_",
         "Volatile_",
         "StaticCell_",
+        "Bitmap_",
         "Critical_",
         "Vec_",
         "List_",
@@ -10735,6 +11387,20 @@ static int is_unsafe_head(const char *s)
         *skip_ws(p + 6) == '\0';
 }
 
+static int is_inline_c_head(const char *s)
+{
+    const char *p = skip_ws(s);
+    const char *q;
+
+    if (strncmp(p, "inline", 6) != 0 || is_ident((unsigned char)p[6])) {
+        return 0;
+    }
+    q = skip_ws(p + 6);
+    return q != p + 6 &&
+        strncmp(q, "c", 1) == 0 && !is_ident((unsigned char)q[1]) &&
+        *skip_ws(q + 1) == '\0';
+}
+
 void cminus_unsafe_push(void)
 {
     g_unsafe_depth++;
@@ -10747,9 +11413,25 @@ void cminus_unsafe_pop(void)
     }
 }
 
+static struct Text *normalize_raw_c_block_body(struct Text *body)
+{
+    struct Text *out = text_new();
+
+    if (body->len > 0 && body->text[0] != '\n') {
+        text_add_ch(out, '\n');
+    }
+    text_add(out, body->text);
+    if (out->len > 0 && out->text[out->len - 1] != '\n') {
+        text_add_ch(out, '\n');
+    }
+    body->ast = NULL;
+    text_free(body);
+    return out;
+}
+
 static void begin_stmt_block(struct Text *head)
 {
-    if (is_unsafe_head(head->text)) {
+    if (is_unsafe_head(head->text) || is_inline_c_head(head->text)) {
         g_unsafe_depth++;
     }
 }
@@ -10765,6 +11447,16 @@ static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct
             g_unsafe_depth--;
         }
         text_free(head);
+        return out;
+    }
+    if (is_inline_c_head(head->text)) {
+        out = normalize_raw_c_block_body(body);
+        if (g_unsafe_depth > 0) {
+            g_unsafe_depth--;
+        }
+        text_free(head);
+        text_free(lb);
+        text_free(rb);
         return out;
     }
     return text_join4(process_control_head(head), lb, body, rb);
@@ -10905,6 +11597,19 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all->tail_return = 0;
         all->ast = ast_raw(ND_RAW, all->text);
         return all;
+    }
+    if (g_c_compat && g_unsafe_depth == 0 && g_in_function) {
+        if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+            symbol_add(decl.name, decl.type);
+        }
+        all->tail_return = 0;
+        all->ast = ast_raw(eq >= 0 ? ND_ASSIGN : ND_EXPR_STMT, all->text);
+        all = rewrite_os_attributes(all);
+        all = rewrite_sizeof_types(all);
+        all = rewrite_compile_time_os_ops(all);
+        all = rewrite_linker_address_ops(all);
+        all = rewrite_alignment_calls(all);
+        return remove_percent(all);
     }
     all = try_rewrite_auto_payload_enum_decl(all);
     register_tags_in_text(all->text);
@@ -11079,6 +11784,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all = remove_percent(strip_attributes(all));
         all = rewrite_method_calls(all);
         all = rewrite_inferred_array_from_calls(all);
+        all = rewrite_stack_lifetime_from_calls(all);
         check_safe_c_function_calls(all->text);
         check_no_heap_safe_expr(all->text);
         check_safe_reference_raw_inputs(all->text);
@@ -11320,6 +12026,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = rewrite_payload_enum_constructors(all);
     all = rewrite_method_calls(all);
     all = rewrite_inferred_array_from_calls(all);
+    all = rewrite_stack_lifetime_from_calls(all);
     check_safe_c_function_calls(all->text);
     check_no_heap_safe_expr(all->text);
     check_safe_reference_raw_inputs(all->text);
@@ -11369,11 +12076,41 @@ static int return_uses_owned(const char *s)
     return 0;
 }
 
+static char *extract_return_value_expr(const char *stmt)
+{
+    const char *p = skip_ws(stmt);
+    const char *expr_start;
+    const char *expr_end;
+
+    if (!starts_word(p, "return")) {
+        return NULL;
+    }
+    expr_start = skip_ws(p + 6);
+    expr_end = expr_start + strlen(expr_start);
+    while (expr_end > expr_start && isspace((unsigned char)expr_end[-1])) {
+        expr_end--;
+    }
+    if (expr_end > expr_start && expr_end[-1] == ';') {
+        expr_end--;
+    }
+    while (expr_end > expr_start && isspace((unsigned char)expr_end[-1])) {
+        expr_end--;
+    }
+    if (expr_end <= expr_start) {
+        return NULL;
+    }
+    return xstrndup(expr_start, (size_t)(expr_end - expr_start));
+}
+
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi)
 {
     struct Text *all = text_join3(ret, expr, semi);
     all->ast = ast_raw(ND_RETURN, all->text);
     if (g_current_generic_kind != 0 || g_current_payload_enum) {
+        all->tail_return = 1;
+        return all;
+    }
+    if (g_c_compat && g_unsafe_depth == 0) {
         all->tail_return = 1;
         return all;
     }
@@ -11427,6 +12164,7 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     }
     all = rewrite_method_calls(all);
     all = rewrite_inferred_array_from_calls(all);
+    all = rewrite_stack_lifetime_from_calls(all);
     check_safe_c_function_calls(all->text);
     check_safe_reference_raw_inputs(all->text);
     check_safe_raw_field_access(all->text);
@@ -11447,8 +12185,35 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
         struct Text *out = text_new();
         struct Text *indent = text_new();
+        char *return_expr = extract_return_value_expr(all->text);
         append_leading_newlines(all->text, out);
         append_indent_from(all->text, indent);
+        if (return_expr != NULL && g_current_function_stack_guard) {
+            char tmp[64];
+
+            snprintf(tmp, sizeof(tmp), "__cminus_return%d", g_right_value_id++);
+            text_add(out, indent->text);
+            text_add(out, "__typeof__((");
+            text_add(out, return_expr);
+            text_add(out, ")) ");
+            text_add(out, tmp);
+            text_add(out, " = (");
+            text_add(out, return_expr);
+            text_add(out, ");\n");
+            emit_frees(out, indent->text);
+            append_stack_leave(out, indent->text);
+            text_add(out, indent->text);
+            text_add(out, "return ");
+            text_add(out, tmp);
+            text_add(out, ";");
+            free(return_expr);
+            out->tail_return = 1;
+            out->ast = ast_raw(ND_RETURN, out->text);
+            text_free(indent);
+            text_free(all);
+            return out;
+        }
+        free(return_expr);
         emit_frees(out, indent->text);
         if (g_current_function_stack_guard) {
             append_stack_leave(out, indent->text);
@@ -11464,9 +12229,35 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     {
         struct Text *out = text_new();
         struct Text *indent = text_new();
+        char *return_expr = extract_return_value_expr(all->text);
 
         append_leading_newlines(all->text, out);
         append_indent_from(all->text, indent);
+        if (return_expr != NULL && g_current_function_stack_guard) {
+            char tmp[64];
+
+            snprintf(tmp, sizeof(tmp), "__cminus_return%d", g_right_value_id++);
+            text_add(out, indent->text);
+            text_add(out, "__typeof__((");
+            text_add(out, return_expr);
+            text_add(out, ")) ");
+            text_add(out, tmp);
+            text_add(out, " = (");
+            text_add(out, return_expr);
+            text_add(out, ");\n");
+            append_stack_leave(out, indent->text);
+            text_add(out, indent->text);
+            text_add(out, "return ");
+            text_add(out, tmp);
+            text_add(out, ";");
+            free(return_expr);
+            out->tail_return = 1;
+            out->ast = ast_raw(ND_RETURN, out->text);
+            text_free(indent);
+            text_free(all);
+            return out;
+        }
+        free(return_expr);
         if (g_current_function_stack_guard) {
             append_stack_leave(out, indent->text);
         }
@@ -11478,6 +12269,17 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
         text_free(all);
         return out;
     }
+}
+
+static struct Text *finish_c_compat_braced_decl(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb, struct Text *suffix, struct Text *semi)
+{
+    struct Text *out = text_join3(head, lb, body);
+
+    out = text_join(out, rb);
+    out = text_join(out, suffix);
+    out = text_join(out, semi);
+    out->ast = ast_raw(ND_EXPR_STMT, out->text);
+    return out;
 }
 
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb)
@@ -11492,6 +12294,16 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         register_unsafe_metadata(body->text);
         cminus_unsafe_pop();
         out = body;
+        text_free(head);
+        text_free(lb);
+        text_free(rb);
+        g_top_block_is_function = 0;
+        g_in_function = 0;
+        return out;
+    }
+    if (is_inline_c_head(head->text)) {
+        cminus_unsafe_pop();
+        out = normalize_raw_c_block_body(body);
         text_free(head);
         text_free(lb);
         text_free(rb);
@@ -11604,6 +12416,24 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         g_in_aggregate_struct = 0;
         g_current_struct_mmio = 0;
         g_current_struct_tag[0] = '\0';
+        return out;
+    }
+
+    if (g_c_compat && g_unsafe_depth == 0) {
+        out = text_join3(head, lb, body);
+        out = text_join(out, rb);
+        out->ast = ast_block(body_ast);
+        g_owned.count = 0;
+        g_finalized_locals.count = 0;
+        g_moved_locals.count = 0;
+        g_borrow_links.count = 0;
+        g_locals.count = 0;
+        g_function_returns_move = 0;
+        g_current_function_name[0] = '\0';
+        g_current_function_ret = type_unknown();
+        g_current_function_interrupt = 0;
+        g_current_function_naked = 0;
+        g_in_function = 0;
         return out;
     }
 
@@ -11729,8 +12559,16 @@ static void emit_generic_function_instances(FILE *out)
                                                                     tmpl->inst[j].arg,
                                                                     tmpl->name,
                                                                     tmpl->inst[j].concrete);
+            struct FunctionParams *fn = NULL;
+            if (head_function_name(concrete_head->text, func_name)) {
+                register_function_params(concrete_head->text);
+                fn = function_params_find(func_name);
+                emit_generic_default_undef(out, func_name, fn);
+            }
+            concrete_head = strip_default_parameters(concrete_head);
             concrete_head = remove_percent(strip_attributes(concrete_head));
             concrete_body = remove_percent(strip_attributes(concrete_body));
+            concrete_body = rewrite_parameter_calls(concrete_body);
             concrete_body = rewrite_payload_enum_constructors(concrete_body);
             fputs(concrete_head->text, out);
             fputs("{", out);
@@ -11751,6 +12589,35 @@ static void emit_generic_function_instances(FILE *out)
             fputs("}\n", out);
             text_free(concrete_head);
             text_free(concrete_body);
+        }
+    }
+}
+
+static void emit_generic_function_prototypes(FILE *out)
+{
+    int i;
+
+    for (i = 0; i < g_generic_funcs.count; i++) {
+        struct GenericTemplate *tmpl = &g_generic_funcs.tmpl[i];
+        int j;
+        for (j = 0; j < tmpl->inst_count; j++) {
+            char param[NAME_MAX_LEN];
+            char func_name[NAME_MAX_LEN];
+            const char *head = generic_template_body_start(tmpl->head, param);
+            struct Text *concrete_head = replace_param_and_generics(head,
+                                                                    tmpl->param,
+                                                                    tmpl->inst[j].arg,
+                                                                    tmpl->name,
+                                                                    tmpl->inst[j].concrete);
+            register_function_params(concrete_head->text);
+            if (head_function_name(concrete_head->text, func_name)) {
+                emit_generic_default_macro(out, func_name, function_params_find(func_name));
+            }
+            concrete_head = strip_default_parameters(concrete_head);
+            concrete_head = remove_percent(strip_attributes(concrete_head));
+            fputs(concrete_head->text, out);
+            fputs(";\n", out);
+            text_free(concrete_head);
         }
     }
 }
@@ -11793,6 +12660,8 @@ static void materialize_generic_instance(struct GenericTemplate *tmpl, int j, in
                                                             tmpl->name,
                                                             tmpl->inst[j].concrete);
 
+    register_function_params(concrete_head->text);
+    concrete_head = strip_default_parameters(concrete_head);
     concrete_head = remove_percent(strip_attributes(concrete_head));
     concrete_body = remove_percent(strip_attributes(concrete_body));
     if (is_func) {
@@ -11835,12 +12704,6 @@ static void close_generic_instances(void)
             }
         }
     }
-}
-
-static void emit_generic_instances(FILE *out)
-{
-    emit_generic_struct_instances(out);
-    emit_generic_function_instances(out);
 }
 
 static void emit_payload_enum_instances(FILE *out)
@@ -12088,20 +12951,23 @@ int main(int argc, char **argv)
 
     g_bare_metal = 0;
     g_no_heap = 0;
+    g_c_compat = 0;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-bare") == 0) {
             g_bare_metal = 1;
         } else if (strcmp(argv[i], "-no-heap") == 0) {
             g_no_heap = 1;
+        } else if (strcmp(argv[i], "-c-compat") == 0 || strcmp(argv[i], "--c-compat") == 0) {
+            g_c_compat = 1;
         } else if (input_path == NULL) {
             input_path = argv[i];
         } else {
-            fputs("usage: c- [-bare] [-no-heap] input.c- > output.c\n", stderr);
+            fputs("usage: c- [-bare] [-no-heap] [-c-compat] input.c- > output.c\n", stderr);
             return 2;
         }
     }
     if (input_path == NULL) {
-        fputs("usage: c- [-bare] [-no-heap] input.c- > output.c\n", stderr);
+        fputs("usage: c- [-bare] [-no-heap] [-c-compat] input.c- > output.c\n", stderr);
         return 2;
     }
 
@@ -12128,6 +12994,8 @@ int main(int argc, char **argv)
     g_need_stdlib_h = 0;
     g_need_stdio_h = 0;
     g_need_execinfo_h = 0;
+    g_need_pthread_h = 0;
+    g_need_sched_h = 0;
     {
         const char *emit_uniq = getenv("C_MINUS_EMIT_UNIQ");
         g_emit_uniq = emit_uniq == NULL || strcmp(emit_uniq, "0") != 0;
@@ -12183,6 +13051,12 @@ int main(int argc, char **argv)
             if (g_need_execinfo_h) {
                 fputs("#include <execinfo.h>\n", stdout);
             }
+            if (g_need_pthread_h) {
+                fputs("#include <pthread.h>\n", stdout);
+            }
+            if (g_need_sched_h) {
+                fputs("#include <sched.h>\n", stdout);
+            }
         }
         close_generic_instances();
         {
@@ -12194,8 +13068,10 @@ int main(int argc, char **argv)
             }
         }
         emit_payload_enum_instances(stdout);
-        emit_generic_instances(stdout);
-        fputs(p, stdout);
+        emit_generic_struct_instances(stdout);
+        emit_generic_function_prototypes(stdout);
+        fputs_with_trailing_newline(p, stdout);
+        emit_generic_function_instances(stdout);
     }
     text_free(g_output);
     fclose(yyin);

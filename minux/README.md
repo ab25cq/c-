@@ -51,8 +51,9 @@ qemu-system-arm -M raspi0 -kernel target/debug/kernel.elf -serial stdio -display
 The QEMU kernel currently prints through the Raspberry Pi Zero PL011 UART and
 then exercises a tiny safe RAM filesystem before running a fixed process table.
 The filesystem uses fixed inode/data arrays in `Kernel`, with all indexing done
-through `Span<T>`. The shell has small built-in `pwd`, `ls`, and `run`
-commands:
+through `Span<T>`. File slots are allocated with a fixed-storage `Bitmap`, and
+the scheduler uses a fixed-storage `RingBuffer<int>` ready queue. The shell has
+small built-in `pwd`, `ls`, and `run` commands:
 
 - fixed maximum file count
 - fixed maximum file name length
@@ -111,7 +112,8 @@ apipn[i3t][
 ```
 
 The UART address setup is kept in `unsafe`, while the kernel body uses C-
-safe/no-heap features such as `Register<T>`, `Span<T>`, stack structs, and
-fixed arrays. Timer vector entry and IRQ save/restore are in `qemu/boot.S`.
+safe/no-heap features such as `Register<T>`, `Span<T>`, `Span.fill()`,
+`Bitmap`, `RingBuffer<T>`, stack structs, and fixed arrays. Timer vector entry
+and IRQ save/restore are in `qemu/boot.S`.
 This is now the preferred path for real emulation work; the hosted toy emulator
 remains as a fast language/runtime experiment.

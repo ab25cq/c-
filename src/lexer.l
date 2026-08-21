@@ -53,6 +53,11 @@ void cminus_push_include(FILE *fp, int unsafe)
     yylineno = 1;
 }
 
+int cminus_include_depth(void)
+{
+    return include_depth;
+}
+
 static void *lex_xmalloc(size_t size)
 {
     void *p = malloc(size);
@@ -173,6 +178,9 @@ WS         [ \t\r\f\v\n]+
 LINE       "//"[^\n]*
 BLOCK      "/*"([^*]|\*+[^*/])*\*+"/"
 PP         ^[ \t\r\f\v]*#[^\n]*(\\\n[^\n]*)*(\n)?
+TYPEDEF_BRACED typedef([^{};]|\n)*\{([^{}]|\n)*\}([ \t\r\f\v]|\n)*({ID_START}{ID_CONT}*([ \t\r\f\v]|\n)*)?;
+TYPEDEF_FN_PTR typedef([^;\n]|\n)*\(\*([ \t\r\f\v]|\n)*{ID_START}{ID_CONT}*([ \t\r\f\v]|\n)*\)([^;\n]|\n)*;
+BRACED_INIT [^;{}]*=[ \t\r\f\v\n]*(\([^{};]*\)[ \t\r\f\v\n]*)?\{([^{}]|\{[^{}]*\})*\}[ \t\r\f\v\n]*;
 HEX        0[xX][0-9A-Fa-f]+([uUlL]*)?
 NUMBER     (({DIGIT}+(\.{DIGIT}*)?)|(\.{DIGIT}+))([eEpP][+-]?{DIGIT}+)?[uUlLfF]*
 STRING     L?\"(\\.|[^\\\"\n])*\"
@@ -199,6 +207,9 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
             }
 
 {PP}        { return emit_token(PP_LINE); }
+{TYPEDEF_BRACED} { return emit_token(PP_LINE); }
+{TYPEDEF_FN_PTR} { return emit_token(PP_LINE); }
+{BRACED_INIT} { return emit_token(PP_LINE); }
 {WS}        { pending_add(yytext, (size_t)yyleng); }
 {LINE}      { pending_add(yytext, (size_t)yyleng); }
 {BLOCK}     { pending_add(yytext, (size_t)yyleng); }

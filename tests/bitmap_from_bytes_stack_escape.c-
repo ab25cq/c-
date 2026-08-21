@@ -1,0 +1,15 @@
+Bitmap make_bitmap(void)
+{
+    unsigned long words[1] = { 0 };
+    Bitmap bits = Bitmap.from_bytes(words, sizeof(words));
+
+    bits.set(0);
+    return bits;
+}
+
+int main(void)
+{
+    Bitmap bits = make_bitmap();
+
+    return bits.test(0);
+}

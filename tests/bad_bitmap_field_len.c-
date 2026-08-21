@@ -1,0 +1,12 @@
+struct PageBits {
+    unsigned long words[1];
+};
+
+int main(void)
+{
+    stack PageBits pages;
+    Bitmap map;
+
+    map = Bitmap.from(pages.words, 9999);
+    return map.len();
+}

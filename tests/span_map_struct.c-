@@ -1,0 +1,22 @@
+inline c {
+#include <stdio.h>
+}
+
+struct Data {
+    int a;
+    int b;
+};
+
+int main(void)
+{
+    int raw[2];
+    Span<struct Data> values = Span<struct Data>.map_from(raw, 1);
+
+    raw[0] = 3;
+    raw[1] = 4;
+    if (values[0].a != 3 || values[0].b != 4) {
+        return 1;
+    }
+    printf("%d %d\n", values[0].a, values[0].b);
+    return 0;
+}

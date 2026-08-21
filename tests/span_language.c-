@@ -5,8 +5,15 @@ unsafe {
 int main(void)
 {
     int data[3];
+    int out_data[2];
+    int name_data[4];
+    int src_name_data[4];
     Span<int> values = Span<int>.from(data, 3);
     Span<int> bytes = Span<int>.from_bytes(data, sizeof(data));
+    Span<int> tail;
+    Span<int> out = Span<int>.from(out_data, 2);
+    Span<int> name = Span<int>.from(name_data, 4);
+    Span<int> src_name = Span<int>.from(src_name_data, 4);
     Span<int> empty = Span<int>.empty();
     struct __CMinusIndex<int> third;
     int sum = 0;
@@ -30,6 +37,25 @@ int main(void)
     }
     if (!third.is_Some() || third.get_Some() != 30) {
         return 4;
+    }
+    values.fill(7);
+    if (values[0] != 7 || values[1] != 7 || values[2] != 7) {
+        return 7;
+    }
+    values.set(0, 10);
+    values.set(1, 20);
+    values.set(2, 30);
+    tail = values.slice(1, 2);
+    out.copy_from_count(tail, 2);
+    if (out[0] != 20 || out[1] != 30) {
+        return 8;
+    }
+    src_name.set(0, 'o');
+    src_name.set(1, 's');
+    src_name.set(2, 0);
+    name.copy_cstr_from(src_name);
+    if (name.cstr_len() != 2 || !name.cstr_eq(src_name)) {
+        return 9;
     }
     foreach (int value in values) {
         sum += value;

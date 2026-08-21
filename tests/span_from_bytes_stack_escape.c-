@@ -1,0 +1,14 @@
+Span<int> make_view(void)
+{
+    int raw[2] = { 1, 2 };
+    Span<int> values = Span<int>.from_bytes(raw, sizeof(raw));
+
+    return values;
+}
+
+int main(void)
+{
+    Span<int> values = make_view();
+
+    return values.get(0);
+}

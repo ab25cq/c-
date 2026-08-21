@@ -1,0 +1,46 @@
+#include <stdint.h>
+#include <stdbool.h>
+
+#define CCOMPAT_FIELD(name) int name
+
+typedef struct CPoint {
+    CCOMPAT_FIELD(x);
+    int y;
+} CPoint;
+
+typedef union CWord {
+    uint32_t u32;
+    unsigned char bytes[4];
+} CWord;
+
+typedef enum CKind {
+    C_KIND_A = 1,
+    C_KIND_B = 2
+} CKind;
+
+typedef int (*CBinaryOp)(int, int);
+
+static int c_add(int a, int b)
+{
+    return a + b;
+}
+
+int main(void)
+{
+    CPoint p = { .x = 10, .y = 20 };
+    CWord w = { .u32 = 0x11223344u };
+    CKind kind = C_KIND_B;
+    CBinaryOp op = c_add;
+    bool ok = true;
+
+    if (!ok || kind != C_KIND_B) {
+        return 1;
+    }
+    if (p.x + p.y + op(3, 4) != 37) {
+        return 2;
+    }
+    if (w.bytes[0] == 0 && w.bytes[1] == 0 && w.bytes[2] == 0 && w.bytes[3] == 0) {
+        return 3;
+    }
+    return 0;
+}

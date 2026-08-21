@@ -1,0 +1,15 @@
+FixedVec<int> make_vec(void)
+{
+    int raw[2] = { 1, 2 };
+    FixedVec<int> values = FixedVec<int>.from_bytes(raw, sizeof(raw));
+
+    values.push(1);
+    return values;
+}
+
+int main(void)
+{
+    FixedVec<int> values = make_vec();
+
+    return values.get(0);
+}

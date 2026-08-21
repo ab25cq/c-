@@ -34,6 +34,35 @@ grep 'int initialized = 7;' tests/local_zero.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/local_zero.out.c -o tests/local_zero.out
 ./tests/local_zero.out
 
+./c- -c-compat tests/c_compat_macros.c- > tests/c_compat_macros.out.c
+grep '#ifdef CCOMPAT_VALUE' tests/c_compat_macros.out.c >/dev/null
+grep '#pragma GCC diagnostic push' tests/c_compat_macros.out.c >/dev/null
+grep '#undef CCOMPAT_VALUE' tests/c_compat_macros.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/c_compat_macros.out.c -o tests/c_compat_macros.out
+test "$(./tests/c_compat_macros.out)" = "c compat macros"
+
+./c- -c-compat tests/c_compat_typedefs.c- > tests/c_compat_typedefs.out.c
+grep 'typedef struct CPoint' tests/c_compat_typedefs.out.c >/dev/null
+grep 'typedef int (\*CBinaryOp)(int, int);' tests/c_compat_typedefs.out.c >/dev/null
+grep 'CPoint p = { .x = 10, .y = 20 };' tests/c_compat_typedefs.out.c >/dev/null
+cc -std=gnu11 -Wall -Wextra tests/c_compat_typedefs.out.c -o tests/c_compat_typedefs.out
+./tests/c_compat_typedefs.out
+
+./c- tests/inline_c_block.c- > tests/inline_c_block.out.c
+grep '#define INLINE_C_SCALE 4' tests/inline_c_block.out.c >/dev/null
+grep 'static inline int inline_c_mul' tests/inline_c_block.out.c >/dev/null
+grep 'local = inline_c_mul(local);' tests/inline_c_block.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/inline_c_block.out.c -o tests/inline_c_block.out
+./tests/inline_c_block.out
+
+./c- -c-compat tests/c_compat_c99_features.c- > tests/c_compat_c99_features.out.c
+grep 'int values\[static 1\]' tests/c_compat_c99_features.out.c >/dev/null
+grep 'int \* restrict values' tests/c_compat_c99_features.out.c >/dev/null
+grep 'C99Inner literal = (C99Inner){ .x = 6, .y = 7 };' tests/c_compat_c99_features.out.c >/dev/null
+grep 'int values\[\];' tests/c_compat_c99_features.out.c >/dev/null
+cc -std=c99 -Wall -Wextra tests/c_compat_c99_features.out.c -o tests/c_compat_c99_features.out
+test "$(./tests/c_compat_c99_features.out)" = "34"
+
 ./c- tests/struct_finalizer.c- > tests/struct_finalizer.out.c
 grep 'struct Holder \*stack = cminus_gc_calloc(1, sizeof(struct Holder));' tests/struct_finalizer.out.c >/dev/null
 grep 'struct Holder \*heap = cminus_gc_calloc(1, sizeof(struct Holder));' tests/struct_finalizer.out.c >/dev/null
@@ -93,6 +122,24 @@ grep 'cminus_align_up_impl' tests/alignment_helpers.out.c | grep '"tests/alignme
 cc -std=gnu99 -Wall -Wextra tests/alignment_helpers.out.c -o tests/alignment_helpers.out
 ./tests/alignment_helpers.out
 
+./c- tests/ring_buffer_safe.c- > tests/ring_buffer_safe.out.c
+grep 'struct RingBuffer_unsigned_char q = {0};' tests/ring_buffer_safe.out.c >/dev/null
+grep 'RingBuffer_from_unsigned_char(owner->bytes, (int)sizeof(owner->bytes), 0)' tests/ring_buffer_safe.out.c >/dev/null
+grep 'RingBuffer_from_unsigned_char(storage.bytes, 4, 0)' tests/ring_buffer_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/ring_buffer_safe.out.c -o tests/ring_buffer_safe.out
+./tests/ring_buffer_safe.out
+
+./c- tests/generic_default_params.c- > tests/generic_default_params.out.c
+grep '#define choose_int(...)' tests/generic_default_params.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/generic_default_params.out.c -o tests/generic_default_params.out
+test "$(./tests/generic_default_params.out)" = "62 14 22 102 141"
+
+./c- tests/bitmap_safe.c- > tests/bitmap_safe.out.c
+grep 'Bitmap map = {0};' tests/bitmap_safe.out.c >/dev/null
+grep 'Bitmap_from(pages.words, (int)(sizeof(pages.words) \* 8))' tests/bitmap_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/bitmap_safe.out.c -o tests/bitmap_safe.out
+./tests/bitmap_safe.out
+
 ./c- tests/alignment_panic.c- > tests/alignment_panic.out.c
 cc -std=gnu99 -Wall -Wextra tests/alignment_panic.out.c -o tests/alignment_panic.out
 if ./tests/alignment_panic.out > tests/alignment_panic.out.log 2> tests/alignment_panic.err; then
@@ -106,6 +153,18 @@ if ./c- tests/bad_linker_addr_unknown.c- > /dev/null 2> tests/bad_linker_addr_un
     exit 1
 fi
 grep 'addr_of(__missing_symbol) requires `linker_symbol __missing_symbol;` first' tests/bad_linker_addr_unknown.err >/dev/null
+
+if ./c- tests/bad_ring_buffer_field_len.c- > /dev/null 2> tests/bad_ring_buffer_field_len.err; then
+    echo "bad ring buffer length unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "buffer from length 4 exceeds array 'storage.values' length 3" tests/bad_ring_buffer_field_len.err >/dev/null
+
+if ./c- tests/bad_bitmap_field_len.c- > /dev/null 2> tests/bad_bitmap_field_len.err; then
+    echo "bad bitmap length unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Bitmap.from bit length" tests/bad_bitmap_field_len.err >/dev/null
 
 if ./c- tests/bad_bitflags_mismatch.c- > /dev/null 2> tests/bad_bitflags_mismatch.err; then
     echo "bad bitflags assignment unexpectedly succeeded" >&2
@@ -131,6 +190,39 @@ test -f /tmp/cpm-smoke/lib/c-.h
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" leak > leak.out 2> leak.err)
 (cd /tmp/cpm-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" val > val.out 2> val.err)
 grep -- ' -g ' /tmp/cpm-smoke/val.out >/dev/null
+
+rm -rf /tmp/cpm-compat-smoke
+./cpm new /tmp/cpm-compat-smoke
+cat >> /tmp/cpm-compat-smoke/C-.toml <<'EOF'
+std = "gnu11"
+c_compat = true
+EOF
+cp tests/c_compat_macros.c- /tmp/cpm-compat-smoke/src/main.c-
+cat > /tmp/cpm-compat-smoke/src/local_compat.h <<'EOF'
+#define LOCAL_COMPAT_VALUE 5
+int native_add(int a, int b);
+EOF
+cat > /tmp/cpm-compat-smoke/src/native.c <<'EOF'
+#include "local_compat.h"
+
+int native_add(int a, int b)
+{
+    return a + b;
+}
+EOF
+cat >> /tmp/cpm-compat-smoke/src/main.c- <<'SRC'
+#include "local_compat.h"
+int cpm_local_header_check(void)
+{
+    return LOCAL_COMPAT_VALUE == 5 && native_add(2, 3) == 5 ? 0 : 1;
+}
+SRC
+(cd /tmp/cpm-compat-smoke && CPM_C_MINUS="$ROOT/c-" "$ROOT/cpm" run > run.out 2>&1)
+grep -- '-std=gnu11' /tmp/cpm-compat-smoke/run.out >/dev/null
+grep -- '-c-compat' /tmp/cpm-compat-smoke/run.out >/dev/null
+grep -- '-Isrc' /tmp/cpm-compat-smoke/run.out >/dev/null
+grep "'src/native.c'" /tmp/cpm-compat-smoke/run.out >/dev/null
+grep 'c compat macros' /tmp/cpm-compat-smoke/run.out >/dev/null
 
 rm -rf /tmp/cpm-common-smoke
 ./cpm new /tmp/cpm-common-smoke
@@ -318,14 +410,21 @@ grep 'Map_set_int_int(holder->lookup, 7, 70)' tests/field_collection_methods.out
 grep 'Vec_get_opt_int(holder->values, 1)' tests/field_collection_methods.out.c >/dev/null
 grep 'List_get_opt_int(holder->lines, 0)' tests/field_collection_methods.out.c >/dev/null
 grep 'Map_get_opt_int_int(holder->lookup, 7)' tests/field_collection_methods.out.c >/dev/null
+grep 'Bitmap_set(&(slots->bits), 3)' tests/field_collection_methods.out.c >/dev/null
+grep 'Bitmap_test(&(slots->bits), 3)' tests/field_collection_methods.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/field_collection_methods.out.c -o tests/field_collection_methods.out
 ./tests/field_collection_methods.out
 
 ./c- tests/span_language.c- > tests/span_language.out.c
 grep 'struct Span_int Span_from_int' tests/span_language.out.c >/dev/null
 grep 'struct Span_int Span_from_bytes_int' tests/span_language.out.c >/dev/null
-grep 'Span_from_int(data, 3)' tests/span_language.out.c >/dev/null
-grep 'Span_from_bytes_int(data, sizeof(data))' tests/span_language.out.c >/dev/null
+grep 'Span_from_int(data, 3, 0)' tests/span_language.out.c >/dev/null
+grep 'Span_from_bytes_int(data, sizeof(data), 0)' tests/span_language.out.c >/dev/null
+grep 'Span_fill_int(&values, 7)' tests/span_language.out.c >/dev/null
+grep 'Span_slice_int(&values, 1, 2)' tests/span_language.out.c >/dev/null
+grep 'Span_copy_from_count_int(&out, tail, 2)' tests/span_language.out.c >/dev/null
+grep 'Span_copy_cstr_from_int(&name, src_name)' tests/span_language.out.c >/dev/null
+grep 'Span_cstr_eq_int(&name, src_name)' tests/span_language.out.c >/dev/null
 grep 'Span_ptr_at_int(&(values), 1' tests/span_language.out.c >/dev/null
 grep '__foreach' tests/span_language.out.c >/dev/null
 grep 'values.len' tests/span_language.out.c >/dev/null
@@ -349,23 +448,23 @@ if ./c- tests/bad_span_stack_len.c- > /dev/null 2> tests/bad_span_stack_len.err;
     echo "oversized stack Span unexpectedly succeeded" >&2
     exit 1
 fi
-grep "Span.from length 4 exceeds array 'data' length 3" tests/bad_span_stack_len.err >/dev/null
+grep "buffer from length 4 exceeds array 'data' length 3" tests/bad_span_stack_len.err >/dev/null
 
 if ./c- tests/bad_span_stack_bytes.c- > /dev/null 2> tests/bad_span_stack_bytes.err; then
     echo "oversized byte stack Span unexpectedly succeeded" >&2
     exit 1
 fi
-grep "Span.from_bytes length 16 exceeds array 'data' size 12 bytes" tests/bad_span_stack_bytes.err >/dev/null
+grep "buffer from_bytes length 16 exceeds array 'data' size 12 bytes" tests/bad_span_stack_bytes.err >/dev/null
 
 ./c- tests/span_field_ok.c- > tests/span_field_ok.out.c
-grep 'Span_from_int(holder->data, 3)' tests/span_field_ok.out.c >/dev/null
-grep 'Span_from_bytes_int(holder->data, sizeof(holder->data))' tests/span_field_ok.out.c >/dev/null
+grep 'Span_from_int(holder->data, 3, 0)' tests/span_field_ok.out.c >/dev/null
+grep 'Span_from_bytes_int(holder->data, sizeof(holder->data), 0)' tests/span_field_ok.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/span_field_ok.out.c -o tests/span_field_ok.out
 test "$(./tests/span_field_ok.out)" = "3"
 
 ./c- tests/fixed_array_safe.c- > tests/fixed_array_safe.out.c
-grep 'Span_from_int(buf->data, 4)' tests/fixed_array_safe.out.c >/dev/null
-grep 'FixedVec_from_int(buf->data, 4)' tests/fixed_array_safe.out.c >/dev/null
+grep 'Span_from_int(buf->data, 4, 0)' tests/fixed_array_safe.out.c >/dev/null
+grep 'FixedVec_from_int(buf->data, 4, 0)' tests/fixed_array_safe.out.c >/dev/null
 grep 'struct FixedVec_int FixedVec_from_int' tests/fixed_array_safe.out.c >/dev/null
 grep 'FixedVec_get_opt_int' tests/fixed_array_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/fixed_array_safe.out.c -o tests/fixed_array_safe.out
@@ -387,13 +486,111 @@ if ./c- tests/bad_span_field_len.c- > /dev/null 2> tests/bad_span_field_len.err;
     echo "oversized field Span unexpectedly succeeded" >&2
     exit 1
 fi
-grep "Span.from length 4 exceeds array 'holder.data' length 3" tests/bad_span_field_len.err >/dev/null
+grep "buffer from length 4 exceeds array 'holder.data' length 3" tests/bad_span_field_len.err >/dev/null
 
 if ./c- tests/bad_span_field_bytes.c- > /dev/null 2> tests/bad_span_field_bytes.err; then
     echo "oversized byte field Span unexpectedly succeeded" >&2
     exit 1
 fi
-grep "Span.from_bytes length 16 exceeds array 'holder.data' size 12 bytes" tests/bad_span_field_bytes.err >/dev/null
+grep "buffer from_bytes length 16 exceeds array 'holder.data' size 12 bytes" tests/bad_span_field_bytes.err >/dev/null
+
+./c- tests/span_map_struct.c- > tests/span_map_struct.out.c
+grep 'Span_map_from_Data(raw, sizeof(raw), 1, 0)' tests/span_map_struct.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/span_map_struct.out.c -o tests/span_map_struct.out
+test "$(./tests/span_map_struct.out)" = "3 4"
+
+./c- tests/span_map_stack_escape.c- > tests/span_map_stack_escape.out.c
+grep 'Span_map_from_Data(raw, sizeof(raw), 1, 0)' tests/span_map_stack_escape.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/span_map_stack_escape.out.c -o tests/span_map_stack_escape.out
+if ./tests/span_map_stack_escape.out > tests/span_map_stack_escape.out.log 2> tests/span_map_stack_escape.err; then
+    echo "escaped mapped stack Span unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference at tests/span_map_stack_escape.c-:' tests/span_map_stack_escape.err >/dev/null
+
+./c- tests/span_stack_escape.c- > tests/span_stack_escape.out.c
+cc -std=gnu99 -Wall -Wextra tests/span_stack_escape.out.c -o tests/span_stack_escape.out
+if ./tests/span_stack_escape.out > tests/span_stack_escape.out.log 2> tests/span_stack_escape.err; then
+    echo "escaped stack Span unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/span_stack_escape.err >/dev/null
+
+./c- tests/span_from_bytes_stack_escape.c- > tests/span_from_bytes_stack_escape.out.c
+cc -std=gnu99 -Wall -Wextra tests/span_from_bytes_stack_escape.out.c -o tests/span_from_bytes_stack_escape.out
+if ./tests/span_from_bytes_stack_escape.out > tests/span_from_bytes_stack_escape.out.log 2> tests/span_from_bytes_stack_escape.err; then
+    echo "escaped stack Span.from_bytes unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/span_from_bytes_stack_escape.err >/dev/null
+
+./c- tests/ref_stack_escape.c- > tests/ref_stack_escape.out.c
+grep 'Ref_from_int(&value, 0)' tests/ref_stack_escape.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/ref_stack_escape.out.c -o tests/ref_stack_escape.out
+if ./tests/ref_stack_escape.out > tests/ref_stack_escape.out.log 2> tests/ref_stack_escape.err; then
+    echo "escaped stack Ref unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/ref_stack_escape.err >/dev/null
+
+./c- tests/fixedvec_stack_escape.c- > tests/fixedvec_stack_escape.out.c
+grep 'FixedVec_from_int(raw, 2, 0)' tests/fixedvec_stack_escape.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/fixedvec_stack_escape.out.c -o tests/fixedvec_stack_escape.out
+if ./tests/fixedvec_stack_escape.out > tests/fixedvec_stack_escape.out.log 2> tests/fixedvec_stack_escape.err; then
+    echo "escaped stack FixedVec unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/fixedvec_stack_escape.err >/dev/null
+
+./c- tests/fixedvec_from_bytes_stack_escape.c- > tests/fixedvec_from_bytes_stack_escape.out.c
+cc -std=gnu99 -Wall -Wextra tests/fixedvec_from_bytes_stack_escape.out.c -o tests/fixedvec_from_bytes_stack_escape.out
+if ./tests/fixedvec_from_bytes_stack_escape.out > tests/fixedvec_from_bytes_stack_escape.out.log 2> tests/fixedvec_from_bytes_stack_escape.err; then
+    echo "escaped stack FixedVec.from_bytes unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/fixedvec_from_bytes_stack_escape.err >/dev/null
+
+./c- tests/ringbuffer_stack_escape.c- > tests/ringbuffer_stack_escape.out.c
+grep 'RingBuffer_from_int(raw, 2, 0)' tests/ringbuffer_stack_escape.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/ringbuffer_stack_escape.out.c -o tests/ringbuffer_stack_escape.out
+if ./tests/ringbuffer_stack_escape.out > tests/ringbuffer_stack_escape.out.log 2> tests/ringbuffer_stack_escape.err; then
+    echo "escaped stack RingBuffer unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/ringbuffer_stack_escape.err >/dev/null
+
+./c- tests/ringbuffer_from_bytes_stack_escape.c- > tests/ringbuffer_from_bytes_stack_escape.out.c
+cc -std=gnu99 -Wall -Wextra tests/ringbuffer_from_bytes_stack_escape.out.c -o tests/ringbuffer_from_bytes_stack_escape.out
+if ./tests/ringbuffer_from_bytes_stack_escape.out > tests/ringbuffer_from_bytes_stack_escape.out.log 2> tests/ringbuffer_from_bytes_stack_escape.err; then
+    echo "escaped stack RingBuffer.from_bytes unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/ringbuffer_from_bytes_stack_escape.err >/dev/null
+
+./c- tests/bitmap_stack_escape.c- > tests/bitmap_stack_escape.out.c
+grep 'Bitmap_from_words(words, 1)' tests/bitmap_stack_escape.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/bitmap_stack_escape.out.c -o tests/bitmap_stack_escape.out
+if ./tests/bitmap_stack_escape.out > tests/bitmap_stack_escape.out.log 2> tests/bitmap_stack_escape.err; then
+    echo "escaped stack Bitmap unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/bitmap_stack_escape.err >/dev/null
+
+./c- tests/bitmap_from_bits_stack_escape.c- > tests/bitmap_from_bits_stack_escape.out.c
+cc -std=gnu99 -Wall -Wextra tests/bitmap_from_bits_stack_escape.out.c -o tests/bitmap_from_bits_stack_escape.out
+if ./tests/bitmap_from_bits_stack_escape.out > tests/bitmap_from_bits_stack_escape.out.log 2> tests/bitmap_from_bits_stack_escape.err; then
+    echo "escaped stack Bitmap.from unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/bitmap_from_bits_stack_escape.err >/dev/null
+
+./c- tests/bitmap_from_bytes_stack_escape.c- > tests/bitmap_from_bytes_stack_escape.out.c
+cc -std=gnu99 -Wall -Wextra tests/bitmap_from_bytes_stack_escape.out.c -o tests/bitmap_from_bytes_stack_escape.out
+if ./tests/bitmap_from_bytes_stack_escape.out > tests/bitmap_from_bytes_stack_escape.out.log 2> tests/bitmap_from_bytes_stack_escape.err; then
+    echo "escaped stack Bitmap.from_bytes unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/bitmap_from_bytes_stack_escape.err >/dev/null
 
 ./c- tests/span_panic.c- > tests/span_panic.out.c
 grep 'Span_ptr_at_int(&(values), 2, "tests/span_panic.c-",' tests/span_panic.out.c >/dev/null
@@ -511,8 +708,16 @@ grep 'managed heap allocation is not allowed in interrupt functions' tests/bad_i
 ./c- tests/atomic_safe.c- > tests/atomic_safe.out.c
 grep 'struct Atomic_unsigned_int counter = Atomic_init_unsigned_int(1u);' tests/atomic_safe.out.c >/dev/null
 grep '__atomic_fetch_add' tests/atomic_safe.out.c >/dev/null
+grep '__atomic_fetch_xor' tests/atomic_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/atomic_safe.out.c -o tests/atomic_safe.out
 ./tests/atomic_safe.out
+
+./c- tests/thread_safe.c- > tests/thread_safe.out.c
+grep 'Thread t1 = {0};' tests/thread_safe.out.c >/dev/null
+grep 'Thread_spawn(worker)' tests/thread_safe.out.c >/dev/null
+grep 'Mutex_lock(&gate)' tests/thread_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_safe.out.c -o tests/thread_safe.out -pthread
+./tests/thread_safe.out
 
 ./c- tests/critical_safe.c- > tests/critical_safe.out.c
 grep 'struct Critical guard = Critical_enter();' tests/critical_safe.out.c >/dev/null
@@ -681,7 +886,7 @@ cc -std=gnu99 -Wall -Wextra tests/gc_header_offset.out.c -o tests/gc_header_offs
 
 ./c- tests/ref_language.c- > tests/ref_language.out.c
 grep 'struct Ref_int Ref_from_int' tests/ref_language.out.c >/dev/null
-grep 'struct Ref_int ref = Ref_from_int(&value)' tests/ref_language.out.c >/dev/null
+grep 'struct Ref_int ref = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value' tests/ref_language.out.c >/dev/null
 grep 'Ref_get_int(&ref)' tests/ref_language.out.c >/dev/null
 grep 'Ref_set_int(&ref, 25)' tests/ref_language.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/ref_language.out.c -o tests/ref_language.out
@@ -816,7 +1021,7 @@ grep 'struct data \*p = cminus_gc_calloc(1, sizeof(struct data));' tests/method_
 grep 'data_show(d);' tests/method_calls.out.c >/dev/null
 grep 'data_show(p);' tests/method_calls.out.c >/dev/null
 grep 'cminus_string_cmp("aaa", "aaa") != 0' tests/method_calls.out.c >/dev/null
-grep 'return cminus_string_cmp("aaa", "aaa");' tests/method_calls.out.c >/dev/null
+grep '__typeof__((cminus_string_cmp("aaa", "aaa"))) __cminus_return' tests/method_calls.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/method_calls.out.c -o tests/method_calls.out
 ./tests/method_calls.out
 
@@ -1043,6 +1248,22 @@ fi
 cc -std=gnu99 -Wall -Wextra tests/no_heap_span_fixedvec_ok.out.c -o tests/no_heap_span_fixedvec_ok.out
 ./tests/no_heap_span_fixedvec_ok.out
 
+./c- -no-heap tests/no_heap_ring_buffer_ok.c- > tests/no_heap_ring_buffer_ok.out.c
+grep 'struct RingBuffer_int q = {0};' tests/no_heap_ring_buffer_ok.out.c >/dev/null
+grep 'RingBuffer_from_int(storage.values, 3, 0)' tests/no_heap_ring_buffer_ok.out.c >/dev/null
+if grep 'cminus_gc_calloc(1, sizeof(struct RingBuffer_int))' tests/no_heap_ring_buffer_ok.out.c >/dev/null; then
+    echo "no-heap RingBuffer metadata unexpectedly allocated managed heap" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/no_heap_ring_buffer_ok.out.c -o tests/no_heap_ring_buffer_ok.out
+./tests/no_heap_ring_buffer_ok.out
+
+./c- -no-heap tests/no_heap_bitmap_ok.c- > tests/no_heap_bitmap_ok.out.c
+grep 'Bitmap map = {0};' tests/no_heap_bitmap_ok.out.c >/dev/null
+grep 'Bitmap_from_words(pages.words, 1)' tests/no_heap_bitmap_ok.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/no_heap_bitmap_ok.out.c -o tests/no_heap_bitmap_ok.out
+./tests/no_heap_bitmap_ok.out
+
 ./c- -no-heap tests/no_heap_register_ok.c- > tests/no_heap_register_ok.out.c
 grep 'struct Register_unsigned_int reg = {0};' tests/no_heap_register_ok.out.c >/dev/null
 if grep 'cminus_gc_calloc(1, sizeof(struct Register_unsigned_int))' tests/no_heap_register_ok.out.c >/dev/null; then
@@ -1078,7 +1299,7 @@ cc -std=gnu99 -Wall -Wextra tests/no_heap_static_volatile_ok.out.c -o tests/no_h
 
 ./c- -no-heap tests/no_heap_optional_ref_ok.c- > tests/no_heap_optional_ref_ok.out.c
 grep 'struct Optional_int maybe = make_value(9);' tests/no_heap_optional_ref_ok.out.c >/dev/null
-grep 'struct Ref_int ref = Ref_from_int(&value);' tests/no_heap_optional_ref_ok.out.c >/dev/null
+grep 'struct Ref_int ref = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value' tests/no_heap_optional_ref_ok.out.c >/dev/null
 if grep 'cminus_gc_calloc(1, sizeof(struct Optional_int))' tests/no_heap_optional_ref_ok.out.c >/dev/null; then
     echo "no-heap Optional unexpectedly allocated managed heap" >&2
     exit 1
@@ -1113,6 +1334,18 @@ if ./c- -no-heap tests/bad_no_heap_clone.c- > /dev/null 2> tests/bad_no_heap_clo
     exit 1
 fi
 grep "managed heap allocation is not allowed in no-heap functions" tests/bad_no_heap_clone.err >/dev/null
+
+if ./c- tests/bad_ring_buffer_raw_safe.c- > /dev/null 2> tests/bad_ring_buffer_raw_safe.err; then
+    echo "bad raw RingBuffer input unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "raw pointer cannot be stored in RingBuffer" tests/bad_ring_buffer_raw_safe.err >/dev/null
+
+if ./c- tests/bad_bitmap_raw_safe.c- > /dev/null 2> tests/bad_bitmap_raw_safe.err; then
+    echo "bad raw Bitmap input unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "raw pointer cannot be stored in Bitmap" tests/bad_bitmap_raw_safe.err >/dev/null
 
 rm -rf /tmp/cpm-no-heap-smoke
 ./cpm new /tmp/cpm-no-heap-smoke

@@ -1,0 +1,10 @@
+int main(void)
+{
+    Bitmap map;
+
+    unsafe {
+        unsigned long* raw = malloc(sizeof(unsigned long));
+    }
+    map = Bitmap.from(raw, 8);
+    return map.len();
+}

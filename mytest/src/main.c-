@@ -1,18 +1,28 @@
+unsafe {
 #include <stdio.h>
-#include <stdlib.h>
+}
 #include <c-.h>
+
+struct Data
+{
+    int a, b;
+};
+
+Span<struct Data> fun()
+{
+    int v[2] = {
+        1,2
+    };
+    
+    Span<struct Data> s = Span<struct Data>.map_from(v, sizeof(v), 1);
+    
+    return s;
+}
 
 int main(void)
 {
-    struct OwnedVec<int*>* a = OwnedVec<int*>.new();
-
-    a.push(new int);
-
-    *a[0] = 123;
-    printf("%d\n", *a[0]);
-
-    /* 範囲外アクセスはパニックする */
-    printf("%d\n", *a[1]);
-
+    Span<struct Data> s = fun();
+    
+    printf("%d\n", s[0].a);
     return 0;
 }

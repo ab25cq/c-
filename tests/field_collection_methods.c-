@@ -4,9 +4,22 @@ struct Holder {
     Map<int,int> lookup;
 };
 
+struct SafeSlots {
+    unsigned long words[1];
+    Bitmap bits;
+};
+
+int slot_seen(SafeSlots slots)
+{
+    slots.bits = Bitmap.from(slots.words, 8);
+    slots.bits.set(3);
+    return slots.bits.test(3);
+}
+
 int main(void)
 {
     Holder holder = new Holder;
+    stack SafeSlots slots;
     Vec<int> values = Vec<int>.new();
     List<int> lines = List<int>.new();
     Map<int,int> lookup = Map<int,int>.new();
@@ -31,6 +44,9 @@ int main(void)
     }
     if (!found.is_Some() || found.get_Some() != 70) {
         return 3;
+    }
+    if (!slot_seen(&slots)) {
+        return 4;
     }
     return 0;
 }

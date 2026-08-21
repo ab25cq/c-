@@ -2,8 +2,13 @@
 #include <string.h>
 #include <stdio.h>
 #include <execinfo.h>
+#ifndef CMINUS_BARE_H
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 #define __CMINUS_GC_MAGIC 0x434d4743UL
+#define __CMINUS_STACK_NOTE_WINDOW (1024UL * 1024UL)
 
 uniq void cminus_panic(const char* message, const char* file, int line)
 {
@@ -40,6 +45,9 @@ struct __CMinusStackFrame {
     size_t parent_anchor;
     size_t low;
     size_t high;
+    size_t explicit_low;
+    size_t explicit_high;
+    int has_explicit;
     struct __CMinusStackFrame* prev;
 };
 
@@ -50,6 +58,8 @@ uniq void cminus_gc_report_leaks(void);
 uniq size_t cminus_stack_enter_impl(const char* file, int line, void* anchor);
 uniq void cminus_stack_leave_impl(size_t id, const char* file, int line);
 uniq int cminus_stack_is_alive(size_t id);
+uniq void cminus_stack_note_caller_range(void* mem, size_t bytes);
+uniq void cminus_stack_note_parent_range(void* mem, size_t bytes);
 uniq int cminus_ptr_classify(void* mem, unsigned long* stack_id_out);
 uniq void cminus_ptr_require_alive(void* mem, unsigned long kind, unsigned long stack_id, const char* file, int line);
 uniq void* cminus_gc_calloc_impl(size_t count, size_t size, const char* file, int line);
@@ -71,6 +81,13 @@ static __attribute__((unused)) int cminus_is_aligned_impl(unsigned long value, u
 #endif
 #define cminus_gc_calloc(count, size) cminus_gc_calloc_impl((count), (size), __FILE__, __LINE__)
 #define cminus_gc_free(mem) cminus_gc_free_impl((mem), __FILE__, __LINE__)
+#define AtomicRelaxed __ATOMIC_RELAXED
+#define AtomicAcquire __ATOMIC_ACQUIRE
+#define AtomicRelease __ATOMIC_RELEASE
+#define AtomicAcqRel __ATOMIC_ACQ_REL
+#define AtomicSeqCst __ATOMIC_SEQ_CST
+#define CMINUS_PTHREAD_STORAGE_WORDS 8
+#define CMINUS_THREAD_LOCAL __thread
 #ifndef CMINUS_BARE_H
 #define __cminus_mod_ul(value, alignment) ((unsigned long)(value) % (unsigned long)(alignment))
 #define align_up(value, alignment) cminus_align_up_impl((unsigned long)(value), (unsigned long)(alignment), __FILE__, __LINE__)
@@ -80,8 +97,8 @@ static __attribute__((unused)) int cminus_is_aligned_impl(unsigned long value, u
 
 uniq struct __CMinusGCHeader* __cminus_gc_live_head = NULL;
 uniq struct __CMinusGCHeader* __cminus_gc_dead_head = NULL;
-uniq struct __CMinusStackFrame* __cminus_stack_head = NULL;
-uniq size_t __cminus_stack_next_id = 1;
+uniq CMINUS_THREAD_LOCAL struct __CMinusStackFrame* __cminus_stack_head = NULL;
+uniq CMINUS_THREAD_LOCAL size_t __cminus_stack_next_id = 1;
 #ifdef CMINUS_BARE_H
 uniq struct __CMinusStackFrame __cminus_stack_frames[256];
 uniq int __cminus_stack_frame_used[256];
@@ -340,6 +357,16 @@ uniq size_t cminus_stack_enter_impl(const char* file, int line, void* anchor)
     }
 #endif
     prev = __cminus_stack_head == NULL ? here : __cminus_stack_head->anchor;
+#ifndef CMINUS_BARE_H
+    if (__cminus_stack_head != NULL) {
+        if (here < __cminus_stack_head->low) {
+            __cminus_stack_head->low = here;
+        }
+        if (here > __cminus_stack_head->high) {
+            __cminus_stack_head->high = here;
+        }
+    }
+#endif
     frame->id = __cminus_stack_next_id++;
     frame->anchor = here;
     frame->parent_anchor = prev;
@@ -387,9 +414,96 @@ uniq int cminus_stack_is_alive(size_t id)
     return 0;
 }
 
+uniq void cminus_stack_note_caller_range(void* mem, size_t bytes)
+{
+    struct __CMinusStackFrame* frame;
+    size_t low;
+    size_t high;
+    size_t anchor;
+    size_t parent_anchor;
+    size_t near_anchor;
+    size_t near_parent;
+
+    if (mem == NULL || bytes == 0) {
+        return;
+    }
+    frame = __cminus_stack_head;
+    if (frame == NULL) {
+        return;
+    }
+    low = (size_t)mem;
+    high = low + bytes - 1;
+    if (high < low) {
+        high = low;
+    }
+    anchor = frame->anchor;
+    parent_anchor = frame->parent_anchor;
+    near_anchor = low > anchor ? low - anchor : anchor - low;
+    if (high > anchor && high - anchor < near_anchor) {
+        near_anchor = high - anchor;
+    } else if (high <= anchor && anchor - high < near_anchor) {
+        near_anchor = anchor - high;
+    }
+    near_parent = low > parent_anchor ? low - parent_anchor : parent_anchor - low;
+    if (high > parent_anchor && high - parent_anchor < near_parent) {
+        near_parent = high - parent_anchor;
+    } else if (high <= parent_anchor && parent_anchor - high < near_parent) {
+        near_parent = parent_anchor - high;
+    }
+    if (near_anchor > __CMINUS_STACK_NOTE_WINDOW && near_parent > __CMINUS_STACK_NOTE_WINDOW) {
+        return;
+    }
+    if (low < frame->low) {
+        frame->low = low;
+    }
+    if (high > frame->high) {
+        frame->high = high;
+    }
+    if (!frame->has_explicit || low < frame->explicit_low) {
+        frame->explicit_low = low;
+    }
+    if (!frame->has_explicit || high > frame->explicit_high) {
+        frame->explicit_high = high;
+    }
+    frame->has_explicit = 1;
+}
+
+uniq void cminus_stack_note_parent_range(void* mem, size_t bytes)
+{
+    struct __CMinusStackFrame* frame = __cminus_stack_head;
+    size_t low;
+    size_t high;
+
+    if (mem == NULL || bytes == 0 || frame == NULL || frame->prev == NULL) {
+        return;
+    }
+    frame = frame->prev;
+    low = (size_t)mem;
+    high = low + bytes - 1;
+    if (high < low) {
+        high = low;
+    }
+    if (low < frame->low) {
+        frame->low = low;
+    }
+    if (high > frame->high) {
+        frame->high = high;
+    }
+    if (!frame->has_explicit || low < frame->explicit_low) {
+        frame->explicit_low = low;
+    }
+    if (!frame->has_explicit || high > frame->explicit_high) {
+        frame->explicit_high = high;
+    }
+    frame->has_explicit = 1;
+}
+
 uniq int cminus_ptr_classify(void* mem, unsigned long* stack_id_out)
 {
     struct __CMinusStackFrame* frame;
+#ifndef CMINUS_BARE_H
+    struct __CMinusStackFrame* owner = NULL;
+#endif
     size_t ptr;
 
     if (stack_id_out != NULL) {
@@ -400,12 +514,47 @@ uniq int cminus_ptr_classify(void* mem, unsigned long* stack_id_out)
     }
     ptr = (size_t)mem;
     frame = __cminus_stack_head;
+#ifdef CMINUS_BARE_H
+    while (frame != NULL) {
+        if (frame->has_explicit && ptr >= frame->explicit_low && ptr <= frame->explicit_high) {
+            if (stack_id_out != NULL) {
+                *stack_id_out = frame->id;
+            }
+            return __CMinusPtrKind_Stack;
+        }
+        frame = frame->prev;
+    }
+    frame = __cminus_stack_head;
     if (frame != NULL && ptr >= frame->low && ptr <= frame->high) {
         if (stack_id_out != NULL) {
             *stack_id_out = frame->id;
         }
         return __CMinusPtrKind_Stack;
     }
+#else
+    while (frame != NULL) {
+        if (frame->has_explicit && ptr >= frame->explicit_low && ptr <= frame->explicit_high) {
+            if (stack_id_out != NULL) {
+                *stack_id_out = frame->id;
+            }
+            return __CMinusPtrKind_Stack;
+        }
+        frame = frame->prev;
+    }
+    frame = __cminus_stack_head;
+    while (frame != NULL) {
+        if (ptr >= frame->low && ptr <= frame->high) {
+            owner = frame;
+        }
+        frame = frame->prev;
+    }
+    if (owner != NULL) {
+        if (stack_id_out != NULL) {
+            *stack_id_out = owner->id;
+        }
+        return __CMinusPtrKind_Stack;
+    }
+#endif
     return __CMinusPtrKind_Raw;
 }
 
@@ -574,13 +723,18 @@ struct Ref {
 };
 
 generic<T>
-struct Ref<T> Ref_from(T* data)
+struct Ref<T> Ref_from(T* data, int allow_raw = 0)
 {
     struct Ref<T> out;
-    unsigned long stack_id = 0;
+    unsigned long stack_id = 0UL;
 
     out.data = data;
-    out.origin_kind = cminus_ptr_classify(data, &stack_id);
+    if (allow_raw) {
+        out.origin_kind = __CMinusPtrKind_Raw;
+    } else {
+        cminus_stack_note_caller_range(data, sizeof(T));
+        out.origin_kind = cminus_ptr_classify(data, &stack_id);
+    }
     out.origin_stack_id = stack_id;
     return out;
 }
@@ -621,6 +775,8 @@ struct Span {
     int len;
     T* base;
     int cap;
+    unsigned char* base_bytes;
+    int cap_bytes;
     unsigned long origin_kind;
     unsigned long origin_stack_id;
 };
@@ -683,6 +839,36 @@ generic<T>
 struct Atomic {
     T value;
 };
+
+#ifndef CMINUS_BARE_H
+typedef int (*CMinusThreadMain)(void);
+
+typedef struct Thread Thread;
+typedef struct Mutex Mutex;
+typedef struct Cond Cond;
+
+struct __CMinusThreadState {
+    CMinusThreadMain fn;
+    int result;
+};
+
+struct Thread {
+    unsigned long handle_bits;
+    struct __CMinusThreadState* state;
+    int started;
+    int joined;
+};
+
+struct Mutex {
+    unsigned long value_bits[CMINUS_PTHREAD_STORAGE_WORDS];
+    int initialized;
+};
+
+struct Cond {
+    unsigned long value_bits[CMINUS_PTHREAD_STORAGE_WORDS];
+    int initialized;
+};
+#endif
 
 generic<T>
 struct StaticCell<T> StaticCell_init(T value)
@@ -760,12 +946,30 @@ T Atomic_load(struct Atomic<T>* self)
 }
 
 generic<T>
+T Atomic_load_order(struct Atomic<T>* self, int order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_load_n(&self->value, order);
+}
+
+generic<T>
 void Atomic_store(struct Atomic<T>* self, T value)
 {
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
     __atomic_store_n(&self->value, value, __ATOMIC_SEQ_CST);
+}
+
+generic<T>
+void Atomic_store_order(struct Atomic<T>* self, T value, int order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    __atomic_store_n(&self->value, value, order);
 }
 
 generic<T>
@@ -778,12 +982,30 @@ T Atomic_exchange(struct Atomic<T>* self, T value)
 }
 
 generic<T>
+T Atomic_exchange_order(struct Atomic<T>* self, T value, int order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_exchange_n(&self->value, value, order);
+}
+
+generic<T>
 int Atomic_compare_exchange(struct Atomic<T>* self, T expected, T desired)
 {
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
     return __atomic_compare_exchange_n(&self->value, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+generic<T>
+int Atomic_compare_exchange_order(struct Atomic<T>* self, T expected, T desired, int success_order, int failure_order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_compare_exchange_n(&self->value, &expected, desired, 0, success_order, failure_order);
 }
 
 generic<T>
@@ -796,12 +1018,30 @@ T Atomic_fetch_add(struct Atomic<T>* self, T value)
 }
 
 generic<T>
+T Atomic_fetch_add_order(struct Atomic<T>* self, T value, int order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_fetch_add(&self->value, value, order);
+}
+
+generic<T>
 T Atomic_fetch_sub(struct Atomic<T>* self, T value)
 {
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
     return __atomic_fetch_sub(&self->value, value, __ATOMIC_SEQ_CST);
+}
+
+generic<T>
+T Atomic_fetch_sub_order(struct Atomic<T>* self, T value, int order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_fetch_sub(&self->value, value, order);
 }
 
 generic<T>
@@ -814,6 +1054,15 @@ T Atomic_fetch_or(struct Atomic<T>* self, T value)
 }
 
 generic<T>
+T Atomic_fetch_or_order(struct Atomic<T>* self, T value, int order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_fetch_or(&self->value, value, order);
+}
+
+generic<T>
 T Atomic_fetch_and(struct Atomic<T>* self, T value)
 {
     if (self == NULL) {
@@ -821,6 +1070,252 @@ T Atomic_fetch_and(struct Atomic<T>* self, T value)
     }
     return __atomic_fetch_and(&self->value, value, __ATOMIC_SEQ_CST);
 }
+
+generic<T>
+T Atomic_fetch_and_order(struct Atomic<T>* self, T value, int order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_fetch_and(&self->value, value, order);
+}
+
+generic<T>
+T Atomic_fetch_xor(struct Atomic<T>* self, T value)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_fetch_xor(&self->value, value, __ATOMIC_SEQ_CST);
+}
+
+generic<T>
+T Atomic_fetch_xor_order(struct Atomic<T>* self, T value, int order)
+{
+    if (self == NULL) {
+        cminus_panic("atomic is null", __FILE__, __LINE__);
+    }
+    return __atomic_fetch_xor(&self->value, value, order);
+}
+
+#ifndef CMINUS_BARE_H
+static __attribute__((unused)) void* __cminus_thread_entry(void* raw)
+{
+    struct __CMinusThreadState* state = (struct __CMinusThreadState*)raw;
+
+    state->result = (*(state->fn))();
+    return NULL;
+}
+
+static __attribute__((unused)) struct Thread Thread_spawn(CMinusThreadMain fn)
+{
+    struct Thread out;
+    pthread_t handle;
+    int rc;
+
+    if (fn == NULL) {
+        cminus_panic("thread function is null", __FILE__, __LINE__);
+    }
+    if (sizeof(pthread_t) > sizeof(out.handle_bits)) {
+        cminus_panic("pthread_t is too large", __FILE__, __LINE__);
+    }
+    memset(&out, 0, sizeof(out));
+    out.state = (struct __CMinusThreadState*)calloc(1, sizeof(struct __CMinusThreadState));
+    if (out.state == NULL) {
+        cminus_panic("thread allocation failed", __FILE__, __LINE__);
+    }
+    out.state->fn = fn;
+    rc = pthread_create(&handle, NULL, __cminus_thread_entry, out.state);
+    if (rc != 0) {
+        free(out.state);
+        cminus_panic("pthread_create failed", __FILE__, __LINE__);
+    }
+    memcpy(&out.handle_bits, &handle, sizeof(handle));
+    out.started = 1;
+    return out;
+}
+
+static __attribute__((unused)) int Thread_join(struct Thread* self)
+{
+    pthread_t handle;
+    int rc;
+    int result;
+
+    if (self == NULL || !self->started) {
+        cminus_panic("thread is not started", __FILE__, __LINE__);
+    }
+    if (self->joined) {
+        cminus_panic("thread is already joined", __FILE__, __LINE__);
+    }
+    memset(&handle, 0, sizeof(handle));
+    memcpy(&handle, &self->handle_bits, sizeof(handle));
+    rc = pthread_join(handle, NULL);
+    if (rc != 0) {
+        cminus_panic("pthread_join failed", __FILE__, __LINE__);
+    }
+    result = self->state != NULL ? self->state->result : 0;
+    free(self->state);
+    self->state = NULL;
+    self->joined = 1;
+    return result;
+}
+
+static __attribute__((unused)) void Thread_detach(struct Thread* self)
+{
+    pthread_t handle;
+    int rc;
+
+    if (self == NULL || !self->started) {
+        cminus_panic("thread is not started", __FILE__, __LINE__);
+    }
+    if (self->joined) {
+        return;
+    }
+    memset(&handle, 0, sizeof(handle));
+    memcpy(&handle, &self->handle_bits, sizeof(handle));
+    rc = pthread_detach(handle);
+    if (rc != 0) {
+        cminus_panic("pthread_detach failed", __FILE__, __LINE__);
+    }
+    free(self->state);
+    self->state = NULL;
+    self->joined = 1;
+}
+
+static __attribute__((unused)) void Thread_yield(void)
+{
+    sched_yield();
+}
+
+static __attribute__((unused)) struct Mutex Mutex_init(void)
+{
+    struct Mutex out;
+    pthread_mutex_t* native;
+
+    if (sizeof(pthread_mutex_t) > sizeof(out.value_bits)) {
+        cminus_panic("pthread_mutex_t is too large", __FILE__, __LINE__);
+    }
+    memset(&out, 0, sizeof(out));
+    native = (pthread_mutex_t*)out.value_bits;
+    if (pthread_mutex_init(native, NULL) != 0) {
+        cminus_panic("pthread_mutex_init failed", __FILE__, __LINE__);
+    }
+    out.initialized = 1;
+    return out;
+}
+
+static __attribute__((unused)) void Mutex_lock(struct Mutex* self)
+{
+    pthread_mutex_t* native;
+
+    if (self == NULL || !self->initialized) {
+        cminus_panic("mutex is uninitialized", __FILE__, __LINE__);
+    }
+    native = (pthread_mutex_t*)self->value_bits;
+    if (pthread_mutex_lock(native) != 0) {
+        cminus_panic("pthread_mutex_lock failed", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void Mutex_unlock(struct Mutex* self)
+{
+    pthread_mutex_t* native;
+
+    if (self == NULL || !self->initialized) {
+        cminus_panic("mutex is uninitialized", __FILE__, __LINE__);
+    }
+    native = (pthread_mutex_t*)self->value_bits;
+    if (pthread_mutex_unlock(native) != 0) {
+        cminus_panic("pthread_mutex_unlock failed", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void Mutex_destroy(struct Mutex* self)
+{
+    pthread_mutex_t* native;
+
+    if (self == NULL || !self->initialized) {
+        return;
+    }
+    native = (pthread_mutex_t*)self->value_bits;
+    if (pthread_mutex_destroy(native) != 0) {
+        cminus_panic("pthread_mutex_destroy failed", __FILE__, __LINE__);
+    }
+    self->initialized = 0;
+}
+
+static __attribute__((unused)) struct Cond Cond_init(void)
+{
+    struct Cond out;
+    pthread_cond_t* native;
+
+    if (sizeof(pthread_cond_t) > sizeof(out.value_bits)) {
+        cminus_panic("pthread_cond_t is too large", __FILE__, __LINE__);
+    }
+    memset(&out, 0, sizeof(out));
+    native = (pthread_cond_t*)out.value_bits;
+    if (pthread_cond_init(native, NULL) != 0) {
+        cminus_panic("pthread_cond_init failed", __FILE__, __LINE__);
+    }
+    out.initialized = 1;
+    return out;
+}
+
+static __attribute__((unused)) void Cond_wait(struct Cond* self, struct Mutex* mutex)
+{
+    pthread_cond_t* native_cond;
+    pthread_mutex_t* native_mutex;
+
+    if (self == NULL || !self->initialized || mutex == NULL || !mutex->initialized) {
+        cminus_panic("condition variable is uninitialized", __FILE__, __LINE__);
+    }
+    native_cond = (pthread_cond_t*)self->value_bits;
+    native_mutex = (pthread_mutex_t*)mutex->value_bits;
+    if (pthread_cond_wait(native_cond, native_mutex) != 0) {
+        cminus_panic("pthread_cond_wait failed", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void Cond_signal(struct Cond* self)
+{
+    pthread_cond_t* native;
+
+    if (self == NULL || !self->initialized) {
+        cminus_panic("condition variable is uninitialized", __FILE__, __LINE__);
+    }
+    native = (pthread_cond_t*)self->value_bits;
+    if (pthread_cond_signal(native) != 0) {
+        cminus_panic("pthread_cond_signal failed", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void Cond_broadcast(struct Cond* self)
+{
+    pthread_cond_t* native;
+
+    if (self == NULL || !self->initialized) {
+        cminus_panic("condition variable is uninitialized", __FILE__, __LINE__);
+    }
+    native = (pthread_cond_t*)self->value_bits;
+    if (pthread_cond_broadcast(native) != 0) {
+        cminus_panic("pthread_cond_broadcast failed", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void Cond_destroy(struct Cond* self)
+{
+    pthread_cond_t* native;
+
+    if (self == NULL || !self->initialized) {
+        return;
+    }
+    native = (pthread_cond_t*)self->value_bits;
+    if (pthread_cond_destroy(native) != 0) {
+        cminus_panic("pthread_cond_destroy failed", __FILE__, __LINE__);
+    }
+    self->initialized = 0;
+}
+#endif
 
 generic<T>
 struct Register<T> Register_from_addr(unsigned long addr)
@@ -934,27 +1429,75 @@ void Register_replace_bits(struct Register<T>* self, T mask, T value)
 }
 
 generic<T>
-struct Span<T> Span_from(T* data, int len)
+struct Span<T> Span_from(T* data, int len, int allow_raw = 0)
 {
     struct Span<T> out;
-    unsigned long stack_id = 0;
+    unsigned long stack_id = 0UL;
 
     out.data = data;
     out.len = len < 0 ? 0 : len;
     out.base = data;
     out.cap = out.len;
-    out.origin_kind = cminus_ptr_classify(data, &stack_id);
+    out.base_bytes = (unsigned char*)data;
+    out.cap_bytes = out.cap * (int)sizeof(T);
+    if (allow_raw) {
+        out.origin_kind = __CMinusPtrKind_Raw;
+    } else {
+        cminus_stack_note_caller_range(data, (size_t)out.cap_bytes);
+        out.origin_kind = cminus_ptr_classify(data, &stack_id);
+    }
     out.origin_stack_id = stack_id;
     return out;
 }
 
 generic<T>
-struct Span<T> Span_from_bytes(T* data, int bytes)
+struct Span<T> Span_map_from(void* data, int bytes, int len, int allow_raw = 0)
+{
+    struct Span<T> out;
+    unsigned long stack_id = 0UL;
+    unsigned long align = (unsigned long)__alignof__(T);
+    unsigned long addr = (unsigned long)data;
+    int need;
+
+    if (len < 0 || bytes < 0) {
+        cminus_panic("span map size is negative", __FILE__, __LINE__);
+    }
+    if (sizeof(T) == 0 || bytes % (int)sizeof(T) != 0) {
+        cminus_panic("span map byte size is not aligned to element size", __FILE__, __LINE__);
+    }
+    need = len * (int)sizeof(T);
+    if (len != 0 && need / len != (int)sizeof(T)) {
+        cminus_panic("span map size overflow", __FILE__, __LINE__);
+    }
+    if (need > bytes) {
+        cminus_panic("span map exceeds source buffer", __FILE__, __LINE__);
+    }
+    if (data != NULL && align > 1UL && addr % align != 0UL) {
+        cminus_panic("span map address is not aligned to element type", __FILE__, __LINE__);
+    }
+    out.data = (T*)data;
+    out.len = len;
+    out.base = (T*)data;
+    out.cap = bytes / (int)sizeof(T);
+    out.base_bytes = (unsigned char*)data;
+    out.cap_bytes = bytes;
+    if (allow_raw) {
+        out.origin_kind = __CMinusPtrKind_Raw;
+    } else {
+        cminus_stack_note_caller_range(data, (size_t)bytes);
+        out.origin_kind = cminus_ptr_classify(data, &stack_id);
+    }
+    out.origin_stack_id = stack_id;
+    return out;
+}
+
+generic<T>
+struct Span<T> Span_from_bytes(T* data, int bytes, int allow_raw = 0)
 {
     if (bytes < 0 || bytes % (int)sizeof(T) != 0) {
         cminus_panic("span byte size is not aligned to element size", __FILE__, __LINE__);
     }
-    return Span<T>.from(data, bytes / (int)sizeof(T));
+    return Span<T>.from(data, bytes / (int)sizeof(T), allow_raw);
 }
 
 generic<T>
@@ -966,8 +1509,10 @@ struct Span<T> Span_empty(void)
     out.len = 0;
     out.base = NULL;
     out.cap = 0;
+    out.base_bytes = NULL;
+    out.cap_bytes = 0;
     out.origin_kind = 0UL;
-    out.origin_stack_id = 0;
+    out.origin_stack_id = 0UL;
     return out;
 }
 
@@ -999,8 +1544,9 @@ T Span_get(struct Span<T>* self, int index)
     }
     cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
     if (self->data == NULL || self->base == NULL || index < 0 ||
-        index >= self->len || self->data + index < self->base ||
-        self->data + index >= self->base + self->cap) {
+        index >= self->len ||
+        (unsigned char*)(self->data + index) < self->base_bytes ||
+        (unsigned char*)(self->data + index + 1) > self->base_bytes + self->cap_bytes) {
         cminus_panic("index out of range", __FILE__, __LINE__);
     }
     return self->data[index];
@@ -1014,12 +1560,28 @@ int Span_set(struct Span<T>* self, int index, T value)
     }
     cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
     if (self->data == NULL || self->base == NULL || index < 0 ||
-        index >= self->len || self->data + index < self->base ||
-        self->data + index >= self->base + self->cap) {
+        index >= self->len ||
+        (unsigned char*)(self->data + index) < self->base_bytes ||
+        (unsigned char*)(self->data + index + 1) > self->base_bytes + self->cap_bytes) {
         cminus_panic("index out of range", __FILE__, __LINE__);
     }
     self->data[index] = value;
     return 1;
+}
+
+generic<T>
+void Span_fill(struct Span<T>* self, T value)
+{
+    int i = 0;
+
+    if (self == NULL) {
+        cminus_panic("dangling reference", __FILE__, __LINE__);
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    while (i < self->len) {
+        Span<T>.set(self, i, value);
+        i++;
+    }
 }
 
 generic<T>
@@ -1030,8 +1592,9 @@ struct __CMinusIndex<T> Span_get_opt(struct Span<T>* self, int index)
     }
     cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
     if (self == NULL || self->data == NULL || self->base == NULL || index < 0 ||
-        index >= self->len || self->data + index < self->base ||
-        self->data + index >= self->base + self->cap) {
+        index >= self->len ||
+        (unsigned char*)(self->data + index) < self->base_bytes ||
+        (unsigned char*)(self->data + index + 1) > self->base_bytes + self->cap_bytes) {
         return new __CMinusIndex<T>.None();
     }
     return new __CMinusIndex<T>.Some(self->data[index]);
@@ -1043,10 +1606,11 @@ T* Span_ptr_at(struct Span<T>* self, int index, const char* file, int line)
     if (self == NULL) {
         cminus_panic("dangling reference", file, line);
     }
-    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, file, line);
     if (self == NULL || self->data == NULL || self->base == NULL || index < 0 ||
-        index >= self->len || self->data + index < self->base ||
-        self->data + index >= self->base + self->cap) {
+        index >= self->len ||
+        (unsigned char*)(self->data + index) < self->base_bytes ||
+        (unsigned char*)(self->data + index + 1) > self->base_bytes + self->cap_bytes) {
         cminus_panic("index out of range", file, line);
     }
     return self->data + index;
@@ -1065,11 +1629,12 @@ struct Span<T> Span_offset(struct Span<T>* self, int offset, const char* file, i
         cminus_panic("span offset out of range", file, line);
     }
     if (offset >= 0) {
-        if (offset > self->len || self->data + offset > self->base + self->cap) {
+        if (offset > self->len ||
+            (unsigned char*)(self->data + offset) > self->base_bytes + self->cap_bytes) {
             cminus_panic("span offset out of range", file, line);
         }
     } else {
-        if (self->data + offset < self->base) {
+        if ((unsigned char*)(self->data + offset) < self->base_bytes) {
             cminus_panic("span offset out of range", file, line);
         }
     }
@@ -1077,9 +1642,139 @@ struct Span<T> Span_offset(struct Span<T>* self, int offset, const char* file, i
     out.len = self->len - offset;
     out.base = self->base;
     out.cap = self->cap;
+    out.base_bytes = self->base_bytes;
+    out.cap_bytes = self->cap_bytes;
     out.origin_kind = self->origin_kind;
     out.origin_stack_id = self->origin_stack_id;
     return out;
+}
+
+generic<T>
+struct Span<T> Span_slice(struct Span<T>* self, int start, int len)
+{
+    struct Span<T> out;
+
+    if (self == NULL) {
+        cminus_panic("dangling reference", __FILE__, __LINE__);
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    if (self->data == NULL || self->base == NULL || start < 0 || len < 0 ||
+        start > self->len || len > self->len - start ||
+        (unsigned char*)(self->data + start) < self->base_bytes ||
+        (unsigned char*)(self->data + start + len) > self->base_bytes + self->cap_bytes) {
+        cminus_panic("span slice out of range", __FILE__, __LINE__);
+    }
+    out.data = self->data + start;
+    out.len = len;
+    out.base = self->base;
+    out.cap = self->cap;
+    out.base_bytes = self->base_bytes;
+    out.cap_bytes = self->cap_bytes;
+    out.origin_kind = self->origin_kind;
+    out.origin_stack_id = self->origin_stack_id;
+    return out;
+}
+
+generic<T>
+int Span_copy_from_count(struct Span<T>* self, struct Span<T> src, int count)
+{
+    int i = 0;
+
+    if (self == NULL) {
+        cminus_panic("dangling reference", __FILE__, __LINE__);
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    cminus_ptr_require_alive(src.data, src.origin_kind, src.origin_stack_id, __FILE__, __LINE__);
+    if (count < 0 || count > self->len || count > src.len) {
+        cminus_panic("span copy out of range", __FILE__, __LINE__);
+    }
+    while (i < count) {
+        Span<T>.set(self, i, Span<T>.get(&src, i));
+        i++;
+    }
+    return count;
+}
+
+generic<T>
+int Span_copy_from(struct Span<T>* self, struct Span<T> src)
+{
+    int count;
+
+    if (self == NULL) {
+        cminus_panic("dangling reference", __FILE__, __LINE__);
+    }
+    count = self->len < src.len ? self->len : src.len;
+    return Span<T>.copy_from_count(self, src, count);
+}
+
+generic<T>
+int Span_cstr_len(struct Span<T>* self)
+{
+    int i = 0;
+
+    if (self == NULL) {
+        cminus_panic("dangling reference", __FILE__, __LINE__);
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    while (i < self->len) {
+        if (Span<T>.get(self, i) == 0) {
+            return i;
+        }
+        i++;
+    }
+    return self->len;
+}
+
+generic<T>
+int Span_cstr_eq(struct Span<T>* self, struct Span<T> other)
+{
+    int i = 0;
+    T left;
+    T right;
+
+    if (self == NULL) {
+        cminus_panic("dangling reference", __FILE__, __LINE__);
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    cminus_ptr_require_alive(other.data, other.origin_kind, other.origin_stack_id, __FILE__, __LINE__);
+    while (i < self->len && i < other.len) {
+        left = Span<T>.get(self, i);
+        right = Span<T>.get(&other, i);
+        if (left != right) {
+            return 0;
+        }
+        if (left == 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+generic<T>
+int Span_copy_cstr_from(struct Span<T>* self, struct Span<T> src)
+{
+    int i = 0;
+    T value;
+
+    if (self == NULL) {
+        cminus_panic("dangling reference", __FILE__, __LINE__);
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    cminus_ptr_require_alive(src.data, src.origin_kind, src.origin_stack_id, __FILE__, __LINE__);
+    if (self->len <= 0) {
+        return 0;
+    }
+    while (i + 1 < self->len && i < src.len) {
+        value = Span<T>.get(&src, i);
+        Span<T>.set(self, i, value);
+        if (value == 0) {
+            return i;
+        }
+        i++;
+    }
+    Span<T>.set(self, i, 0);
+    return i;
 }
 
 generic<T>
@@ -1093,27 +1788,32 @@ struct FixedVec {
 };
 
 generic<T>
-struct FixedVec<T> FixedVec_from(T* data, int cap)
+struct FixedVec<T> FixedVec_from(T* data, int cap, int allow_raw = 0)
 {
     struct FixedVec<T> out;
-    unsigned long stack_id = 0;
+    unsigned long stack_id = 0UL;
 
     out.data = data;
     out.len = 0;
     out.cap = cap < 0 ? 0 : cap;
     out.base = data;
-    out.origin_kind = cminus_ptr_classify(data, &stack_id);
+    if (allow_raw) {
+        out.origin_kind = __CMinusPtrKind_Raw;
+    } else {
+        cminus_stack_note_caller_range(data, (size_t)out.cap * sizeof(T));
+        out.origin_kind = cminus_ptr_classify(data, &stack_id);
+    }
     out.origin_stack_id = stack_id;
     return out;
 }
 
 generic<T>
-struct FixedVec<T> FixedVec_from_bytes(T* data, int bytes)
+struct FixedVec<T> FixedVec_from_bytes(T* data, int bytes, int allow_raw = 0)
 {
     if (bytes < 0 || bytes % (int)sizeof(T) != 0) {
         cminus_panic("fixed vec byte size is not aligned to element size", __FILE__, __LINE__);
     }
-    return FixedVec<T>.from(data, bytes / (int)sizeof(T));
+    return FixedVec<T>.from(data, bytes / (int)sizeof(T), allow_raw);
 }
 
 generic<T>
@@ -1226,6 +1926,355 @@ struct Span<T> FixedVec_as_span(struct FixedVec<T>* self)
     }
     cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
     return Span_from<T>(self->data, self->len);
+}
+
+generic<T>
+struct RingBuffer {
+    T* data;
+    int cap;
+    int head;
+    int len;
+    T* base;
+    unsigned long origin_kind;
+    unsigned long origin_stack_id;
+};
+
+generic<T>
+struct RingBuffer<T> RingBuffer_from(T* data, int cap, int allow_raw = 0)
+{
+    struct RingBuffer<T> out;
+    unsigned long stack_id = 0UL;
+
+    out.data = data;
+    out.cap = cap < 0 ? 0 : cap;
+    out.head = 0;
+    out.len = 0;
+    out.base = data;
+    if (allow_raw) {
+        out.origin_kind = __CMinusPtrKind_Raw;
+    } else {
+        cminus_stack_note_caller_range(data, (size_t)out.cap * sizeof(T));
+        out.origin_kind = cminus_ptr_classify(data, &stack_id);
+    }
+    out.origin_stack_id = stack_id;
+    return out;
+}
+
+generic<T>
+struct RingBuffer<T> RingBuffer_from_bytes(T* data, int bytes, int allow_raw = 0)
+{
+    if (bytes < 0 || bytes % (int)sizeof(T) != 0) {
+        cminus_panic("ring buffer byte size is not aligned to element size", __FILE__, __LINE__);
+    }
+    return RingBuffer<T>.from(data, bytes / (int)sizeof(T), allow_raw);
+}
+
+generic<T>
+int RingBuffer_len(struct RingBuffer<T>* self)
+{
+    if (self == NULL) {
+        return 0;
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    return self->len;
+}
+
+generic<T>
+int RingBuffer_capacity(struct RingBuffer<T>* self)
+{
+    if (self == NULL) {
+        return 0;
+    }
+    return self->cap;
+}
+
+generic<T>
+int RingBuffer_is_empty(struct RingBuffer<T>* self)
+{
+    return self == NULL || self->len == 0;
+}
+
+generic<T>
+int RingBuffer_is_full(struct RingBuffer<T>* self)
+{
+    return self != NULL && self->len >= self->cap;
+}
+
+generic<T>
+void RingBuffer_clear(struct RingBuffer<T>* self)
+{
+    if (self != NULL) {
+        self->head = 0;
+        self->len = 0;
+    }
+}
+
+generic<T>
+int RingBuffer_push(struct RingBuffer<T>* self, T value)
+{
+    int tail;
+
+    if (self == NULL) {
+        cminus_panic("ring buffer is null", __FILE__, __LINE__);
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    if (self->data == NULL || self->base == NULL || self->cap <= 0 || self->len < 0 || self->len >= self->cap) {
+        cminus_panic("ring buffer is full", __FILE__, __LINE__);
+    }
+    tail = (self->head + self->len) % self->cap;
+    self->data[tail] = value;
+    self->len++;
+    return 1;
+}
+
+generic<T>
+struct __CMinusIndex<T> RingBuffer_pop_opt(struct RingBuffer<T>* self)
+{
+    T value;
+
+    if (self == NULL || self->len <= 0) {
+        return new __CMinusIndex<T>.None();
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    if (self->data == NULL || self->base == NULL || self->cap <= 0 || self->head < 0 || self->head >= self->cap) {
+        cminus_panic("ring buffer is invalid", __FILE__, __LINE__);
+    }
+    value = self->data[self->head];
+    self->head = (self->head + 1) % self->cap;
+    self->len--;
+    if (self->len == 0) {
+        self->head = 0;
+    }
+    return new __CMinusIndex<T>.Some(value);
+}
+
+generic<T>
+struct __CMinusIndex<T> RingBuffer_peek_opt(struct RingBuffer<T>* self)
+{
+    if (self == NULL || self->len <= 0) {
+        return new __CMinusIndex<T>.None();
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    if (self->data == NULL || self->base == NULL || self->cap <= 0 || self->head < 0 || self->head >= self->cap) {
+        cminus_panic("ring buffer is invalid", __FILE__, __LINE__);
+    }
+    return new __CMinusIndex<T>.Some(self->data[self->head]);
+}
+
+generic<T>
+struct Span<T> RingBuffer_drain_to_span(struct RingBuffer<T>* self, T* out, int cap)
+{
+    struct Span<T> span;
+    int count;
+    int i;
+    int index;
+
+    if (self == NULL) {
+        return Span_empty<T>();
+    }
+    cminus_ptr_require_alive(self->data, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    count = self->len;
+    if (count > cap) {
+        count = cap;
+    }
+    span = Span_from<T>(out, count);
+    i = 0;
+    while (i < count) {
+        index = (self->head + i) % self->cap;
+        Span_set<T>(&span, i, self->data[index]);
+        i++;
+    }
+    self->head = (self->head + count) % self->cap;
+    self->len -= count;
+    if (self->len == 0) {
+        self->head = 0;
+    }
+    return span;
+}
+
+struct Bitmap {
+    unsigned long* words;
+    int bits;
+    int words_len;
+    unsigned long origin_kind;
+    unsigned long origin_stack_id;
+};
+typedef struct Bitmap Bitmap;
+
+static __attribute__((unused)) int Bitmap_bits_per_word(void)
+{
+    return (int)(sizeof(unsigned long) * 8);
+}
+
+static __attribute__((unused)) int Bitmap_word_shift(void)
+{
+    return sizeof(unsigned long) == 8 ? 6 : 5;
+}
+
+#define __CMINUS_BITMAP_SELECT(_1, _2, _3, NAME, ...) NAME
+#define __CMINUS_BITMAP_FROM2(words, bits) Bitmap_from_impl((words), (bits), 0)
+#define __CMINUS_BITMAP_FROM3(words, bits, allow_raw) Bitmap_from_impl((words), (bits), (allow_raw))
+#define __CMINUS_BITMAP_FROM_WORDS2(words, words_len) Bitmap_from_words_impl((words), (words_len), 0)
+#define __CMINUS_BITMAP_FROM_WORDS3(words, words_len, allow_raw) Bitmap_from_words_impl((words), (words_len), (allow_raw))
+#define __CMINUS_BITMAP_FROM_BYTES2(words, bytes) Bitmap_from_bytes_impl((words), (bytes), 0)
+#define __CMINUS_BITMAP_FROM_BYTES3(words, bytes, allow_raw) Bitmap_from_bytes_impl((words), (bytes), (allow_raw))
+#define Bitmap_from(...) __CMINUS_BITMAP_SELECT(__VA_ARGS__, __CMINUS_BITMAP_FROM3, __CMINUS_BITMAP_FROM2)(__VA_ARGS__)
+#define Bitmap_from_words(...) __CMINUS_BITMAP_SELECT(__VA_ARGS__, __CMINUS_BITMAP_FROM_WORDS3, __CMINUS_BITMAP_FROM_WORDS2)(__VA_ARGS__)
+#define Bitmap_from_bytes(...) __CMINUS_BITMAP_SELECT(__VA_ARGS__, __CMINUS_BITMAP_FROM_BYTES3, __CMINUS_BITMAP_FROM_BYTES2)(__VA_ARGS__)
+
+static __attribute__((unused)) struct Bitmap Bitmap_from_impl(unsigned long* words, int bits, int allow_raw)
+{
+    struct Bitmap out;
+    unsigned long stack_id;
+    int shift = Bitmap_word_shift();
+
+    out.words = words;
+    out.bits = bits < 0 ? 0 : bits;
+    out.words_len = out.bits == 0 ? 0 : (out.bits + Bitmap_bits_per_word() - 1) >> shift;
+    if (allow_raw) {
+        out.origin_kind = __CMinusPtrKind_Raw;
+    } else {
+        cminus_stack_note_caller_range(words, (size_t)out.words_len * sizeof(unsigned long));
+        out.origin_kind = cminus_ptr_classify(words, &stack_id);
+    }
+    out.origin_stack_id = stack_id;
+    return out;
+}
+
+static __attribute__((unused)) struct Bitmap Bitmap_from_words_impl(unsigned long* words, int words_len, int allow_raw)
+{
+    struct Bitmap out;
+    unsigned long stack_id;
+    int n = words_len < 0 ? 0 : words_len;
+
+    out.words = words;
+    out.bits = n * Bitmap_bits_per_word();
+    out.words_len = n;
+    if (allow_raw) {
+        out.origin_kind = __CMinusPtrKind_Raw;
+    } else {
+        cminus_stack_note_caller_range(words, (size_t)out.words_len * sizeof(unsigned long));
+        out.origin_kind = cminus_ptr_classify(words, &stack_id);
+    }
+    out.origin_stack_id = stack_id;
+    return out;
+}
+
+static __attribute__((unused)) struct Bitmap Bitmap_from_bytes_impl(unsigned long* words, int bytes, int allow_raw)
+{
+    int word_bytes = sizeof(unsigned long);
+    int shift = Bitmap_word_shift() - 3;
+
+    if (bytes < 0 || (bytes & (word_bytes - 1)) != 0) {
+        cminus_panic("bitmap byte size is not aligned to word size", __FILE__, __LINE__);
+    }
+    return Bitmap_from_words_impl(words, bytes >> shift, allow_raw);
+}
+
+static __attribute__((unused)) int Bitmap_len(struct Bitmap* self)
+{
+    if (self == NULL) {
+        return 0;
+    }
+    cminus_ptr_require_alive(self->words, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    return self->bits;
+}
+
+static __attribute__((unused)) int Bitmap_word_len(struct Bitmap* self)
+{
+    if (self == NULL) {
+        return 0;
+    }
+    return self->words_len;
+}
+
+static __attribute__((unused)) int Bitmap_is_empty(struct Bitmap* self)
+{
+    return self == NULL || self->bits == 0;
+}
+
+static __attribute__((unused)) void Bitmap_check_index(struct Bitmap* self, int index)
+{
+    if (self == NULL || self->words == NULL) {
+        cminus_panic("bitmap is null", __FILE__, __LINE__);
+    }
+    cminus_ptr_require_alive(self->words, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    if (index < 0 || index >= self->bits) {
+        cminus_panic("bitmap index out of range", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) int Bitmap_test(struct Bitmap* self, int index)
+{
+    int shift = Bitmap_word_shift();
+    int mask = Bitmap_bits_per_word() - 1;
+
+    Bitmap_check_index(self, index);
+    return (self->words[index >> shift] & (1UL << (index & mask))) != 0UL;
+}
+
+static __attribute__((unused)) void Bitmap_set(struct Bitmap* self, int index)
+{
+    int shift = Bitmap_word_shift();
+    int mask = Bitmap_bits_per_word() - 1;
+
+    Bitmap_check_index(self, index);
+    self->words[index >> shift] |= 1UL << (index & mask);
+}
+
+static __attribute__((unused)) void Bitmap_clear_bit(struct Bitmap* self, int index)
+{
+    int shift = Bitmap_word_shift();
+    int mask = Bitmap_bits_per_word() - 1;
+
+    Bitmap_check_index(self, index);
+    self->words[index >> shift] &= ~(1UL << (index & mask));
+}
+
+static __attribute__((unused)) void Bitmap_clear_all(struct Bitmap* self)
+{
+    int i = 0;
+
+    if (self == NULL || self->words == NULL) {
+        return;
+    }
+    cminus_ptr_require_alive(self->words, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    while (i < self->words_len) {
+        self->words[i] = 0UL;
+        i++;
+    }
+}
+
+static __attribute__((unused)) struct __CMinusIndex<int> Bitmap_find_zero(struct Bitmap* self)
+{
+    int i = 0;
+
+    if (self == NULL || self->words == NULL) {
+        return new __CMinusIndex<int>.None();
+    }
+    cminus_ptr_require_alive(self->words, self->origin_kind, self->origin_stack_id, __FILE__, __LINE__);
+    while (i < self->bits) {
+        if (!Bitmap_test(self, i)) {
+            return new __CMinusIndex<int>.Some(i);
+        }
+        i++;
+    }
+    return new __CMinusIndex<int>.None();
+}
+
+static __attribute__((unused)) struct __CMinusIndex<int> Bitmap_alloc_opt(struct Bitmap* self)
+{
+    struct __CMinusIndex<int> slot = Bitmap_find_zero(self);
+
+    if (slot.is_Some()) {
+        Bitmap_set(self, slot.get_Some());
+    }
+    return slot;
+}
+
+static __attribute__((unused)) void Bitmap_free_bit(struct Bitmap* self, int index)
+{
+    Bitmap_clear_bit(self, index);
 }
 
 generic<T>

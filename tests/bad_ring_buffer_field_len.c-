@@ -1,0 +1,12 @@
+struct QueueStorage {
+    int values[3];
+};
+
+int main(void)
+{
+    stack QueueStorage storage;
+    RingBuffer<int> q;
+
+    q = RingBuffer<int>.from(storage.values, 4);
+    return q.len();
+}

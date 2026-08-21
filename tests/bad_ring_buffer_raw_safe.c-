@@ -1,0 +1,10 @@
+int main(void)
+{
+    RingBuffer<int> q;
+
+    unsafe {
+        int* raw = malloc(4 * sizeof(int));
+    }
+    q = RingBuffer<int>.from(raw, 4);
+    return q.len();
+}

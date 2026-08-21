@@ -119,6 +119,7 @@ struct Type {
     int ptr;
     int owned;
     int raw_ptr;
+    int is_array;
     int array_len;
     int size;
     int align;
@@ -201,6 +202,7 @@ struct Obj {
     char name[NAME_MAX_LEN];
     struct Type *ty;
     int is_local;
+    int is_param;
     int is_function;
 };
 
@@ -353,9 +355,12 @@ static int g_foreach_id;
 static int g_index_id;
 static int g_need_stdio_h;
 static int g_need_execinfo_h;
+static int g_need_pthread_h;
+static int g_need_sched_h;
 static int g_unsafe_depth;
 static int g_bare_metal;
 static int g_no_heap;
+static int g_c_compat;
 static int g_emit_uniq;
 static int g_function_returns_move;
 static int g_current_function_interrupt;
@@ -371,6 +376,7 @@ static const char *g_input_path;
 
 int yylex(void);
 void cminus_push_include(FILE *fp, int unsafe);
+int cminus_include_depth(void);
 void cminus_unsafe_push(void);
 void cminus_unsafe_pop(void);
 static void yyerror(const char *msg);
@@ -404,6 +410,7 @@ static int source_has_cminus_include(FILE *fp);
 static struct Text *process_pp_line(struct Text *line);
 static struct Text *process_standalone_semi(struct Text *semi);
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
+static struct Text *finish_c_compat_braced_decl(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb, struct Text *suffix, struct Text *semi);
 static struct Text *process_statement(struct Text *stmt, struct Text *semi);
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi);
 static struct Text *process_external_decl(struct Text *decl, struct Text *semi);
@@ -459,6 +466,8 @@ static void check_safe_c_function_calls(const char *stmt);
 static void check_safe_array_index_access(const char *stmt);
 static struct Text *rewrite_inferred_array_from_calls(struct Text *in);
 static void register_unsafe_metadata(const char *body);
+static void emit_generic_default_macro(FILE *out, const char *func_name, struct FunctionParams *fn);
+static void emit_generic_default_undef(FILE *out, const char *func_name, struct FunctionParams *fn);
 static int range_contains_text(const char *start, const char *end, const char *needle);
 static struct Text *rewrite_os_attributes(struct Text *in);
 static struct Text *rewrite_compile_time_os_ops(struct Text *in);
@@ -476,6 +485,7 @@ static void validate_interrupt_function_head(const char *s);
 static struct Text *rewrite_interrupt_function_head(struct Text *in);
 static void check_safe_pointer_deref(const char *stmt);
 static int is_unsafe_head(const char *s);
+static int is_inline_c_head(const char *s);
 static void begin_stmt_block(struct Text *head);
 static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
 static int struct_field_type(const char *tag, const char *field, struct Type *type);
@@ -503,7 +513,6 @@ static int is_generic_decl_head(const char *s);
 static int parse_generic_struct_head(const char *s, char *param, char *name);
 static int parse_generic_function_head(const char *s, char *param, char *name);
 static int parse_generic_angle_arg(const char *p, char *arg, const char **after);
-static void emit_generic_instances(FILE *out);
 static int parse_payload_enum_head(const char *s, char *param, char *name);
 static int parse_bitflags_head(const char *s, char *name, char *base);
 static struct Text *emit_bitflags_decl(const char *name, const char *base, const char *body);
@@ -527,7 +536,7 @@ static void append_zero_clear_after_decl(struct Text *stmt, const char *original
 static int starts_word(const char *s, const char *word);
 static const char *skip_ws(const char *s);
 
-#line 531 "src/parser.c"
+#line 540 "src/parser.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -932,16 +941,16 @@ union yyalloc
 /* YYFINAL -- State number of the termination state.  */
 #define YYFINAL  2
 /* YYLAST -- Last index in YYTABLE.  */
-#define YYLAST   354
+#define YYLAST   439
 
 /* YYNTOKENS -- Number of terminals.  */
 #define YYNTOKENS  27
 /* YYNNTS -- Number of nonterminals.  */
 #define YYNNTS  23
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  84
+#define YYNRULES  85
 /* YYNSTATES -- Number of states.  */
-#define YYNSTATES  100
+#define YYNSTATES  104
 
 /* YYMAXUTOK -- Last valid token kind.  */
 #define YYMAXUTOK   281
@@ -993,15 +1002,15 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   484,   484,   485,   490,   492,   494,   497,   496,   503,
-     505,   510,   512,   514,   516,   522,   523,   528,   530,   532,
-     534,   536,   538,   540,   542,   544,   547,   546,   553,   555,
-     560,   562,   567,   569,   571,   573,   578,   584,   585,   590,
-     592,   594,   596,   598,   603,   609,   610,   615,   617,   619,
-     621,   623,   628,   634,   635,   640,   642,   644,   646,   648,
-     653,   655,   657,   659,   661,   663,   665,   667,   669,   671,
-     673,   675,   677,   682,   684,   686,   688,   690,   692,   694,
-     696,   698,   700,   702,   704
+       0,   493,   493,   494,   499,   501,   503,   505,   508,   507,
+     514,   516,   521,   523,   525,   527,   533,   534,   539,   541,
+     543,   545,   547,   549,   551,   553,   555,   558,   557,   564,
+     566,   571,   573,   578,   580,   582,   584,   589,   595,   596,
+     601,   603,   605,   607,   609,   614,   620,   621,   626,   628,
+     630,   632,   634,   639,   645,   646,   651,   653,   655,   657,
+     659,   664,   666,   668,   670,   672,   674,   676,   678,   680,
+     682,   684,   686,   688,   693,   695,   697,   699,   701,   703,
+     705,   707,   709,   711,   713,   715
 };
 #endif
 
@@ -1036,12 +1045,12 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 }
 #endif
 
-#define YYPACT_NINF (-77)
+#define YYPACT_NINF (-74)
 
 #define yypact_value_is_default(Yyn) \
   ((Yyn) == YYPACT_NINF)
 
-#define YYTABLE_NINF (-80)
+#define YYTABLE_NINF (-81)
 
 #define yytable_value_is_error(Yyn) \
   0
@@ -1050,16 +1059,17 @@ yysymbol_name (yysymbol_kind_t yysymbol)
    STATE-NUM.  */
 static const yytype_int16 yypact[] =
 {
-     -77,    40,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
-     -77,   -77,    -8,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
-     208,   -77,   -77,   -77,   -77,   -77,   136,   160,   232,   -77,
-     -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -12,
-     -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
-     -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,
-     -77,   -77,   -77,   -77,   -77,   -77,   -77,    64,   -16,   -77,
-     256,   304,   -14,   -77,   -77,   -77,   -77,   -77,   184,   -77,
-     -77,   -77,   -77,   -77,   -77,   -77,   280,   328,   -77,    88,
-     -77,   -77,   -77,   -77,   -77,   -77,   -77,   -77,   112,   -77
+     -74,    41,   -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,
+     -74,   -74,   -11,   -74,   -74,   -74,   -74,   -74,   -74,   -74,
+     269,   -74,   -74,   -74,   -74,   -74,   197,   221,   293,   -74,
+     -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,    -9,
+     -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,
+     -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,
+     -74,   -74,   -74,   -74,   -74,   -74,   -74,   101,   125,   -15,
+     -74,   317,   389,    -2,   -74,   389,   -74,   -74,   -74,   245,
+     -74,   -74,   -74,   -74,   -74,   -74,   -74,   -74,   341,   413,
+     -74,   149,   365,   -74,   -74,   -74,   -74,   -74,   -74,   -74,
+     -74,   -74,   173,   -74
 };
 
 /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
@@ -1067,32 +1077,33 @@ static const yytype_int16 yypact[] =
    means the default is an error.  */
 static const yytype_int8 yydefact[] =
 {
-       2,     0,     1,    73,    74,    75,    76,     4,    77,    78,
-      37,    45,    53,    80,     5,    81,    82,    83,    84,     3,
-       0,     9,    12,    13,    14,    11,     0,     0,     0,     7,
-       6,    10,    60,    61,    62,    63,    64,    65,    36,    53,
-      67,    40,    68,    69,    70,    71,    72,    41,    38,    42,
-      43,    39,    44,    48,    49,    50,    46,    51,    47,    52,
-      56,    57,    58,    59,    54,    55,    15,     0,    73,    17,
-       0,     0,     0,    15,     8,    18,    16,    19,     0,    30,
-      33,    34,    35,    32,    22,    28,     0,     0,    23,     0,
-      26,    20,    21,    31,    29,    24,    25,    15,     0,    27
+       2,     0,     1,    74,    75,    76,    77,     4,    78,    79,
+      38,    46,    54,    81,     5,    82,    83,    84,    85,     3,
+       0,    10,    13,    14,    15,    12,     0,     0,     0,     8,
+       6,    11,    61,    62,    63,    64,    65,    66,    37,    54,
+      68,    41,    69,    70,    71,    72,    73,    42,    39,    43,
+      44,    40,    45,    49,    50,    51,    47,    52,    48,    53,
+      57,    58,    59,    60,    55,    56,    16,     0,     0,    74,
+      18,     0,     0,     0,    16,     0,    19,    17,    20,     0,
+      31,    34,    35,    36,    33,     9,    23,    29,     0,     0,
+      24,     0,     0,    27,    21,    22,    32,    30,    25,    26,
+       7,    16,     0,    28
 };
 
 /* YYPGOTO[NTERM-NUM].  */
 static const yytype_int8 yypgoto[] =
 {
-     -77,   -77,   -77,   -77,   -77,    -5,   -65,   -77,   -77,   -77,
-     -57,   -76,    -1,   -77,   -77,     2,   -77,   -77,    11,   -77,
-     -77,   -11,     0
+     -74,   -74,   -74,   -74,   -52,   -16,   -61,   -74,   -74,   -74,
+     -54,   -73,    -1,   -74,   -74,     2,   -74,   -74,    11,   -74,
+     -74,   -17,     0
 };
 
 /* YYDEFGOTO[NTERM-NUM].  */
 static const yytype_int8 yydefgoto[] =
 {
-       0,     1,    19,    66,    20,    21,    67,    76,    97,    77,
-      78,    79,    80,    26,    48,    81,    27,    56,    82,    28,
-      64,    51,    83
+       0,     1,    19,    66,    20,    21,    67,    77,   101,    78,
+      79,    80,    81,    26,    48,    82,    27,    56,    83,    28,
+      64,    51,    84
 };
 
 /* YYTABLE[YYPACT[STATE-NUM]] -- What to do in state STATE-NUM.  If
@@ -1100,82 +1111,98 @@ static const yytype_int8 yydefgoto[] =
    number is the opposite.  If YYTABLE_NINF, syntax error.  */
 static const yytype_int8 yytable[] =
 {
-      22,    25,    93,    23,   -66,   -79,   -66,    84,    89,    88,
-      93,    93,    24,    86,    87,    31,    58,    65,     0,    22,
-      25,     0,    23,     0,     0,    47,    54,    61,    49,    55,
-      62,    24,    98,     0,     0,     0,     0,    50,    57,    63,
-       2,     0,     0,     3,     4,     5,     6,     7,     0,     0,
-       0,     8,     9,     0,     0,    10,     0,    11,     0,    12,
-      13,    14,     0,    15,    16,    17,    18,    68,     4,     5,
-       6,    69,    70,    71,    72,     8,     9,    73,    74,    10,
-       0,    11,     0,    12,    13,    75,     0,    15,    16,    17,
-      18,    68,     4,     5,     6,    69,    70,    71,    72,     8,
-       9,    73,    96,    10,     0,    11,     0,    12,    13,    75,
-       0,    15,    16,    17,    18,    68,     4,     5,     6,    69,
-      70,    71,    72,     8,     9,    73,    99,    10,     0,    11,
-       0,    12,    13,    75,     0,    15,    16,    17,    18,    32,
-      33,    34,    35,     0,     0,     0,     0,    36,    37,     0,
-       0,    10,    38,    11,     0,    39,    40,    41,    42,    43,
-      44,    45,    46,    32,    33,    34,    35,     0,     0,     0,
-       0,    36,    37,     0,     0,    10,     0,    11,    52,    39,
-      40,    53,    42,    43,    44,    45,    46,     3,     4,     5,
-       6,     0,     0,     0,     0,     8,     9,    90,     0,    10,
-       0,    11,     0,    12,    13,    91,    92,    15,    16,    17,
-      18,     3,     4,     5,     6,     0,     0,     0,     0,     8,
-       9,    29,     0,    10,     0,    11,     0,    12,    13,    30,
-       0,    15,    16,    17,    18,    32,    33,    34,    35,     0,
-       0,     0,     0,    36,    37,     0,     0,    10,     0,    11,
-       0,    39,    59,    60,    42,    43,    44,    45,    46,     3,
-       4,     5,     6,     0,     0,     0,     0,     8,     9,     0,
-       0,    10,     0,    11,     0,    12,    13,    85,     0,    15,
-      16,    17,    18,     3,     4,     5,     6,     0,     0,     0,
-       0,     8,     9,     0,     0,    10,     0,    11,     0,    12,
-      13,    94,     0,    15,    16,    17,    18,     3,     4,     5,
-       6,     0,     0,     0,     0,     8,     9,     0,     0,    10,
-       0,    11,     0,    12,    13,     0,     0,    15,    16,    17,
-      18,     3,     4,     5,     6,     0,     0,     0,     0,     8,
-       9,     0,     0,    10,     0,    11,     0,    12,    13,     0,
-       0,    95,    16,    17,    18
+      22,    25,   -80,    23,    31,    68,    96,   -67,    86,   -67,
+      58,    65,    24,    91,     0,    96,    96,    88,    89,    22,
+      25,    90,    23,    92,     0,    47,    54,    61,    49,    55,
+      62,    24,     0,     0,     0,     0,     0,    50,    57,    63,
+     102,     2,     0,     0,     3,     4,     5,     6,     7,     0,
+       0,     0,     8,     9,     0,     0,    10,     0,    11,     0,
+      12,    13,    14,     0,    15,    16,    17,    18,     0,     0,
+       0,     0,     0,     0,    22,    25,    31,    23,     0,     0,
+       0,     0,     0,     0,     0,     0,    24,     0,     0,     0,
+       0,    22,    25,     0,    23,     0,     0,     0,     0,     0,
+       0,     0,     0,    24,    69,     4,     5,     6,    70,    71,
+      72,    73,     8,     9,    74,    75,    10,     0,    11,     0,
+      12,    13,    76,     0,    15,    16,    17,    18,    69,     4,
+       5,     6,    70,    71,    72,    73,     8,     9,    74,    85,
+      10,     0,    11,     0,    12,    13,    76,     0,    15,    16,
+      17,    18,    69,     4,     5,     6,    70,    71,    72,    73,
+       8,     9,    74,    99,    10,     0,    11,     0,    12,    13,
+      76,     0,    15,    16,    17,    18,    69,     4,     5,     6,
+      70,    71,    72,    73,     8,     9,    74,   103,    10,     0,
+      11,     0,    12,    13,    76,     0,    15,    16,    17,    18,
+      32,    33,    34,    35,     0,     0,     0,     0,    36,    37,
+       0,     0,    10,    38,    11,     0,    39,    40,    41,    42,
+      43,    44,    45,    46,    32,    33,    34,    35,     0,     0,
+       0,     0,    36,    37,     0,     0,    10,     0,    11,    52,
+      39,    40,    53,    42,    43,    44,    45,    46,     3,     4,
+       5,     6,     0,     0,     0,     0,     8,     9,    93,     0,
+      10,     0,    11,     0,    12,    13,    94,    95,    15,    16,
+      17,    18,     3,     4,     5,     6,     0,     0,     0,     0,
+       8,     9,    29,     0,    10,     0,    11,     0,    12,    13,
+      30,     0,    15,    16,    17,    18,    32,    33,    34,    35,
+       0,     0,     0,     0,    36,    37,     0,     0,    10,     0,
+      11,     0,    39,    59,    60,    42,    43,    44,    45,    46,
+       3,     4,     5,     6,     0,     0,     0,     0,     8,     9,
+       0,     0,    10,     0,    11,     0,    12,    13,    87,     0,
+      15,    16,    17,    18,     3,     4,     5,     6,     0,     0,
+       0,     0,     8,     9,     0,     0,    10,     0,    11,     0,
+      12,    13,    97,     0,    15,    16,    17,    18,     3,     4,
+       5,     6,     0,     0,     0,     0,     8,     9,     0,     0,
+      10,     0,    11,     0,    12,    13,   100,     0,    15,    16,
+      17,    18,     3,     4,     5,     6,     0,     0,     0,     0,
+       8,     9,     0,     0,    10,     0,    11,     0,    12,    13,
+       0,     0,    15,    16,    17,    18,     3,     4,     5,     6,
+       0,     0,     0,     0,     8,     9,     0,     0,    10,     0,
+      11,     0,    12,    13,     0,     0,    98,    16,    17,    18
 };
 
 static const yytype_int8 yycheck[] =
 {
-       1,     1,    78,     1,    16,    13,    18,    23,    73,    23,
-      86,    87,     1,    70,    71,    20,    27,    28,    -1,    20,
-      20,    -1,    20,    -1,    -1,    26,    27,    28,    26,    27,
-      28,    20,    97,    -1,    -1,    -1,    -1,    26,    27,    28,
-       0,    -1,    -1,     3,     4,     5,     6,     7,    -1,    -1,
-      -1,    11,    12,    -1,    -1,    15,    -1,    17,    -1,    19,
-      20,    21,    -1,    23,    24,    25,    26,     3,     4,     5,
-       6,     7,     8,     9,    10,    11,    12,    13,    14,    15,
-      -1,    17,    -1,    19,    20,    21,    -1,    23,    24,    25,
-      26,     3,     4,     5,     6,     7,     8,     9,    10,    11,
-      12,    13,    14,    15,    -1,    17,    -1,    19,    20,    21,
-      -1,    23,    24,    25,    26,     3,     4,     5,     6,     7,
-       8,     9,    10,    11,    12,    13,    14,    15,    -1,    17,
-      -1,    19,    20,    21,    -1,    23,    24,    25,    26,     3,
-       4,     5,     6,    -1,    -1,    -1,    -1,    11,    12,    -1,
-      -1,    15,    16,    17,    -1,    19,    20,    21,    22,    23,
-      24,    25,    26,     3,     4,     5,     6,    -1,    -1,    -1,
-      -1,    11,    12,    -1,    -1,    15,    -1,    17,    18,    19,
-      20,    21,    22,    23,    24,    25,    26,     3,     4,     5,
-       6,    -1,    -1,    -1,    -1,    11,    12,    13,    -1,    15,
-      -1,    17,    -1,    19,    20,    21,    22,    23,    24,    25,
-      26,     3,     4,     5,     6,    -1,    -1,    -1,    -1,    11,
-      12,    13,    -1,    15,    -1,    17,    -1,    19,    20,    21,
-      -1,    23,    24,    25,    26,     3,     4,     5,     6,    -1,
-      -1,    -1,    -1,    11,    12,    -1,    -1,    15,    -1,    17,
-      -1,    19,    20,    21,    22,    23,    24,    25,    26,     3,
-       4,     5,     6,    -1,    -1,    -1,    -1,    11,    12,    -1,
-      -1,    15,    -1,    17,    -1,    19,    20,    21,    -1,    23,
-      24,    25,    26,     3,     4,     5,     6,    -1,    -1,    -1,
-      -1,    11,    12,    -1,    -1,    15,    -1,    17,    -1,    19,
-      20,    21,    -1,    23,    24,    25,    26,     3,     4,     5,
-       6,    -1,    -1,    -1,    -1,    11,    12,    -1,    -1,    15,
-      -1,    17,    -1,    19,    20,    -1,    -1,    23,    24,    25,
-      26,     3,     4,     5,     6,    -1,    -1,    -1,    -1,    11,
-      12,    -1,    -1,    15,    -1,    17,    -1,    19,    20,    -1,
-      -1,    23,    24,    25,    26
+       1,     1,    13,     1,    20,    66,    79,    16,    23,    18,
+      27,    28,     1,    74,    -1,    88,    89,    71,    72,    20,
+      20,    23,    20,    75,    -1,    26,    27,    28,    26,    27,
+      28,    20,    -1,    -1,    -1,    -1,    -1,    26,    27,    28,
+     101,     0,    -1,    -1,     3,     4,     5,     6,     7,    -1,
+      -1,    -1,    11,    12,    -1,    -1,    15,    -1,    17,    -1,
+      19,    20,    21,    -1,    23,    24,    25,    26,    -1,    -1,
+      -1,    -1,    -1,    -1,    75,    75,    92,    75,    -1,    -1,
+      -1,    -1,    -1,    -1,    -1,    -1,    75,    -1,    -1,    -1,
+      -1,    92,    92,    -1,    92,    -1,    -1,    -1,    -1,    -1,
+      -1,    -1,    -1,    92,     3,     4,     5,     6,     7,     8,
+       9,    10,    11,    12,    13,    14,    15,    -1,    17,    -1,
+      19,    20,    21,    -1,    23,    24,    25,    26,     3,     4,
+       5,     6,     7,     8,     9,    10,    11,    12,    13,    14,
+      15,    -1,    17,    -1,    19,    20,    21,    -1,    23,    24,
+      25,    26,     3,     4,     5,     6,     7,     8,     9,    10,
+      11,    12,    13,    14,    15,    -1,    17,    -1,    19,    20,
+      21,    -1,    23,    24,    25,    26,     3,     4,     5,     6,
+       7,     8,     9,    10,    11,    12,    13,    14,    15,    -1,
+      17,    -1,    19,    20,    21,    -1,    23,    24,    25,    26,
+       3,     4,     5,     6,    -1,    -1,    -1,    -1,    11,    12,
+      -1,    -1,    15,    16,    17,    -1,    19,    20,    21,    22,
+      23,    24,    25,    26,     3,     4,     5,     6,    -1,    -1,
+      -1,    -1,    11,    12,    -1,    -1,    15,    -1,    17,    18,
+      19,    20,    21,    22,    23,    24,    25,    26,     3,     4,
+       5,     6,    -1,    -1,    -1,    -1,    11,    12,    13,    -1,
+      15,    -1,    17,    -1,    19,    20,    21,    22,    23,    24,
+      25,    26,     3,     4,     5,     6,    -1,    -1,    -1,    -1,
+      11,    12,    13,    -1,    15,    -1,    17,    -1,    19,    20,
+      21,    -1,    23,    24,    25,    26,     3,     4,     5,     6,
+      -1,    -1,    -1,    -1,    11,    12,    -1,    -1,    15,    -1,
+      17,    -1,    19,    20,    21,    22,    23,    24,    25,    26,
+       3,     4,     5,     6,    -1,    -1,    -1,    -1,    11,    12,
+      -1,    -1,    15,    -1,    17,    -1,    19,    20,    21,    -1,
+      23,    24,    25,    26,     3,     4,     5,     6,    -1,    -1,
+      -1,    -1,    11,    12,    -1,    -1,    15,    -1,    17,    -1,
+      19,    20,    21,    -1,    23,    24,    25,    26,     3,     4,
+       5,     6,    -1,    -1,    -1,    -1,    11,    12,    -1,    -1,
+      15,    -1,    17,    -1,    19,    20,    21,    -1,    23,    24,
+      25,    26,     3,     4,     5,     6,    -1,    -1,    -1,    -1,
+      11,    12,    -1,    -1,    15,    -1,    17,    -1,    19,    20,
+      -1,    -1,    23,    24,    25,    26,     3,     4,     5,     6,
+      -1,    -1,    -1,    -1,    11,    12,    -1,    -1,    15,    -1,
+      17,    -1,    19,    20,    -1,    -1,    23,    24,    25,    26
 };
 
 /* YYSTOS[STATE-NUM] -- The symbol kind of the accessing symbol of
@@ -1188,38 +1215,39 @@ static const yytype_int8 yystos[] =
       21,    32,     3,     4,     5,     6,    11,    12,    16,    19,
       20,    21,    22,    23,    24,    25,    26,    39,    41,    42,
       45,    48,    18,    21,    39,    42,    44,    45,    48,    20,
-      21,    39,    42,    45,    47,    48,    30,    33,     3,     7,
-       8,     9,    10,    13,    14,    21,    34,    36,    37,    38,
-      39,    42,    45,    49,    23,    21,    37,    37,    23,    33,
-      13,    21,    22,    38,    21,    23,    14,    35,    33,    14
+      21,    39,    42,    45,    47,    48,    30,    33,    33,     3,
+       7,     8,     9,    10,    13,    14,    21,    34,    36,    37,
+      38,    39,    42,    45,    49,    14,    23,    21,    37,    37,
+      23,    33,    31,    13,    21,    22,    38,    21,    23,    14,
+      21,    35,    33,    14
 };
 
 /* YYR1[RULE-NUM] -- Symbol kind of the left-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr1[] =
 {
-       0,    27,    28,    28,    29,    29,    29,    30,    29,    31,
-      31,    32,    32,    32,    32,    33,    33,    34,    34,    34,
-      34,    34,    34,    34,    34,    34,    35,    34,    36,    36,
-      37,    37,    38,    38,    38,    38,    39,    40,    40,    41,
-      41,    41,    41,    41,    42,    43,    43,    44,    44,    44,
-      44,    44,    45,    46,    46,    47,    47,    47,    47,    47,
-      48,    48,    48,    48,    48,    48,    48,    48,    48,    48,
-      48,    48,    48,    49,    49,    49,    49,    49,    49,    49,
-      49,    49,    49,    49,    49
+       0,    27,    28,    28,    29,    29,    29,    29,    30,    29,
+      31,    31,    32,    32,    32,    32,    33,    33,    34,    34,
+      34,    34,    34,    34,    34,    34,    34,    35,    34,    36,
+      36,    37,    37,    38,    38,    38,    38,    39,    40,    40,
+      41,    41,    41,    41,    41,    42,    43,    43,    44,    44,
+      44,    44,    44,    45,    46,    46,    47,    47,    47,    47,
+      47,    48,    48,    48,    48,    48,    48,    48,    48,    48,
+      48,    48,    48,    48,    49,    49,    49,    49,    49,    49,
+      49,    49,    49,    49,    49,    49
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr2[] =
 {
-       0,     2,     0,     2,     1,     1,     2,     0,     5,     1,
-       2,     1,     1,     1,     1,     0,     2,     1,     1,     1,
-       2,     2,     2,     2,     3,     3,     0,     5,     2,     3,
-       1,     2,     1,     1,     1,     1,     3,     0,     2,     1,
-       1,     1,     1,     1,     3,     0,     2,     1,     1,     1,
-       1,     1,     3,     0,     2,     1,     1,     1,     1,     1,
+       0,     2,     0,     2,     1,     1,     2,     6,     0,     5,
+       1,     2,     1,     1,     1,     1,     0,     2,     1,     1,
+       1,     2,     2,     2,     2,     3,     3,     0,     5,     2,
+       3,     1,     2,     1,     1,     1,     1,     3,     0,     2,
+       1,     1,     1,     1,     1,     3,     0,     2,     1,     1,
+       1,     1,     1,     3,     0,     2,     1,     1,     1,     1,
        1,     1,     1,     1,     1,     1,     1,     1,     1,     1,
        1,     1,     1,     1,     1,     1,     1,     1,     1,     1,
-       1,     1,     1,     1,     1
+       1,     1,     1,     1,     1,     1
 };
 
 
@@ -1683,505 +1711,511 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* translation_unit: %empty  */
-#line 484 "src/parser.y"
+#line 493 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1689 "src/parser.c"
+#line 1717 "src/parser.c"
     break;
 
   case 3: /* translation_unit: translation_unit external_item  */
-#line 486 "src/parser.y"
+#line 495 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); g_output = (yyval.node); }
-#line 1695 "src/parser.c"
+#line 1723 "src/parser.c"
     break;
 
   case 4: /* external_item: PP_LINE  */
-#line 491 "src/parser.y"
+#line 500 "src/parser.y"
         { (yyval.node) = process_pp_line((yyvsp[0].node)); }
-#line 1701 "src/parser.c"
+#line 1729 "src/parser.c"
     break;
 
   case 5: /* external_item: SEMI  */
-#line 493 "src/parser.y"
+#line 502 "src/parser.y"
         { (yyval.node) = process_standalone_semi((yyvsp[0].node)); }
-#line 1707 "src/parser.c"
+#line 1735 "src/parser.c"
     break;
 
   case 6: /* external_item: top_seq SEMI  */
-#line 495 "src/parser.y"
-        { (yyval.node) = process_external_decl((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1713 "src/parser.c"
-    break;
-
-  case 7: /* $@1: %empty  */
-#line 497 "src/parser.y"
-        { begin_top_block((yyvsp[-1].node)); }
-#line 1719 "src/parser.c"
-    break;
-
-  case 8: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
-#line 499 "src/parser.y"
-        { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1725 "src/parser.c"
-    break;
-
-  case 9: /* top_seq: top_part  */
 #line 504 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1731 "src/parser.c"
+        { (yyval.node) = process_external_decl((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1741 "src/parser.c"
     break;
 
-  case 10: /* top_seq: top_seq top_part  */
+  case 7: /* external_item: top_seq LBRACE compound_items RBRACE top_seq SEMI  */
 #line 506 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1737 "src/parser.c"
+        { (yyval.node) = finish_c_compat_braced_decl((yyvsp[-5].node), (yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1747 "src/parser.c"
     break;
 
-  case 11: /* top_part: token_no_comma  */
-#line 511 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1743 "src/parser.c"
+  case 8: /* $@1: %empty  */
+#line 508 "src/parser.y"
+        { begin_top_block((yyvsp[-1].node)); }
+#line 1753 "src/parser.c"
     break;
 
-  case 12: /* top_part: paren_group  */
-#line 513 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1749 "src/parser.c"
+  case 9: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
+#line 510 "src/parser.y"
+        { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1759 "src/parser.c"
     break;
 
-  case 13: /* top_part: bracket_group  */
+  case 10: /* top_seq: top_part  */
 #line 515 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1755 "src/parser.c"
+#line 1765 "src/parser.c"
     break;
 
-  case 14: /* top_part: angle_group  */
+  case 11: /* top_seq: top_seq top_part  */
 #line 517 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1761 "src/parser.c"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1771 "src/parser.c"
     break;
 
-  case 15: /* compound_items: %empty  */
+  case 12: /* top_part: token_no_comma  */
 #line 522 "src/parser.y"
-        { (yyval.node) = text_new(); }
-#line 1767 "src/parser.c"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1777 "src/parser.c"
     break;
 
-  case 16: /* compound_items: compound_items compound_item  */
+  case 13: /* top_part: paren_group  */
 #line 524 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1773 "src/parser.c"
-    break;
-
-  case 17: /* compound_item: PP_LINE  */
-#line 529 "src/parser.y"
-        { (yyval.node) = process_pp_line((yyvsp[0].node)); }
-#line 1779 "src/parser.c"
-    break;
-
-  case 18: /* compound_item: SEMI  */
-#line 531 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1785 "src/parser.c"
+#line 1783 "src/parser.c"
     break;
 
-  case 19: /* compound_item: return_statement  */
+  case 14: /* top_part: bracket_group  */
+#line 526 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1789 "src/parser.c"
+    break;
+
+  case 15: /* top_part: angle_group  */
+#line 528 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1795 "src/parser.c"
+    break;
+
+  case 16: /* compound_items: %empty  */
 #line 533 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1791 "src/parser.c"
+        { (yyval.node) = text_new(); }
+#line 1801 "src/parser.c"
     break;
 
-  case 20: /* compound_item: stmt_seq SEMI  */
+  case 17: /* compound_items: compound_items compound_item  */
 #line 535 "src/parser.y"
-        { (yyval.node) = process_statement((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1797 "src/parser.c"
-    break;
-
-  case 21: /* compound_item: stmt_seq COMMA  */
-#line 537 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1803 "src/parser.c"
-    break;
-
-  case 22: /* compound_item: IDENT COLON  */
-#line 539 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1809 "src/parser.c"
-    break;
-
-  case 23: /* compound_item: DEFAULT COLON  */
-#line 541 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1815 "src/parser.c"
-    break;
-
-  case 24: /* compound_item: CASE stmt_seq COLON  */
-#line 543 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1821 "src/parser.c"
-    break;
-
-  case 25: /* compound_item: LBRACE compound_items RBRACE  */
-#line 545 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1827 "src/parser.c"
-    break;
-
-  case 26: /* $@2: %empty  */
-#line 547 "src/parser.y"
-        { begin_stmt_block((yyvsp[-1].node)); }
-#line 1833 "src/parser.c"
-    break;
-
-  case 27: /* compound_item: stmt_seq LBRACE $@2 compound_items RBRACE  */
-#line 549 "src/parser.y"
-        { (yyval.node) = finish_stmt_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 1839 "src/parser.c"
-    break;
-
-  case 28: /* return_statement: RETURN SEMI  */
-#line 554 "src/parser.y"
-        { (yyval.node) = process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)); }
-#line 1845 "src/parser.c"
-    break;
-
-  case 29: /* return_statement: RETURN stmt_seq SEMI  */
-#line 556 "src/parser.y"
-        { (yyval.node) = process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1851 "src/parser.c"
-    break;
-
-  case 30: /* stmt_seq: stmt_part  */
-#line 561 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1857 "src/parser.c"
-    break;
-
-  case 31: /* stmt_seq: stmt_seq stmt_part  */
-#line 563 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1863 "src/parser.c"
+#line 1807 "src/parser.c"
     break;
 
-  case 32: /* stmt_part: token_no_comma  */
-#line 568 "src/parser.y"
+  case 18: /* compound_item: PP_LINE  */
+#line 540 "src/parser.y"
+        { (yyval.node) = process_pp_line((yyvsp[0].node)); }
+#line 1813 "src/parser.c"
+    break;
+
+  case 19: /* compound_item: SEMI  */
+#line 542 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1869 "src/parser.c"
+#line 1819 "src/parser.c"
     break;
 
-  case 33: /* stmt_part: paren_group  */
-#line 570 "src/parser.y"
+  case 20: /* compound_item: return_statement  */
+#line 544 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1875 "src/parser.c"
+#line 1825 "src/parser.c"
     break;
 
-  case 34: /* stmt_part: bracket_group  */
+  case 21: /* compound_item: stmt_seq SEMI  */
+#line 546 "src/parser.y"
+        { (yyval.node) = process_statement((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1831 "src/parser.c"
+    break;
+
+  case 22: /* compound_item: stmt_seq COMMA  */
+#line 548 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1837 "src/parser.c"
+    break;
+
+  case 23: /* compound_item: IDENT COLON  */
+#line 550 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1843 "src/parser.c"
+    break;
+
+  case 24: /* compound_item: DEFAULT COLON  */
+#line 552 "src/parser.y"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1849 "src/parser.c"
+    break;
+
+  case 25: /* compound_item: CASE stmt_seq COLON  */
+#line 554 "src/parser.y"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1855 "src/parser.c"
+    break;
+
+  case 26: /* compound_item: LBRACE compound_items RBRACE  */
+#line 556 "src/parser.y"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1861 "src/parser.c"
+    break;
+
+  case 27: /* $@2: %empty  */
+#line 558 "src/parser.y"
+        { begin_stmt_block((yyvsp[-1].node)); }
+#line 1867 "src/parser.c"
+    break;
+
+  case 28: /* compound_item: stmt_seq LBRACE $@2 compound_items RBRACE  */
+#line 560 "src/parser.y"
+        { (yyval.node) = finish_stmt_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
+#line 1873 "src/parser.c"
+    break;
+
+  case 29: /* return_statement: RETURN SEMI  */
+#line 565 "src/parser.y"
+        { (yyval.node) = process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)); }
+#line 1879 "src/parser.c"
+    break;
+
+  case 30: /* return_statement: RETURN stmt_seq SEMI  */
+#line 567 "src/parser.y"
+        { (yyval.node) = process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1885 "src/parser.c"
+    break;
+
+  case 31: /* stmt_seq: stmt_part  */
 #line 572 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1881 "src/parser.c"
+#line 1891 "src/parser.c"
     break;
 
-  case 35: /* stmt_part: angle_group  */
+  case 32: /* stmt_seq: stmt_seq stmt_part  */
 #line 574 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1887 "src/parser.c"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1897 "src/parser.c"
     break;
 
-  case 36: /* paren_group: LPAREN paren_items RPAREN  */
+  case 33: /* stmt_part: token_no_comma  */
 #line 579 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1903 "src/parser.c"
+    break;
+
+  case 34: /* stmt_part: paren_group  */
+#line 581 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1909 "src/parser.c"
+    break;
+
+  case 35: /* stmt_part: bracket_group  */
+#line 583 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1915 "src/parser.c"
+    break;
+
+  case 36: /* stmt_part: angle_group  */
+#line 585 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1921 "src/parser.c"
+    break;
+
+  case 37: /* paren_group: LPAREN paren_items RPAREN  */
+#line 590 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1893 "src/parser.c"
+#line 1927 "src/parser.c"
     break;
 
-  case 37: /* paren_items: %empty  */
-#line 584 "src/parser.y"
-        { (yyval.node) = text_new(); }
-#line 1899 "src/parser.c"
-    break;
-
-  case 38: /* paren_items: paren_items paren_part  */
-#line 586 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1905 "src/parser.c"
-    break;
-
-  case 39: /* paren_part: token  */
-#line 591 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1911 "src/parser.c"
-    break;
-
-  case 40: /* paren_part: SEMI  */
-#line 593 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1917 "src/parser.c"
-    break;
-
-  case 41: /* paren_part: paren_group  */
+  case 38: /* paren_items: %empty  */
 #line 595 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1923 "src/parser.c"
+        { (yyval.node) = text_new(); }
+#line 1933 "src/parser.c"
     break;
 
-  case 42: /* paren_part: bracket_group  */
+  case 39: /* paren_items: paren_items paren_part  */
 #line 597 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1929 "src/parser.c"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 1939 "src/parser.c"
     break;
 
-  case 43: /* paren_part: angle_group  */
-#line 599 "src/parser.y"
+  case 40: /* paren_part: token  */
+#line 602 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 1935 "src/parser.c"
+#line 1945 "src/parser.c"
     break;
 
-  case 44: /* bracket_group: LBRACKET bracket_items RBRACKET  */
+  case 41: /* paren_part: SEMI  */
 #line 604 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1951 "src/parser.c"
+    break;
+
+  case 42: /* paren_part: paren_group  */
+#line 606 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1957 "src/parser.c"
+    break;
+
+  case 43: /* paren_part: bracket_group  */
+#line 608 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1963 "src/parser.c"
+    break;
+
+  case 44: /* paren_part: angle_group  */
+#line 610 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 1969 "src/parser.c"
+    break;
+
+  case 45: /* bracket_group: LBRACKET bracket_items RBRACKET  */
+#line 615 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1941 "src/parser.c"
+#line 1975 "src/parser.c"
     break;
 
-  case 45: /* bracket_items: %empty  */
-#line 609 "src/parser.y"
-        { (yyval.node) = text_new(); }
-#line 1947 "src/parser.c"
-    break;
-
-  case 46: /* bracket_items: bracket_items bracket_part  */
-#line 611 "src/parser.y"
-        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1953 "src/parser.c"
-    break;
-
-  case 47: /* bracket_part: token  */
-#line 616 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1959 "src/parser.c"
-    break;
-
-  case 48: /* bracket_part: SEMI  */
-#line 618 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1965 "src/parser.c"
-    break;
-
-  case 49: /* bracket_part: paren_group  */
+  case 46: /* bracket_items: %empty  */
 #line 620 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1971 "src/parser.c"
-    break;
-
-  case 50: /* bracket_part: bracket_group  */
-#line 622 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1977 "src/parser.c"
-    break;
-
-  case 51: /* bracket_part: angle_group  */
-#line 624 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 1983 "src/parser.c"
-    break;
-
-  case 52: /* angle_group: LT angle_items GT  */
-#line 629 "src/parser.y"
-        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1989 "src/parser.c"
-    break;
-
-  case 53: /* angle_items: %empty  */
-#line 634 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1995 "src/parser.c"
+#line 1981 "src/parser.c"
     break;
 
-  case 54: /* angle_items: angle_items angle_part  */
-#line 636 "src/parser.y"
+  case 47: /* bracket_items: bracket_items bracket_part  */
+#line 622 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2001 "src/parser.c"
+#line 1987 "src/parser.c"
     break;
 
-  case 55: /* angle_part: token  */
-#line 641 "src/parser.y"
+  case 48: /* bracket_part: token  */
+#line 627 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2007 "src/parser.c"
+#line 1993 "src/parser.c"
     break;
 
-  case 56: /* angle_part: SEMI  */
-#line 643 "src/parser.y"
+  case 49: /* bracket_part: SEMI  */
+#line 629 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2013 "src/parser.c"
+#line 1999 "src/parser.c"
     break;
 
-  case 57: /* angle_part: paren_group  */
+  case 50: /* bracket_part: paren_group  */
+#line 631 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2005 "src/parser.c"
+    break;
+
+  case 51: /* bracket_part: bracket_group  */
+#line 633 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2011 "src/parser.c"
+    break;
+
+  case 52: /* bracket_part: angle_group  */
+#line 635 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2017 "src/parser.c"
+    break;
+
+  case 53: /* angle_group: LT angle_items GT  */
+#line 640 "src/parser.y"
+        { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
+#line 2023 "src/parser.c"
+    break;
+
+  case 54: /* angle_items: %empty  */
 #line 645 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 2019 "src/parser.c"
+        { (yyval.node) = text_new(); }
+#line 2029 "src/parser.c"
     break;
 
-  case 58: /* angle_part: bracket_group  */
+  case 55: /* angle_items: angle_items angle_part  */
 #line 647 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 2025 "src/parser.c"
+        { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
+#line 2035 "src/parser.c"
     break;
 
-  case 59: /* angle_part: angle_group  */
-#line 649 "src/parser.y"
+  case 56: /* angle_part: token  */
+#line 652 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2031 "src/parser.c"
+#line 2041 "src/parser.c"
     break;
 
-  case 60: /* token: IDENT  */
+  case 57: /* angle_part: SEMI  */
 #line 654 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2037 "src/parser.c"
+#line 2047 "src/parser.c"
     break;
 
-  case 61: /* token: NUMBER  */
+  case 58: /* angle_part: paren_group  */
 #line 656 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2043 "src/parser.c"
+#line 2053 "src/parser.c"
     break;
 
-  case 62: /* token: STRING_LITERAL  */
+  case 59: /* angle_part: bracket_group  */
 #line 658 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2049 "src/parser.c"
+#line 2059 "src/parser.c"
     break;
 
-  case 63: /* token: CHAR_LITERAL  */
+  case 60: /* angle_part: angle_group  */
 #line 660 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2055 "src/parser.c"
+#line 2065 "src/parser.c"
     break;
 
-  case 64: /* token: KEYWORD  */
-#line 662 "src/parser.y"
+  case 61: /* token: IDENT  */
+#line 665 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2061 "src/parser.c"
+#line 2071 "src/parser.c"
     break;
 
-  case 65: /* token: OP  */
-#line 664 "src/parser.y"
+  case 62: /* token: NUMBER  */
+#line 667 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2067 "src/parser.c"
+#line 2077 "src/parser.c"
     break;
 
-  case 66: /* token: LT  */
-#line 666 "src/parser.y"
+  case 63: /* token: STRING_LITERAL  */
+#line 669 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2073 "src/parser.c"
+#line 2083 "src/parser.c"
     break;
 
-  case 67: /* token: GT  */
-#line 668 "src/parser.y"
+  case 64: /* token: CHAR_LITERAL  */
+#line 671 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2079 "src/parser.c"
+#line 2089 "src/parser.c"
     break;
 
-  case 68: /* token: COMMA  */
-#line 670 "src/parser.y"
+  case 65: /* token: KEYWORD  */
+#line 673 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2085 "src/parser.c"
+#line 2095 "src/parser.c"
     break;
 
-  case 69: /* token: COLON  */
-#line 672 "src/parser.y"
+  case 66: /* token: OP  */
+#line 675 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2091 "src/parser.c"
+#line 2101 "src/parser.c"
     break;
 
-  case 70: /* token: EQUAL  */
-#line 674 "src/parser.y"
+  case 67: /* token: LT  */
+#line 677 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2097 "src/parser.c"
+#line 2107 "src/parser.c"
     break;
 
-  case 71: /* token: PERCENT  */
-#line 676 "src/parser.y"
+  case 68: /* token: GT  */
+#line 679 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2103 "src/parser.c"
+#line 2113 "src/parser.c"
     break;
 
-  case 72: /* token: OTHER  */
-#line 678 "src/parser.y"
+  case 69: /* token: COMMA  */
+#line 681 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2109 "src/parser.c"
+#line 2119 "src/parser.c"
     break;
 
-  case 73: /* token_no_comma: IDENT  */
+  case 70: /* token: COLON  */
 #line 683 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2115 "src/parser.c"
+#line 2125 "src/parser.c"
     break;
 
-  case 74: /* token_no_comma: NUMBER  */
+  case 71: /* token: EQUAL  */
 #line 685 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2121 "src/parser.c"
+#line 2131 "src/parser.c"
     break;
 
-  case 75: /* token_no_comma: STRING_LITERAL  */
+  case 72: /* token: PERCENT  */
 #line 687 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2127 "src/parser.c"
+#line 2137 "src/parser.c"
     break;
 
-  case 76: /* token_no_comma: CHAR_LITERAL  */
+  case 73: /* token: OTHER  */
 #line 689 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2133 "src/parser.c"
+#line 2143 "src/parser.c"
     break;
 
-  case 77: /* token_no_comma: KEYWORD  */
-#line 691 "src/parser.y"
+  case 74: /* token_no_comma: IDENT  */
+#line 694 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2139 "src/parser.c"
+#line 2149 "src/parser.c"
     break;
 
-  case 78: /* token_no_comma: OP  */
-#line 693 "src/parser.y"
+  case 75: /* token_no_comma: NUMBER  */
+#line 696 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2145 "src/parser.c"
+#line 2155 "src/parser.c"
     break;
 
-  case 79: /* token_no_comma: LT  */
-#line 695 "src/parser.y"
+  case 76: /* token_no_comma: STRING_LITERAL  */
+#line 698 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2151 "src/parser.c"
+#line 2161 "src/parser.c"
     break;
 
-  case 80: /* token_no_comma: GT  */
-#line 697 "src/parser.y"
+  case 77: /* token_no_comma: CHAR_LITERAL  */
+#line 700 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2157 "src/parser.c"
+#line 2167 "src/parser.c"
     break;
 
-  case 81: /* token_no_comma: COLON  */
-#line 699 "src/parser.y"
+  case 78: /* token_no_comma: KEYWORD  */
+#line 702 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2163 "src/parser.c"
+#line 2173 "src/parser.c"
     break;
 
-  case 82: /* token_no_comma: EQUAL  */
-#line 701 "src/parser.y"
+  case 79: /* token_no_comma: OP  */
+#line 704 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2169 "src/parser.c"
+#line 2179 "src/parser.c"
     break;
 
-  case 83: /* token_no_comma: PERCENT  */
-#line 703 "src/parser.y"
+  case 80: /* token_no_comma: LT  */
+#line 706 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2175 "src/parser.c"
-    break;
-
-  case 84: /* token_no_comma: OTHER  */
-#line 705 "src/parser.y"
-        { (yyval.node) = (yyvsp[0].node); }
-#line 2181 "src/parser.c"
-    break;
-
-
 #line 2185 "src/parser.c"
+    break;
+
+  case 81: /* token_no_comma: GT  */
+#line 708 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2191 "src/parser.c"
+    break;
+
+  case 82: /* token_no_comma: COLON  */
+#line 710 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2197 "src/parser.c"
+    break;
+
+  case 83: /* token_no_comma: EQUAL  */
+#line 712 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2203 "src/parser.c"
+    break;
+
+  case 84: /* token_no_comma: PERCENT  */
+#line 714 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2209 "src/parser.c"
+    break;
+
+  case 85: /* token_no_comma: OTHER  */
+#line 716 "src/parser.y"
+        { (yyval.node) = (yyvsp[0].node); }
+#line 2215 "src/parser.c"
+    break;
+
+
+#line 2219 "src/parser.c"
 
       default: break;
     }
@@ -2374,7 +2408,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 708 "src/parser.y"
+#line 719 "src/parser.y"
 
 
 static void die(const char *msg)
@@ -3512,6 +3546,7 @@ static struct Type type_make(enum TypeKind kind, int ptr, const char *tag)
     t.ptr = ptr;
     t.owned = 0;
     t.raw_ptr = 0;
+    t.is_array = 0;
     t.array_len = 0;
     t.size = 0;
     t.align = 1;
@@ -3812,6 +3847,17 @@ static void symbol_add_to(struct Symbols *symbols, const char *name, struct Type
     symbols->sym[symbols->count].var = var;
     var_scope_push(name, var);
     symbols->count++;
+}
+
+static void symbol_add_param_to(struct Symbols *symbols, const char *name, struct Type type)
+{
+    struct Symbol *sym;
+
+    symbol_add_to(symbols, name, type);
+    sym = symbol_find_in(symbols, name);
+    if (sym != NULL && sym->var != NULL) {
+        sym->var->is_param = 1;
+    }
 }
 
 static void symbol_add(const char *name, struct Type type)
@@ -4211,6 +4257,7 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     decl->type = base_type;
     decl->type.ptr += ptr;
     if (decl->is_array) {
+        decl->type.is_array = 1;
         decl->type.array_len = array_len;
     }
     decl->type.owned = base_type.owned || strchr(base_end, '%') != NULL ||
@@ -4262,11 +4309,16 @@ static int is_safe_reference_type(struct Type type)
         strcmp(type.tag, "Ref") == 0 || strncmp(type.tag, "Ref_", 4) == 0 ||
         strcmp(type.tag, "Span") == 0 || strncmp(type.tag, "Span_", 5) == 0 ||
         strcmp(type.tag, "FixedVec") == 0 || strncmp(type.tag, "FixedVec_", 9) == 0 ||
+        strcmp(type.tag, "RingBuffer") == 0 || strncmp(type.tag, "RingBuffer_", 11) == 0 ||
         strcmp(type.tag, "Register") == 0 || strncmp(type.tag, "Register_", 9) == 0 ||
         strcmp(type.tag, "Atomic") == 0 || strncmp(type.tag, "Atomic_", 7) == 0 ||
         strcmp(type.tag, "Volatile") == 0 || strncmp(type.tag, "Volatile_", 9) == 0 ||
         strcmp(type.tag, "StaticCell") == 0 || strncmp(type.tag, "StaticCell_", 11) == 0 ||
-        strcmp(type.tag, "Critical") == 0) {
+        strcmp(type.tag, "Bitmap") == 0 ||
+        strcmp(type.tag, "Critical") == 0 ||
+        strcmp(type.tag, "Thread") == 0 ||
+        strcmp(type.tag, "Mutex") == 0 ||
+        strcmp(type.tag, "Cond") == 0) {
         return 0;
     }
     return type.kind == TY_STRUCT;
@@ -4463,6 +4515,9 @@ static void check_safe_pointer_decl(const char *s)
     struct DeclInfo decl;
     const char *name_pos;
 
+    if (g_c_compat && g_unsafe_depth == 0) {
+        return;
+    }
     if (g_unsafe_depth > 0) {
         return;
     }
@@ -4474,7 +4529,7 @@ static void check_safe_pointer_decl(const char *s)
         return;
     }
     if (pointer_token_before(s, name_pos)) {
-        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
         exit(1);
     }
 }
@@ -4491,6 +4546,9 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
     char func_name[NAME_MAX_LEN];
     struct Type ret_type;
 
+    if (g_c_compat && g_unsafe_depth == 0) {
+        return in;
+    }
     if (g_unsafe_depth > 0) {
         return in;
     }
@@ -4506,7 +4564,7 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
                 return in;
             }
             if (pointer_token_before(in->text, name_pos)) {
-                fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+                fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
                 exit(1);
             }
             if (parse_base_type_prefix(base, &base_end, &base_type) &&
@@ -4539,7 +4597,7 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
         return in;
     }
     if (pointer_token_before(in->text, name_pos)) {
-        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, Vec, List, Map, or a struct reference\n");
+        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
         exit(1);
     }
     string_start = find_string_decl_keyword(base, &string_borrowed);
@@ -4757,7 +4815,7 @@ static struct Type expr_type(const char *s)
     if (is_ident_start((unsigned char)*p)) {
         const char *end = read_name(p, name);
         p = skip_ws(end);
-        sym = symbol_find(name);
+        sym = symbol_find_or_current_param(name);
         if (sym != NULL) {
             t = sym->type;
             while (*p == '.' || (*p == '-' && p[1] == '>')) {
@@ -4910,14 +4968,15 @@ static struct Text *rewrite_generics(struct Text *in)
 	                                char concrete_func_name[NAME_MAX_LEN];
 	                                struct Type ret;
 	                                const char *func_head = generic_template_body_start(func_tmpl->head, func_param);
-	                                struct Text *concrete_head = replace_param_and_generics(func_head,
-	                                                                                         func_tmpl->param,
-	                                                                                         arg,
-	                                                                                         func_tmpl->name,
-	                                                                                         func_inst->concrete);
-	                                if (parse_function_signature(concrete_head->text, concrete_func_name, &ret) &&
-	                                    ret.owned) {
-	                                    owned_func_add_type(concrete_func_name, ret);
+		                                struct Text *concrete_head = replace_param_and_generics(func_head,
+		                                                                                         func_tmpl->param,
+		                                                                                         arg,
+		                                                                                         func_tmpl->name,
+		                                                                                         func_inst->concrete);
+		                                register_function_params(concrete_head->text);
+		                                if (parse_function_signature(concrete_head->text, concrete_func_name, &ret) &&
+		                                    ret.owned) {
+		                                    owned_func_add_type(concrete_func_name, ret);
 	                                }
 	                                text_free(concrete_head);
 	                                text_add(out, func_inst->concrete);
@@ -4986,6 +5045,15 @@ static struct Text *rewrite_generics(struct Text *in)
 
             if (tmpl != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
                 struct GenericInstance *inst = generic_instance_get(tmpl, arg);
+                char func_param[NAME_MAX_LEN];
+                const char *func_head = generic_template_body_start(tmpl->head, func_param);
+                struct Text *concrete_head = replace_param_and_generics(func_head,
+                                                                        tmpl->param,
+                                                                        arg,
+                                                                        tmpl->name,
+                                                                        inst->concrete);
+                register_function_params(concrete_head->text);
+                text_free(concrete_head);
                 call = skip_ws(after);
                 if (*call == '(') {
                     text_add(out, inst->concrete);
@@ -5229,6 +5297,7 @@ static int struct_field_type(const char *tag, const char *field, struct Type *ty
         for (i = 0; i < clone->count; i++) {
             if (strcmp(clone->fields[i].name, field) == 0) {
                 *type = clone->fields[i].type;
+                type->is_array = clone->fields[i].is_array;
                 return 1;
             }
         }
@@ -5355,7 +5424,7 @@ static void begin_top_block(struct Text *head)
     g_current_bitflags_name[0] = '\0';
     g_current_bitflags_base[0] = '\0';
     g_current_struct_mmio = 0;
-    if (is_unsafe_head(head->text)) {
+    if (is_unsafe_head(head->text) || is_inline_c_head(head->text)) {
         cminus_unsafe_push();
         g_top_block_is_function = 0;
         g_in_function = 0;
@@ -5504,6 +5573,28 @@ static int is_execinfo_include(const char *line)
     return strncmp(p, "<execinfo.h>", 12) == 0;
 }
 
+static int is_pthread_include(const char *line)
+{
+    const char *p = skip_ws(line);
+
+    if (strncmp(p, "#include", 8) != 0) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    return strncmp(p, "<pthread.h>", 11) == 0;
+}
+
+static int is_sched_include(const char *line)
+{
+    const char *p = skip_ws(line);
+
+    if (strncmp(p, "#include", 8) != 0) {
+        return 0;
+    }
+    p = skip_ws(p + 8);
+    return strncmp(p, "<sched.h>", 9) == 0;
+}
+
 static int is_cbare_include(const char *line)
 {
     const char *p = skip_ws(line);
@@ -5560,6 +5651,27 @@ static struct Text *process_pp_line(struct Text *line)
     struct Text *out;
     const char *p = skip_ws(line->text);
 
+    if (g_c_compat && !g_bare_metal && cminus_include_depth() == 0) {
+        if (parse_cminus_include(line->text, include_path, sizeof(include_path))) {
+            fp = open_cminus_include(include_path);
+            if (fp == NULL) {
+                fprintf(stderr, "c-: include not found: %s\n", include_path);
+                text_free(line);
+                exit(1);
+            }
+            cminus_push_include(fp, 1);
+            out = text_new();
+            text_free(line);
+            return out;
+        }
+        return line;
+    }
+    if (strncmp(p, "#define CMINUS_THREAD_LOCAL", 27) == 0 && g_bare_metal) {
+        text_add(g_defines, "#define CMINUS_THREAD_LOCAL\n");
+        out = text_new();
+        text_free(line);
+        return out;
+    }
     if (strncmp(p, "#define", 7) == 0) {
         text_add(g_defines, line->text);
         if (line->len == 0 || line->text[line->len - 1] != '\n') {
@@ -5589,6 +5701,18 @@ static struct Text *process_pp_line(struct Text *line)
     }
     if (is_execinfo_include(line->text)) {
         g_need_execinfo_h = 1;
+        out = text_new();
+        text_free(line);
+        return out;
+    }
+    if (is_pthread_include(line->text)) {
+        g_need_pthread_h = 1;
+        out = text_new();
+        text_free(line);
+        return out;
+    }
+    if (is_sched_include(line->text)) {
+        g_need_sched_h = 1;
         out = text_new();
         text_free(line);
         return out;
@@ -5751,7 +5875,7 @@ static int owner_is_local_stack(const char *owner)
         return 0;
     }
     sym = symbol_find(owner);
-    return sym != NULL && sym->var != NULL && sym->var->is_local && !sym->type.owned;
+    return sym != NULL && sym->var != NULL && sym->var->is_local && !sym->var->is_param && !sym->type.owned;
 }
 
 static void borrow_link_remove_borrower(const char *borrower)
@@ -5939,7 +6063,8 @@ static int extract_safe_reference_borrow_owner(const char *expr, char *owner)
             continue;
         }
         name_end = read_name(p, name);
-        if ((strcmp(name, "Ref") == 0 || strcmp(name, "Span") == 0) && *skip_ws(name_end) == '<') {
+        if ((strcmp(name, "Ref") == 0 || strcmp(name, "Span") == 0 || strcmp(name, "RingBuffer") == 0) &&
+            *skip_ws(name_end) == '<') {
             char generic_arg[NAME_MAX_LEN];
             const char *after_generic;
             const char *dot;
@@ -5956,6 +6081,8 @@ static int extract_safe_reference_borrow_owner(const char *expr, char *owner)
                         if (*open == '(' &&
                             ((strcmp(name, "Ref") == 0 && strcmp(method, "from") == 0) ||
                              (strcmp(name, "Span") == 0 &&
+                            (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0 || strcmp(method, "map_from") == 0)) ||
+                             (strcmp(name, "RingBuffer") == 0 &&
                               (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0)))) {
                             close = matching_paren(open);
                             if (close == NULL) {
@@ -5980,7 +6107,13 @@ static int extract_safe_reference_borrow_owner(const char *expr, char *owner)
         if (*open == '(' &&
             (strncmp(name, "Ref_from_", 9) == 0 ||
              strncmp(name, "Span_from_", 10) == 0 ||
-             strncmp(name, "Span_from_bytes_", 16) == 0)) {
+             strncmp(name, "Span_from_bytes_", 16) == 0 ||
+             strncmp(name, "Span_map_from_", 14) == 0 ||
+             strncmp(name, "RingBuffer_from_", 16) == 0 ||
+             strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+             strcmp(name, "Bitmap_from") == 0 ||
+             strcmp(name, "Bitmap_from_words") == 0 ||
+             strcmp(name, "Bitmap_from_bytes") == 0)) {
             close = matching_paren(open);
             if (close == NULL) {
                 return 0;
@@ -6329,7 +6462,7 @@ static int parse_array_expr_arg(const char *start, const char *end, char *label,
     }
     current = sym->type;
     if (is_local != NULL) {
-        *is_local = sym->var != NULL && sym->var->is_local;
+        *is_local = sym->var != NULL && sym->var->is_local && !sym->var->is_param;
     }
     if (label != NULL) {
         strncpy(label, name, NAME_MAX_LEN - 1);
@@ -6352,14 +6485,21 @@ static int parse_array_expr_arg(const char *start, const char *end, char *label,
         if (label != NULL) {
             used = strlen(label);
             if (used + 1 < NAME_MAX_LEN) {
-                label[used++] = '.';
+                if (p[0] == '-' && p[1] == '>') {
+                    label[used++] = '-';
+                    if (used + 1 < NAME_MAX_LEN) {
+                        label[used++] = '>';
+                    }
+                } else {
+                    label[used++] = '.';
+                }
                 label[used] = '\0';
                 strncat(label, field, NAME_MAX_LEN - used - 1);
             }
         }
         p = skip_ws(field_end);
     }
-    if (p != end || current.array_len <= 0) {
+    if (p != end || !current.is_array) {
         return 0;
     }
     if (type != NULL) {
@@ -6391,6 +6531,31 @@ static int parse_sizeof_array_arg(const char *start, const char *end, char *labe
     return parse_array_expr_arg(open + 1, close, label, type, NULL);
 }
 
+static int parse_local_stack_lvalue_arg(const char *start, const char *end, char *label);
+
+static int parse_sizeof_local_lvalue_arg(const char *start, const char *end, char *label)
+{
+    const char *p = skip_ws(start);
+    const char *open;
+    const char *close;
+
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (!starts_word(p, "sizeof")) {
+        return 0;
+    }
+    open = skip_ws(p + 6);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL || close + 1 != end) {
+        return 0;
+    }
+    return parse_local_stack_lvalue_arg(open + 1, close, label);
+}
+
 static void check_span_stack_array_call(const char *func_name, const char *args_start, const char *args_end)
 {
     const char *arg1_end = find_top_level_char(args_start, args_end, ',');
@@ -6416,10 +6581,13 @@ static void check_span_stack_array_call(const char *func_name, const char *args_
     if (!parse_array_expr_arg(args_start, arg1_end, array_label, &array_type, &is_local)) {
         return;
     }
-    if (strchr(array_label, '.') == NULL && !is_local) {
+    if (strchr(array_label, '.') == NULL && strstr(array_label, "->") == NULL && !is_local) {
         return;
     }
-    is_bytes = strncmp(func_name, "Span_from_bytes_", 16) == 0;
+    is_bytes = strncmp(func_name, "Span_from_bytes_", 16) == 0 ||
+        strncmp(func_name, "Span_map_from_", 14) == 0 ||
+        strncmp(func_name, "RingBuffer_from_bytes_", 22) == 0 ||
+        strcmp(func_name, "Bitmap_from_bytes") == 0;
     if (is_bytes && parse_sizeof_array_arg(arg2_start, arg2_end, sizeof_label, &sizeof_type)) {
         if (strcmp(sizeof_label, array_label) == 0 && sizeof_type.array_len == array_type.array_len) {
             return;
@@ -6428,15 +6596,28 @@ static void check_span_stack_array_call(const char *func_name, const char *args_
     if (!parse_int_literal_arg(arg2_start, arg2_end, &value)) {
         return;
     }
-    if (is_bytes) {
+    if (strcmp(func_name, "Bitmap_from") == 0) {
+        max_bytes = (long)array_type.array_len * (long)(array_type.size > 0 ? array_type.size : 1) * 8L;
+        if (value > max_bytes) {
+            fprintf(stderr, "c-: type error: Bitmap.from bit length %ld exceeds array '%s' capacity %ld bits at %s:%d\n",
+                    value, array_label, max_bytes, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    } else if (strcmp(func_name, "Bitmap_from_words") == 0) {
+        if (value > array_type.array_len) {
+            fprintf(stderr, "c-: type error: Bitmap.from_words length %ld exceeds array '%s' length %d at %s:%d\n",
+                    value, array_label, array_type.array_len, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+    } else if (is_bytes) {
         max_bytes = (long)array_type.array_len * (long)(array_type.size > 0 ? array_type.size : 1);
         if (value > max_bytes) {
-            fprintf(stderr, "c-: type error: Span.from_bytes length %ld exceeds array '%s' size %ld bytes at %s:%d\n",
+            fprintf(stderr, "c-: type error: buffer from_bytes length %ld exceeds array '%s' size %ld bytes at %s:%d\n",
                     value, array_label, max_bytes, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
             exit(1);
         }
     } else if (value > array_type.array_len) {
-        fprintf(stderr, "c-: type error: Span.from length %ld exceeds array '%s' length %d at %s:%d\n",
+        fprintf(stderr, "c-: type error: buffer from length %ld exceeds array '%s' length %d at %s:%d\n",
                 value, array_label, array_type.array_len, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
         exit(1);
     }
@@ -6475,7 +6656,11 @@ static void check_span_stack_array_bounds(const char *stmt)
         name_end = read_name(p, name);
         open = skip_ws(name_end);
         if (*open == '(' &&
-            (strncmp(name, "Span_from_", 10) == 0 || strncmp(name, "Span_from_bytes_", 16) == 0)) {
+            (strncmp(name, "Span_from_", 10) == 0 || strncmp(name, "Span_from_bytes_", 16) == 0 ||
+             strncmp(name, "Span_map_from_", 14) == 0 ||
+             strncmp(name, "RingBuffer_from_", 16) == 0 || strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+             strcmp(name, "Bitmap_from") == 0 || strcmp(name, "Bitmap_from_words") == 0 ||
+             strcmp(name, "Bitmap_from_bytes") == 0)) {
             close = matching_paren(open);
             if (close == NULL) {
                 return;
@@ -6486,6 +6671,207 @@ static void check_span_stack_array_bounds(const char *stmt)
         }
         p = name_end;
     }
+}
+
+static int is_stack_lifetime_from_call(const char *name)
+{
+    return strncmp(name, "Ref_from_", 9) == 0 ||
+        strncmp(name, "Span_from_", 10) == 0 ||
+        strncmp(name, "Span_from_bytes_", 16) == 0 ||
+        strncmp(name, "Span_map_from_", 14) == 0 ||
+        strncmp(name, "FixedVec_from_", 14) == 0 ||
+        strncmp(name, "FixedVec_from_bytes_", 20) == 0 ||
+        strncmp(name, "RingBuffer_from_", 16) == 0 ||
+        strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+        strcmp(name, "Bitmap_from") == 0 ||
+        strcmp(name, "Bitmap_from_words") == 0 ||
+        strcmp(name, "Bitmap_from_bytes") == 0;
+}
+
+static int parse_local_stack_lvalue_arg(const char *start, const char *end, char *label)
+{
+    const char *p = skip_ws(start);
+    const char *name_end;
+    char name[NAME_MAX_LEN];
+    struct Symbol *sym;
+    struct Type current;
+
+    while (end > p && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (!is_ident_start((unsigned char)*p)) {
+        return 0;
+    }
+    name_end = read_name(p, name);
+    sym = symbol_find(name);
+    if (sym == NULL || sym->var == NULL || !sym->var->is_local || sym->var->is_param) {
+        return 0;
+    }
+    current = sym->type;
+    strncpy(label, name, NAME_MAX_LEN - 1);
+    label[NAME_MAX_LEN - 1] = '\0';
+    p = skip_ws(name_end);
+    while (p < end && *p == '.') {
+        const char *field_start = skip_ws(p + 1);
+        const char *field_end;
+        char field[NAME_MAX_LEN];
+        size_t used;
+
+        if (!is_ident_start((unsigned char)*field_start)) {
+            return 0;
+        }
+        field_end = read_name(field_start, field);
+        if (current.kind != TY_STRUCT || !struct_field_type(current.tag, field, &current)) {
+            return 0;
+        }
+        used = strlen(label);
+        if (used + 1 < NAME_MAX_LEN) {
+            label[used++] = '.';
+            label[used] = '\0';
+            strncat(label, field, NAME_MAX_LEN - used - 1);
+        }
+        p = skip_ws(field_end);
+    }
+    return p == end;
+}
+
+static int stack_lifetime_note_arg(const char *func_name, const char *args_start, const char *args_end, char *expr, int *needs_address)
+{
+    const char *arg1_end = find_top_level_char(args_start, args_end, ',');
+    const char *first_end = arg1_end == NULL ? args_end : arg1_end;
+    const char *arg2_start = arg1_end == NULL ? NULL : arg1_end + 1;
+    const char *arg2_end = NULL;
+    char label[NAME_MAX_LEN];
+    char sizeof_label[NAME_MAX_LEN];
+    struct Type array_type;
+    int is_local = 0;
+    int is_bytes_call;
+
+    if (needs_address != NULL) {
+        *needs_address = 0;
+    }
+    if (arg2_start != NULL) {
+        arg2_end = find_top_level_char(arg2_start, args_end, ',');
+        if (arg2_end == NULL) {
+            arg2_end = args_end;
+        }
+    }
+    if (strncmp(func_name, "Ref_from_", 9) == 0) {
+        const char *p = skip_ws(args_start);
+
+        if (*p != '&') {
+            return 0;
+        }
+        if (!parse_local_stack_lvalue_arg(p + 1, first_end, label)) {
+            return 0;
+        }
+        if (strstr(label, "->") != NULL) {
+            return 0;
+        }
+        snprintf(expr, NAME_MAX_LEN, "%s", label);
+        if (needs_address != NULL) {
+            *needs_address = 1;
+        }
+        return 1;
+    }
+    is_bytes_call = strncmp(func_name, "Span_from_bytes_", 16) == 0 ||
+        strncmp(func_name, "Span_map_from_", 14) == 0 ||
+        strncmp(func_name, "FixedVec_from_bytes_", 20) == 0 ||
+        strncmp(func_name, "RingBuffer_from_bytes_", 22) == 0 ||
+        strcmp(func_name, "Bitmap_from_bytes") == 0;
+    if (!parse_array_expr_arg(args_start, first_end, label, &array_type, &is_local) || !is_local) {
+        if (!parse_local_stack_lvalue_arg(args_start, first_end, label)) {
+            return 0;
+        }
+        if (is_bytes_call && arg2_start != NULL &&
+            parse_sizeof_local_lvalue_arg(arg2_start, arg2_end, sizeof_label) &&
+            strcmp(label, sizeof_label) != 0) {
+            return 0;
+        }
+    }
+    if (strstr(label, "->") != NULL) {
+        return 0;
+    }
+    (void)array_type;
+    snprintf(expr, NAME_MAX_LEN, "%s", label);
+    return 1;
+}
+
+static struct Text *rewrite_stack_lifetime_from_calls(struct Text *in)
+{
+    const char *p = in->text;
+    struct Text *out = text_new();
+    int changed = 0;
+
+    while (*p != '\0') {
+        char name[NAME_MAX_LEN];
+        const char *name_end;
+        const char *open;
+        const char *close;
+        char note_expr[NAME_MAX_LEN];
+        int needs_address = 0;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            text_add_ch(out, *p++);
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    text_add_ch(out, *p++);
+                    text_add_ch(out, *p++);
+                    continue;
+                }
+                text_add_ch(out, *p);
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!is_ident_start((unsigned char)*p)) {
+            text_add_ch(out, *p++);
+            continue;
+        }
+        name_end = read_name(p, name);
+        open = skip_ws(name_end);
+        if (*open != '(' || !is_stack_lifetime_from_call(name)) {
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        close = matching_paren(open);
+        if (close == NULL) {
+            text_add_n(out, p, (size_t)(name_end - p));
+            p = name_end;
+            continue;
+        }
+        if (!stack_lifetime_note_arg(name, open + 1, close, note_expr, &needs_address)) {
+            text_add_n(out, p, (size_t)(close + 1 - p));
+            p = close + 1;
+            continue;
+        }
+        text_add(out, "({ cminus_stack_note_caller_range(");
+        if (needs_address) {
+            text_add_ch(out, '&');
+        }
+        text_add(out, note_expr);
+        text_add(out, ", sizeof(");
+        text_add(out, note_expr);
+        text_add(out, ")); ");
+        text_add_n(out, p, (size_t)(close + 1 - p));
+        text_add(out, "; })");
+        p = close + 1;
+        changed = 1;
+    }
+
+    if (!changed) {
+        text_free(out);
+        return in;
+    }
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
 }
 
 static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
@@ -6527,9 +6913,15 @@ static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
         name_end = read_name(p, name);
         open = skip_ws(name_end);
         is_from = strncmp(name, "Span_from_", 10) == 0 ||
-            strncmp(name, "FixedVec_from_", 14) == 0;
+            strncmp(name, "FixedVec_from_", 14) == 0 ||
+            strncmp(name, "RingBuffer_from_", 16) == 0 ||
+            strcmp(name, "Bitmap_from") == 0 ||
+            strcmp(name, "Bitmap_from_words") == 0;
         is_from_bytes = strncmp(name, "Span_from_bytes_", 16) == 0 ||
-            strncmp(name, "FixedVec_from_bytes_", 20) == 0;
+            strncmp(name, "Span_map_from_", 14) == 0 ||
+            strncmp(name, "FixedVec_from_bytes_", 20) == 0 ||
+            strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+            strcmp(name, "Bitmap_from_bytes") == 0;
         if (*open != '(' || (!is_from && !is_from_bytes)) {
             text_add_n(out, p, (size_t)(name_end - p));
             p = name_end;
@@ -6541,18 +6933,56 @@ static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
             p = name_end;
             continue;
         }
+        if (strncmp(name, "Span_map_from_", 14) == 0) {
+            const char *arg1_end = find_top_level_char(open + 1, close, ',');
+
+            if (arg1_end != NULL &&
+                find_top_level_char(arg1_end + 1, close, ',') == NULL &&
+                parse_array_expr_arg(open + 1, arg1_end, array_label, &array_type, NULL)) {
+                (void)array_type;
+                text_add_n(out, p, (size_t)(arg1_end - p));
+                text_add(out, ", sizeof(");
+                text_add(out, array_label);
+                text_add_ch(out, ')');
+                text_add_n(out, arg1_end, (size_t)(close + 1 - arg1_end));
+                p = close + 1;
+                changed = 1;
+                continue;
+            }
+        }
         if (find_top_level_char(open + 1, close, ',') == NULL &&
             parse_array_expr_arg(open + 1, close, array_label, &array_type, NULL)) {
             char tmp[64];
 
             text_add_n(out, p, (size_t)(close - p));
-            if (is_from_bytes) {
+            if (strcmp(name, "Bitmap_from") == 0) {
+                text_add(out, ", (int)(sizeof(");
+                text_add(out, array_label);
+                text_add(out, ") * 8)");
+            } else if (is_from_bytes) {
                 text_add(out, ", sizeof(");
                 text_add(out, array_label);
                 text_add_ch(out, ')');
-            } else {
+            } else if (array_type.array_len > 0) {
                 snprintf(tmp, sizeof(tmp), ", %d", array_type.array_len);
                 text_add(out, tmp);
+            } else if (array_type.size == 1) {
+                text_add(out, ", (int)sizeof(");
+                text_add(out, array_label);
+                text_add_ch(out, ')');
+            } else if (array_type.size == 2 || array_type.size == 4 || array_type.size == 8) {
+                int shift = array_type.size == 2 ? 1 : (array_type.size == 4 ? 2 : 3);
+                snprintf(tmp, sizeof(tmp), ", (int)(sizeof(");
+                text_add(out, tmp);
+                text_add(out, array_label);
+                snprintf(tmp, sizeof(tmp), ") >> %d)", shift);
+                text_add(out, tmp);
+            } else {
+                text_add(out, ", (int)(sizeof(");
+                text_add(out, array_label);
+                text_add(out, ") / sizeof((");
+                text_add(out, array_label);
+                text_add(out, ")[0]))");
             }
             text_add_ch(out, ')');
             p = close + 1;
@@ -6989,7 +7419,7 @@ static void check_no_heap_safe_expr(const char *stmt)
     }
     if (source_has_heap_new_token(stmt) || stmt_has_word_call_or_token(stmt, "clone") ||
         source_has_collection_new_syntax(stmt)) {
-        fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, or Register\n",
+        fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, RingBuffer, or Register\n",
                 mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
         exit(1);
     }
@@ -7023,7 +7453,7 @@ static void check_no_heap_safe_expr(const char *stmt)
              strcmp(name, "cminus_gc_calloc") == 0 ||
              strcmp(name, "cminus_gc_realloc") == 0 ||
              strcmp(name, "cminus_string_format") == 0)) {
-            fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, or Register\n",
+            fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, RingBuffer, or Register\n",
                     mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
             exit(1);
         }
@@ -7152,7 +7582,7 @@ static int expr_contains_raw_pointer_symbol(const char *start, const char *end)
             continue;
         }
         name_end = read_name(p, name);
-        sym = symbol_find(name);
+        sym = symbol_find_or_current_param(name);
         if (sym != NULL && sym->type.raw_ptr) {
             return 1;
         }
@@ -7248,9 +7678,15 @@ static void check_safe_reference_raw_inputs(const char *stmt)
                 check_raw_pointer_arg_error("Ref");
             }
         } else if (strncmp(name, "Span_from_", 10) == 0 ||
-                   strncmp(name, "Span_from_bytes_", 16) == 0) {
+                   strncmp(name, "Span_from_bytes_", 16) == 0 ||
+                   strncmp(name, "RingBuffer_from_", 16) == 0 ||
+                   strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+                   strcmp(name, "Bitmap_from") == 0 ||
+                   strcmp(name, "Bitmap_from_words") == 0 ||
+                   strcmp(name, "Bitmap_from_bytes") == 0) {
             if (expr_is_raw_pointer_input(open + 1, arg_end)) {
-                check_raw_pointer_arg_error("Span");
+                check_raw_pointer_arg_error(strncmp(name, "RingBuffer_", 11) == 0 ? "RingBuffer" :
+                                            (strncmp(name, "Bitmap_", 7) == 0 ? "Bitmap" : "Span"));
             }
         } else if (strncmp(name, "Optional_", 9) == 0 && strstr(name, "_ptr_") != NULL &&
                    strstr(name, "_Some") != NULL) {
@@ -7797,7 +8233,7 @@ static void register_function_param_symbols(const char *s)
                 if (decl_has_borrow(tmp)) {
                     decl.type.owned = 0;
                 }
-                symbol_add_to(&g_locals, decl.name, decl.type);
+                symbol_add_param_to(&g_locals, decl.name, decl.type);
             }
             free(tmp);
         }
@@ -7985,6 +8421,79 @@ static struct Text *strip_default_parameters(struct Text *in)
     out->ast = in->ast;
     text_free(in);
     return out;
+}
+
+static int function_params_trailing_default_start(struct FunctionParams *fn)
+{
+    int i;
+
+    if (fn == NULL || fn->count < 1 || fn->param[fn->count - 1].def[0] == '\0') {
+        return -1;
+    }
+    i = fn->count - 1;
+    while (i > 0 && fn->param[i - 1].def[0] != '\0') {
+        i--;
+    }
+    return i;
+}
+
+static void emit_macro_param_list(FILE *out, struct FunctionParams *fn, int count)
+{
+    int i;
+
+    for (i = 0; i < count; i++) {
+        if (i != 0) {
+            fputs(", ", out);
+        }
+        fputs(fn->param[i].name[0] != '\0' ? fn->param[i].name : "arg", out);
+    }
+}
+
+static void emit_generic_default_macro(FILE *out, const char *func_name, struct FunctionParams *fn)
+{
+    int i;
+    int n;
+    int start;
+    int argc;
+
+    start = function_params_trailing_default_start(fn);
+    if (start < 0) {
+        return;
+    }
+    n = fn->count;
+    fprintf(out, "#define __CMINUS_DEFAULT_SELECT_%s(", func_name);
+    for (i = 0; i < n; i++) {
+        fprintf(out, "_%d, ", i + 1);
+    }
+    fprintf(out, "NAME, ...) NAME\n");
+    for (argc = start; argc <= n; argc++) {
+        fprintf(out, "#define __CMINUS_DEFAULT_%s_%d(", func_name, argc);
+        emit_macro_param_list(out, fn, argc);
+        fprintf(out, ") %s(", func_name);
+        for (i = 0; i < n; i++) {
+            if (i != 0) {
+                fputs(", ", out);
+            }
+            if (i < argc) {
+                fputs(fn->param[i].name[0] != '\0' ? fn->param[i].name : "arg", out);
+            } else {
+                fputs(fn->param[i].def, out);
+            }
+        }
+        fputs(")\n", out);
+    }
+    fprintf(out, "#define %s(...) __CMINUS_DEFAULT_SELECT_%s(__VA_ARGS__", func_name, func_name);
+    for (argc = n; argc >= start; argc--) {
+        fprintf(out, ", __CMINUS_DEFAULT_%s_%d", func_name, argc);
+    }
+    fputs(")(__VA_ARGS__)\n", out);
+}
+
+static void emit_generic_default_undef(FILE *out, const char *func_name, struct FunctionParams *fn)
+{
+    if (function_params_trailing_default_start(fn) >= 0) {
+        fprintf(out, "#undef %s\n", func_name);
+    }
 }
 
 static int range_contains_text(const char *start, const char *end, const char *needle)
@@ -10015,6 +10524,104 @@ static int try_rewrite_critical_static_method(const char *s, const char **end, s
     return 1;
 }
 
+static int try_rewrite_bitmap_static_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *p = s;
+    const char *dot;
+    const char *method_start;
+    const char *method_end;
+    const char *open;
+    const char *close;
+    char method[NAME_MAX_LEN];
+
+    if (!starts_word(p, "Bitmap")) {
+        return 0;
+    }
+    dot = skip_ws(p + 6);
+    if (*dot != '.') {
+        return 0;
+    }
+    method_start = skip_ws(dot + 1);
+    if (!is_ident_start((unsigned char)*method_start)) {
+        return 0;
+    }
+    method_end = read_name(method_start, method);
+    open = skip_ws(method_end);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+    if (strcmp(method, "from") == 0) {
+        text_add(replacement, "Bitmap_from(");
+    } else if (strcmp(method, "from_words") == 0) {
+        text_add(replacement, "Bitmap_from_words(");
+    } else if (strcmp(method, "from_bytes") == 0) {
+        text_add(replacement, "Bitmap_from_bytes(");
+    } else {
+        return 0;
+    }
+    if (close > open + 1) {
+        text_add_n(replacement, open + 1, (size_t)(close - open - 1));
+    }
+    text_add_ch(replacement, ')');
+    *end = close + 1;
+    return 1;
+}
+
+static int try_rewrite_thread_static_method(const char *s, const char **end, struct Text *replacement)
+{
+    const char *dot;
+    const char *method_start;
+    const char *method_end;
+    const char *open;
+    const char *close;
+    const char *type_end;
+    char type[NAME_MAX_LEN];
+    char method[NAME_MAX_LEN];
+
+    if (!starts_word(s, "Thread") && !starts_word(s, "Mutex") && !starts_word(s, "Cond")) {
+        return 0;
+    }
+    type_end = read_name(s, type);
+    dot = skip_ws(type_end);
+    if (*dot != '.') {
+        return 0;
+    }
+    method_start = skip_ws(dot + 1);
+    if (!is_ident_start((unsigned char)*method_start)) {
+        return 0;
+    }
+    method_end = read_name(method_start, method);
+    open = skip_ws(method_end);
+    if (*open != '(') {
+        return 0;
+    }
+    close = matching_paren(open);
+    if (close == NULL) {
+        return 0;
+    }
+    if (strcmp(type, "Thread") == 0 && strcmp(method, "spawn") == 0) {
+        text_add(replacement, "Thread_spawn(");
+    } else if (strcmp(type, "Thread") == 0 && strcmp(method, "yield") == 0) {
+        text_add(replacement, "Thread_yield(");
+    } else if (strcmp(type, "Mutex") == 0 && strcmp(method, "init") == 0) {
+        text_add(replacement, "Mutex_init(");
+    } else if (strcmp(type, "Cond") == 0 && strcmp(method, "init") == 0) {
+        text_add(replacement, "Cond_init(");
+    } else {
+        return 0;
+    }
+    if (close > open + 1) {
+        text_add_n(replacement, open + 1, (size_t)(close - open - 1));
+    }
+    text_add_ch(replacement, ')');
+    *end = close + 1;
+    return 1;
+}
+
 static int try_rewrite_string_symbol_method(const char *s, const char **end, struct Text *replacement)
 {
     const char *name_end;
@@ -10169,6 +10776,58 @@ static int try_rewrite_string_expr_method(const char *s, const char **end, struc
     return 0;
 }
 
+static void append_auto_field_expr(struct Text *out, const char *start, const char *end)
+{
+    const char *p = start;
+    const char *name_end;
+    char name[NAME_MAX_LEN];
+    struct Symbol *sym;
+    struct Type current;
+
+    p = skip_ws(p);
+    if (!is_ident_start((unsigned char)*p)) {
+        text_add_n(out, start, (size_t)(end - start));
+        return;
+    }
+    name_end = read_name(p, name);
+    sym = symbol_find_or_current_param(name);
+    if (sym == NULL || sym->type.kind != TY_STRUCT) {
+        text_add_n(out, start, (size_t)(end - start));
+        return;
+    }
+    text_add_n(out, start, (size_t)(name_end - start));
+    current = sym->type;
+    p = skip_ws(name_end);
+    while (p < end && (*p == '.' || (p[0] == '-' && p[1] == '>'))) {
+        const char *field_start = skip_ws(*p == '.' ? p + 1 : p + 2);
+        const char *field_end;
+        char field[NAME_MAX_LEN];
+        struct Type field_type;
+
+        if (!is_ident_start((unsigned char)*field_start)) {
+            text_add_n(out, p, (size_t)(end - p));
+            return;
+        }
+        field_end = read_name(field_start, field);
+        if (current.kind != TY_STRUCT ||
+            !struct_field_type(current.tag, field, &field_type)) {
+            text_add_n(out, p, (size_t)(end - p));
+            return;
+        }
+        if (current.ptr > 0 || (p[0] == '-' && p[1] == '>')) {
+            text_add(out, "->");
+        } else {
+            text_add_ch(out, '.');
+        }
+        text_add_n(out, field_start, (size_t)(field_end - field_start));
+        current = field_type;
+        p = skip_ws(field_end);
+    }
+    if (p < end) {
+        text_add_n(out, p, (size_t)(end - p));
+    }
+}
+
 static int try_rewrite_struct_method(const char *s, const char **end, struct Text *replacement)
 {
     const char *p;
@@ -10252,15 +10911,15 @@ found_method:
     }
     text_add_ch(replacement, '(');
     if (recv_type.ptr > 0 || (!chained && *dot == '-')) {
-        text_add_n(replacement, s, (size_t)(receiver_end - s));
+        append_auto_field_expr(replacement, s, receiver_end);
     } else {
         text_add_ch(replacement, '&');
         if (chained) {
             text_add_ch(replacement, '(');
-            text_add_n(replacement, s, (size_t)(receiver_end - s));
+            append_auto_field_expr(replacement, s, receiver_end);
             text_add_ch(replacement, ')');
         } else {
-            text_add_n(replacement, s, (size_t)(receiver_end - s));
+            append_auto_field_expr(replacement, s, receiver_end);
         }
     }
     if (close > open + 1) {
@@ -10284,6 +10943,8 @@ static struct Text *rewrite_method_calls(struct Text *in)
 
         if (try_rewrite_string_method(p, &end, replacement) ||
             try_rewrite_critical_static_method(p, &end, replacement) ||
+            try_rewrite_bitmap_static_method(p, &end, replacement) ||
+            try_rewrite_thread_static_method(p, &end, replacement) ||
             try_rewrite_string_expr_method(p, &end, replacement) ||
             try_rewrite_string_symbol_method(p, &end, replacement) ||
             try_rewrite_struct_method(p, &end, replacement)) {
@@ -11532,6 +12193,10 @@ static struct Text *process_control_head(struct Text *head)
     } else if (starts_word(p, "do")) {
         kind = ND_DO;
     }
+    if (g_c_compat && g_unsafe_depth == 0) {
+        head->ast = ast_raw(kind, head->text);
+        return head;
+    }
     check_safe_pointer_deref(head->text);
     check_casts(head->text);
     check_safe_heap_calls(head->text);
@@ -11801,10 +12466,12 @@ static int function_signature_is_internal(const char *head)
         "Ref_",
         "Span_",
         "FixedVec_",
+        "RingBuffer_",
         "Register_",
         "Atomic_",
         "Volatile_",
         "StaticCell_",
+        "Bitmap_",
         "Critical_",
         "Iterator_",
         "Vec_",
@@ -11843,11 +12510,17 @@ static int type_is_nonowning_value_view(struct Type type)
          strncmp(type.tag, "Volatile_", 9) == 0 ||
          strcmp(type.tag, "StaticCell") == 0 ||
          strncmp(type.tag, "StaticCell_", 11) == 0 ||
+         strcmp(type.tag, "Bitmap") == 0 ||
          strcmp(type.tag, "Critical") == 0 ||
+         strcmp(type.tag, "Thread") == 0 ||
+         strcmp(type.tag, "Mutex") == 0 ||
+         strcmp(type.tag, "Cond") == 0 ||
          strcmp(type.tag, "Span") == 0 ||
          strncmp(type.tag, "Span_", 5) == 0 ||
          strcmp(type.tag, "FixedVec") == 0 ||
-         strncmp(type.tag, "FixedVec_", 9) == 0);
+         strncmp(type.tag, "FixedVec_", 9) == 0 ||
+         strcmp(type.tag, "RingBuffer") == 0 ||
+         strncmp(type.tag, "RingBuffer_", 11) == 0);
 }
 
 static int parse_cast_type_prefix(const char *s, const char *end, const char **after)
@@ -11988,10 +12661,12 @@ static int function_needs_stack_guard(const char *name)
         "Ref_",
         "Span_",
         "FixedVec_",
+        "RingBuffer_",
         "Register_",
         "Atomic_",
         "Volatile_",
         "StaticCell_",
+        "Bitmap_",
         "Critical_",
         "Vec_",
         "List_",
@@ -12405,6 +13080,20 @@ static int is_unsafe_head(const char *s)
         *skip_ws(p + 6) == '\0';
 }
 
+static int is_inline_c_head(const char *s)
+{
+    const char *p = skip_ws(s);
+    const char *q;
+
+    if (strncmp(p, "inline", 6) != 0 || is_ident((unsigned char)p[6])) {
+        return 0;
+    }
+    q = skip_ws(p + 6);
+    return q != p + 6 &&
+        strncmp(q, "c", 1) == 0 && !is_ident((unsigned char)q[1]) &&
+        *skip_ws(q + 1) == '\0';
+}
+
 void cminus_unsafe_push(void)
 {
     g_unsafe_depth++;
@@ -12417,9 +13106,25 @@ void cminus_unsafe_pop(void)
     }
 }
 
+static struct Text *normalize_raw_c_block_body(struct Text *body)
+{
+    struct Text *out = text_new();
+
+    if (body->len > 0 && body->text[0] != '\n') {
+        text_add_ch(out, '\n');
+    }
+    text_add(out, body->text);
+    if (out->len > 0 && out->text[out->len - 1] != '\n') {
+        text_add_ch(out, '\n');
+    }
+    body->ast = NULL;
+    text_free(body);
+    return out;
+}
+
 static void begin_stmt_block(struct Text *head)
 {
-    if (is_unsafe_head(head->text)) {
+    if (is_unsafe_head(head->text) || is_inline_c_head(head->text)) {
         g_unsafe_depth++;
     }
 }
@@ -12435,6 +13140,16 @@ static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct
             g_unsafe_depth--;
         }
         text_free(head);
+        return out;
+    }
+    if (is_inline_c_head(head->text)) {
+        out = normalize_raw_c_block_body(body);
+        if (g_unsafe_depth > 0) {
+            g_unsafe_depth--;
+        }
+        text_free(head);
+        text_free(lb);
+        text_free(rb);
         return out;
     }
     return text_join4(process_control_head(head), lb, body, rb);
@@ -12575,6 +13290,19 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all->tail_return = 0;
         all->ast = ast_raw(ND_RAW, all->text);
         return all;
+    }
+    if (g_c_compat && g_unsafe_depth == 0 && g_in_function) {
+        if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+            symbol_add(decl.name, decl.type);
+        }
+        all->tail_return = 0;
+        all->ast = ast_raw(eq >= 0 ? ND_ASSIGN : ND_EXPR_STMT, all->text);
+        all = rewrite_os_attributes(all);
+        all = rewrite_sizeof_types(all);
+        all = rewrite_compile_time_os_ops(all);
+        all = rewrite_linker_address_ops(all);
+        all = rewrite_alignment_calls(all);
+        return remove_percent(all);
     }
     all = try_rewrite_auto_payload_enum_decl(all);
     register_tags_in_text(all->text);
@@ -12749,6 +13477,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         all = remove_percent(strip_attributes(all));
         all = rewrite_method_calls(all);
         all = rewrite_inferred_array_from_calls(all);
+        all = rewrite_stack_lifetime_from_calls(all);
         check_safe_c_function_calls(all->text);
         check_no_heap_safe_expr(all->text);
         check_safe_reference_raw_inputs(all->text);
@@ -12990,6 +13719,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = rewrite_payload_enum_constructors(all);
     all = rewrite_method_calls(all);
     all = rewrite_inferred_array_from_calls(all);
+    all = rewrite_stack_lifetime_from_calls(all);
     check_safe_c_function_calls(all->text);
     check_no_heap_safe_expr(all->text);
     check_safe_reference_raw_inputs(all->text);
@@ -13039,11 +13769,41 @@ static int return_uses_owned(const char *s)
     return 0;
 }
 
+static char *extract_return_value_expr(const char *stmt)
+{
+    const char *p = skip_ws(stmt);
+    const char *expr_start;
+    const char *expr_end;
+
+    if (!starts_word(p, "return")) {
+        return NULL;
+    }
+    expr_start = skip_ws(p + 6);
+    expr_end = expr_start + strlen(expr_start);
+    while (expr_end > expr_start && isspace((unsigned char)expr_end[-1])) {
+        expr_end--;
+    }
+    if (expr_end > expr_start && expr_end[-1] == ';') {
+        expr_end--;
+    }
+    while (expr_end > expr_start && isspace((unsigned char)expr_end[-1])) {
+        expr_end--;
+    }
+    if (expr_end <= expr_start) {
+        return NULL;
+    }
+    return xstrndup(expr_start, (size_t)(expr_end - expr_start));
+}
+
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi)
 {
     struct Text *all = text_join3(ret, expr, semi);
     all->ast = ast_raw(ND_RETURN, all->text);
     if (g_current_generic_kind != 0 || g_current_payload_enum) {
+        all->tail_return = 1;
+        return all;
+    }
+    if (g_c_compat && g_unsafe_depth == 0) {
         all->tail_return = 1;
         return all;
     }
@@ -13097,6 +13857,7 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     }
     all = rewrite_method_calls(all);
     all = rewrite_inferred_array_from_calls(all);
+    all = rewrite_stack_lifetime_from_calls(all);
     check_safe_c_function_calls(all->text);
     check_safe_reference_raw_inputs(all->text);
     check_safe_raw_field_access(all->text);
@@ -13117,8 +13878,35 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
         struct Text *out = text_new();
         struct Text *indent = text_new();
+        char *return_expr = extract_return_value_expr(all->text);
         append_leading_newlines(all->text, out);
         append_indent_from(all->text, indent);
+        if (return_expr != NULL && g_current_function_stack_guard) {
+            char tmp[64];
+
+            snprintf(tmp, sizeof(tmp), "__cminus_return%d", g_right_value_id++);
+            text_add(out, indent->text);
+            text_add(out, "__typeof__((");
+            text_add(out, return_expr);
+            text_add(out, ")) ");
+            text_add(out, tmp);
+            text_add(out, " = (");
+            text_add(out, return_expr);
+            text_add(out, ");\n");
+            emit_frees(out, indent->text);
+            append_stack_leave(out, indent->text);
+            text_add(out, indent->text);
+            text_add(out, "return ");
+            text_add(out, tmp);
+            text_add(out, ";");
+            free(return_expr);
+            out->tail_return = 1;
+            out->ast = ast_raw(ND_RETURN, out->text);
+            text_free(indent);
+            text_free(all);
+            return out;
+        }
+        free(return_expr);
         emit_frees(out, indent->text);
         if (g_current_function_stack_guard) {
             append_stack_leave(out, indent->text);
@@ -13134,9 +13922,35 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     {
         struct Text *out = text_new();
         struct Text *indent = text_new();
+        char *return_expr = extract_return_value_expr(all->text);
 
         append_leading_newlines(all->text, out);
         append_indent_from(all->text, indent);
+        if (return_expr != NULL && g_current_function_stack_guard) {
+            char tmp[64];
+
+            snprintf(tmp, sizeof(tmp), "__cminus_return%d", g_right_value_id++);
+            text_add(out, indent->text);
+            text_add(out, "__typeof__((");
+            text_add(out, return_expr);
+            text_add(out, ")) ");
+            text_add(out, tmp);
+            text_add(out, " = (");
+            text_add(out, return_expr);
+            text_add(out, ");\n");
+            append_stack_leave(out, indent->text);
+            text_add(out, indent->text);
+            text_add(out, "return ");
+            text_add(out, tmp);
+            text_add(out, ";");
+            free(return_expr);
+            out->tail_return = 1;
+            out->ast = ast_raw(ND_RETURN, out->text);
+            text_free(indent);
+            text_free(all);
+            return out;
+        }
+        free(return_expr);
         if (g_current_function_stack_guard) {
             append_stack_leave(out, indent->text);
         }
@@ -13148,6 +13962,17 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
         text_free(all);
         return out;
     }
+}
+
+static struct Text *finish_c_compat_braced_decl(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb, struct Text *suffix, struct Text *semi)
+{
+    struct Text *out = text_join3(head, lb, body);
+
+    out = text_join(out, rb);
+    out = text_join(out, suffix);
+    out = text_join(out, semi);
+    out->ast = ast_raw(ND_EXPR_STMT, out->text);
+    return out;
 }
 
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb)
@@ -13162,6 +13987,16 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         register_unsafe_metadata(body->text);
         cminus_unsafe_pop();
         out = body;
+        text_free(head);
+        text_free(lb);
+        text_free(rb);
+        g_top_block_is_function = 0;
+        g_in_function = 0;
+        return out;
+    }
+    if (is_inline_c_head(head->text)) {
+        cminus_unsafe_pop();
+        out = normalize_raw_c_block_body(body);
         text_free(head);
         text_free(lb);
         text_free(rb);
@@ -13274,6 +14109,24 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         g_in_aggregate_struct = 0;
         g_current_struct_mmio = 0;
         g_current_struct_tag[0] = '\0';
+        return out;
+    }
+
+    if (g_c_compat && g_unsafe_depth == 0) {
+        out = text_join3(head, lb, body);
+        out = text_join(out, rb);
+        out->ast = ast_block(body_ast);
+        g_owned.count = 0;
+        g_finalized_locals.count = 0;
+        g_moved_locals.count = 0;
+        g_borrow_links.count = 0;
+        g_locals.count = 0;
+        g_function_returns_move = 0;
+        g_current_function_name[0] = '\0';
+        g_current_function_ret = type_unknown();
+        g_current_function_interrupt = 0;
+        g_current_function_naked = 0;
+        g_in_function = 0;
         return out;
     }
 
@@ -13399,8 +14252,16 @@ static void emit_generic_function_instances(FILE *out)
                                                                     tmpl->inst[j].arg,
                                                                     tmpl->name,
                                                                     tmpl->inst[j].concrete);
+            struct FunctionParams *fn = NULL;
+            if (head_function_name(concrete_head->text, func_name)) {
+                register_function_params(concrete_head->text);
+                fn = function_params_find(func_name);
+                emit_generic_default_undef(out, func_name, fn);
+            }
+            concrete_head = strip_default_parameters(concrete_head);
             concrete_head = remove_percent(strip_attributes(concrete_head));
             concrete_body = remove_percent(strip_attributes(concrete_body));
+            concrete_body = rewrite_parameter_calls(concrete_body);
             concrete_body = rewrite_payload_enum_constructors(concrete_body);
             fputs(concrete_head->text, out);
             fputs("{", out);
@@ -13421,6 +14282,35 @@ static void emit_generic_function_instances(FILE *out)
             fputs("}\n", out);
             text_free(concrete_head);
             text_free(concrete_body);
+        }
+    }
+}
+
+static void emit_generic_function_prototypes(FILE *out)
+{
+    int i;
+
+    for (i = 0; i < g_generic_funcs.count; i++) {
+        struct GenericTemplate *tmpl = &g_generic_funcs.tmpl[i];
+        int j;
+        for (j = 0; j < tmpl->inst_count; j++) {
+            char param[NAME_MAX_LEN];
+            char func_name[NAME_MAX_LEN];
+            const char *head = generic_template_body_start(tmpl->head, param);
+            struct Text *concrete_head = replace_param_and_generics(head,
+                                                                    tmpl->param,
+                                                                    tmpl->inst[j].arg,
+                                                                    tmpl->name,
+                                                                    tmpl->inst[j].concrete);
+            register_function_params(concrete_head->text);
+            if (head_function_name(concrete_head->text, func_name)) {
+                emit_generic_default_macro(out, func_name, function_params_find(func_name));
+            }
+            concrete_head = strip_default_parameters(concrete_head);
+            concrete_head = remove_percent(strip_attributes(concrete_head));
+            fputs(concrete_head->text, out);
+            fputs(";\n", out);
+            text_free(concrete_head);
         }
     }
 }
@@ -13463,6 +14353,8 @@ static void materialize_generic_instance(struct GenericTemplate *tmpl, int j, in
                                                             tmpl->name,
                                                             tmpl->inst[j].concrete);
 
+    register_function_params(concrete_head->text);
+    concrete_head = strip_default_parameters(concrete_head);
     concrete_head = remove_percent(strip_attributes(concrete_head));
     concrete_body = remove_percent(strip_attributes(concrete_body));
     if (is_func) {
@@ -13505,12 +14397,6 @@ static void close_generic_instances(void)
             }
         }
     }
-}
-
-static void emit_generic_instances(FILE *out)
-{
-    emit_generic_struct_instances(out);
-    emit_generic_function_instances(out);
 }
 
 static void emit_payload_enum_instances(FILE *out)
@@ -13758,20 +14644,23 @@ int main(int argc, char **argv)
 
     g_bare_metal = 0;
     g_no_heap = 0;
+    g_c_compat = 0;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-bare") == 0) {
             g_bare_metal = 1;
         } else if (strcmp(argv[i], "-no-heap") == 0) {
             g_no_heap = 1;
+        } else if (strcmp(argv[i], "-c-compat") == 0 || strcmp(argv[i], "--c-compat") == 0) {
+            g_c_compat = 1;
         } else if (input_path == NULL) {
             input_path = argv[i];
         } else {
-            fputs("usage: c- [-bare] [-no-heap] input.c- > output.c\n", stderr);
+            fputs("usage: c- [-bare] [-no-heap] [-c-compat] input.c- > output.c\n", stderr);
             return 2;
         }
     }
     if (input_path == NULL) {
-        fputs("usage: c- [-bare] [-no-heap] input.c- > output.c\n", stderr);
+        fputs("usage: c- [-bare] [-no-heap] [-c-compat] input.c- > output.c\n", stderr);
         return 2;
     }
 
@@ -13798,6 +14687,8 @@ int main(int argc, char **argv)
     g_need_stdlib_h = 0;
     g_need_stdio_h = 0;
     g_need_execinfo_h = 0;
+    g_need_pthread_h = 0;
+    g_need_sched_h = 0;
     {
         const char *emit_uniq = getenv("C_MINUS_EMIT_UNIQ");
         g_emit_uniq = emit_uniq == NULL || strcmp(emit_uniq, "0") != 0;
@@ -13853,6 +14744,12 @@ int main(int argc, char **argv)
             if (g_need_execinfo_h) {
                 fputs("#include <execinfo.h>\n", stdout);
             }
+            if (g_need_pthread_h) {
+                fputs("#include <pthread.h>\n", stdout);
+            }
+            if (g_need_sched_h) {
+                fputs("#include <sched.h>\n", stdout);
+            }
         }
         close_generic_instances();
         {
@@ -13864,8 +14761,10 @@ int main(int argc, char **argv)
             }
         }
         emit_payload_enum_instances(stdout);
-        emit_generic_instances(stdout);
-        fputs(p, stdout);
+        emit_generic_struct_instances(stdout);
+        emit_generic_function_prototypes(stdout);
+        fputs_with_trailing_newline(p, stdout);
+        emit_generic_function_instances(stdout);
     }
     text_free(g_output);
     fclose(yyin);

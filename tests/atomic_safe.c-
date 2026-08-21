@@ -12,11 +12,15 @@ int main(void)
     if (old != 3u || counter.load() != 0x13u) {
         return 2;
     }
+    old = counter.fetch_xor(0x03u);
+    if (old != 0x13u || counter.load_order(AtomicSeqCst) != 0x10u) {
+        return 5;
+    }
     old = counter.exchange(7u);
-    if (old != 0x13u || counter.load() != 7u) {
+    if (old != 0x10u || counter.load() != 7u) {
         return 3;
     }
-    swapped = counter.compare_exchange(7u, 9u);
+    swapped = counter.compare_exchange_order(7u, 9u, AtomicAcqRel, AtomicAcquire);
     if (!swapped || counter.load() != 9u) {
         return 4;
     }

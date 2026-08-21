@@ -1,0 +1,32 @@
+struct PageBits {
+    unsigned long words[1];
+};
+
+int main(void)
+{
+    stack PageBits pages;
+    Bitmap map;
+    struct __CMinusIndex<int> slot;
+
+    map = Bitmap.from(pages.words);
+    if (map.len() != sizeof(pages.words) * 8 || map.word_len() != 1) {
+        return 1;
+    }
+    map.set(3);
+    if (!map.test(3)) {
+        return 2;
+    }
+    map.clear_bit(3);
+    if (map.test(3)) {
+        return 3;
+    }
+    slot = map.alloc_opt();
+    if (slot.is_None() || slot.get_Some() != 0 || !map.test(0)) {
+        return 4;
+    }
+    map.free_bit(0);
+    if (map.test(0)) {
+        return 5;
+    }
+    return 0;
+}

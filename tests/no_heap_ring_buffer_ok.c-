@@ -1,0 +1,19 @@
+struct QueueStorage {
+    int values[3];
+};
+
+int main(void)
+{
+    stack QueueStorage storage;
+    RingBuffer<int> q;
+    struct __CMinusIndex<int> item;
+
+    q = RingBuffer<int>.from(storage.values);
+    q.push(10);
+    q.push(20);
+    item = q.pop_opt();
+    if (item.is_None() || item.get_Some() != 10 || q.len() != 1) {
+        return 1;
+    }
+    return 0;
+}

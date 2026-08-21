@@ -1,0 +1,19 @@
+inline c {
+#define INLINE_C_SCALE 4
+typedef int inline_c_value;
+
+static inline int inline_c_mul(int value)
+{
+    return value * INLINE_C_SCALE;
+}
+}
+
+int main(void)
+{
+    int local = 3;
+
+    inline c {
+    local = inline_c_mul(local);
+    }
+    return local == 12 ? 0 : 1;
+}

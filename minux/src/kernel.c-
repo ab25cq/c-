@@ -13,6 +13,9 @@
 #define MINUX_NAME_LEN 12
 #define MINUX_FILE_SIZE 32
 #define MINUX_USER_STACK_WORDS 32
+#define MINUX_READY_QUEUE (MINUX_MAX_PROC * 2)
+#define MINUX_PROC_SLOT_WORDS 1
+#define MINUX_FS_SLOT_WORDS 1
 #define PROC_EMPTY 0
 #define PROC_RUNNABLE 1
 #define PROC_ZOMBIE 2
@@ -59,7 +62,12 @@ struct Kernel {
     int proc_r2[MINUX_MAX_PROC];
     int proc_r3[MINUX_MAX_PROC];
     int user_stacks[MINUX_MAX_PROC * MINUX_USER_STACK_WORDS];
-    int fs_used[MINUX_MAX_FILES];
+    unsigned long proc_slot_words[MINUX_PROC_SLOT_WORDS];
+    int ready_storage[MINUX_READY_QUEUE];
+    Bitmap proc_slots;
+    RingBuffer<int> ready;
+    unsigned long fs_slot_words[MINUX_FS_SLOT_WORDS];
+    Bitmap fs_slots;
     int fs_size[MINUX_MAX_FILES];
     int fs_name[MINUX_MAX_FILES * MINUX_NAME_LEN];
     int fs_data[MINUX_MAX_FILES * MINUX_FILE_SIZE];
@@ -212,42 +220,17 @@ void text_program_app(Span<int> out)
     out.set(1, 0);
 }
 
-int span_cstr_len(Span<int> text)
-{
-    int i = 0;
-
-    while (i < text.len()) {
-        if (text.get(i) == 0) {
-            return i;
-        }
-        i++;
-    }
-    return text.len();
-}
-
 void fs_init(Kernel kernel)
 {
-    Span<int> used = Span<int>.from(kernel->fs_used, MINUX_MAX_FILES);
-    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES);
-    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN);
-    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE);
-    int i = 0;
+    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES, true);
+    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN, true);
+    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE, true);
 
-    while (i < used.len()) {
-        used.set(i, 0);
-        sizes.set(i, 0);
-        i++;
-    }
-    i = 0;
-    while (i < names.len()) {
-        names.set(i, 0);
-        i++;
-    }
-    i = 0;
-    while (i < data.len()) {
-        data.set(i, 0);
-        i++;
-    }
+    kernel.fs_slots = Bitmap.from(kernel.fs_slot_words, MINUX_MAX_FILES, true);
+    kernel.fs_slots.clear_all();
+    sizes.fill(0);
+    names.fill(0);
+    data.fill(0);
 }
 
 int fs_name_pos(int file_index, int offset)
@@ -262,32 +245,18 @@ int fs_data_pos(int file_index, int offset)
 
 int fs_name_equals(Kernel kernel, int file_index, Span<int> path)
 {
-    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN);
-    int i = 0;
-    int left;
-    int right;
+    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN, true);
+    Span<int> name = names.slice(fs_name_pos(file_index, 0), MINUX_NAME_LEN);
 
-    while (i < MINUX_NAME_LEN && i < path.len()) {
-        left = names.get(fs_name_pos(file_index, i));
-        right = path.get(i);
-        if (left != right) {
-            return 0;
-        }
-        if (right == 0) {
-            return 1;
-        }
-        i++;
-    }
-    return 0;
+    return name.cstr_eq(path);
 }
 
 int fs_find(Kernel kernel, Span<int> path)
 {
-    Span<int> used = Span<int>.from(kernel->fs_used, MINUX_MAX_FILES);
     int i = 0;
 
     while (i < MINUX_MAX_FILES) {
-        if (used.get(i) && fs_name_equals(kernel, i, path)) {
+        if (kernel.fs_slots.test(i) && fs_name_equals(kernel, i, path)) {
             return i;
         }
         i++;
@@ -297,26 +266,20 @@ int fs_find(Kernel kernel, Span<int> path)
 
 int fs_alloc(Kernel kernel)
 {
-    Span<int> used = Span<int>.from(kernel->fs_used, MINUX_MAX_FILES);
-    int i = 0;
+    __CMinusIndex<int> free_slot = kernel.fs_slots.alloc_opt();
 
-    while (i < MINUX_MAX_FILES) {
-        if (!used.get(i)) {
-            used.set(i, 1);
-            return i;
-        }
-        i++;
+    if (free_slot.is_None()) {
+        return -1;
     }
-    return -1;
+    return free_slot.get_Some();
 }
 
 int fs_create(Kernel kernel, Span<int> path)
 {
-    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN);
-    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES);
+    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN, true);
+    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES, true);
+    Span<int> name;
     int index = fs_find(kernel, path);
-    int i;
-    int ch;
 
     if (index >= 0) {
         return index;
@@ -325,26 +288,18 @@ int fs_create(Kernel kernel, Span<int> path)
     if (index < 0) {
         return -1;
     }
-    i = 0;
-    while (i < MINUX_NAME_LEN && i < path.len()) {
-        ch = path.get(i);
-        names.set(fs_name_pos(index, i), ch);
-        if (ch == 0) {
-            break;
-        }
-        i++;
-    }
+    name = names.slice(fs_name_pos(index, 0), MINUX_NAME_LEN);
+    name.copy_cstr_from(path);
     sizes.set(index, 0);
     return index;
 }
 
 int fs_write(Kernel kernel, int file_index, Span<int> text)
 {
-    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES);
-    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE);
-    int len = span_cstr_len(text);
-    int i = 0;
-    int ch;
+    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES, true);
+    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE, true);
+    Span<int> file_data;
+    int len = text.cstr_len();
 
     if (file_index < 0 || file_index >= MINUX_MAX_FILES) {
         return -1;
@@ -352,23 +307,19 @@ int fs_write(Kernel kernel, int file_index, Span<int> text)
     if (len >= MINUX_FILE_SIZE) {
         len = MINUX_FILE_SIZE - 1;
     }
-    while (i < len) {
-        ch = text.get(i);
-        data.set(fs_data_pos(file_index, i), ch);
-        i++;
-    }
-    data.set(fs_data_pos(file_index, len), 0);
+    file_data = data.slice(fs_data_pos(file_index, 0), MINUX_FILE_SIZE);
+    file_data.copy_from_count(text, len);
+    file_data.set(len, 0);
     sizes.set(file_index, len);
     return len;
 }
 
 int fs_read(Kernel kernel, int file_index, Span<int> out)
 {
-    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES);
-    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE);
+    Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES, true);
+    Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE, true);
+    Span<int> file_data;
     int len;
-    int i = 0;
-    int ch;
 
     if (file_index < 0 || file_index >= MINUX_MAX_FILES) {
         return -1;
@@ -377,25 +328,21 @@ int fs_read(Kernel kernel, int file_index, Span<int> out)
     if (len >= out.len()) {
         len = out.len() - 1;
     }
-    while (i < len) {
-        ch = data.get(fs_data_pos(file_index, i));
-        out.set(i, ch);
-        i++;
-    }
+    file_data = data.slice(fs_data_pos(file_index, 0), MINUX_FILE_SIZE);
+    out.copy_from_count(file_data, len);
     out.set(len, 0);
     return len;
 }
 
 void fs_list(Kernel kernel)
 {
-    Span<int> used = Span<int>.from(kernel->fs_used, MINUX_MAX_FILES);
-    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN);
+    Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN, true);
     int i = 0;
     int j;
     int ch;
 
     while (i < MINUX_MAX_FILES) {
-        if (used.get(i)) {
+        if (kernel.fs_slots.test(i)) {
             j = 0;
             while (j < MINUX_NAME_LEN) {
                 ch = names.get(fs_name_pos(i, j));
@@ -503,7 +450,7 @@ void kernel_require_kernel(Kernel kernel)
 
 void user_hardware_syscall(Kernel kernel, int number, int arg0, int arg1, int arg2)
 {
-    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC);
+    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC, true);
     if (kernel.cpu_mode != MODE_USER) {
         cminus_panic("hardware syscall outside user mode", __FILE__, __LINE__);
     }
@@ -514,13 +461,13 @@ void user_hardware_syscall(Kernel kernel, int number, int arg0, int arg1, int ar
 
 void kernel_save_user_context(Kernel kernel, int index)
 {
-    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC);
-    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC);
-    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC);
-    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC);
-    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC);
-    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC);
-    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC);
+    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC, true);
+    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC, true);
+    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC, true);
+    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC, true);
+    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC, true);
+    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC, true);
+    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC, true);
 
     user_pcs.set(index, kernel.svc_return_pc);
     user_lrs.set(index, kernel.svc_return_pc);
@@ -533,8 +480,8 @@ void kernel_save_user_context(Kernel kernel, int index)
 
 void kernel_check_saved_user_frame(Kernel kernel, int index)
 {
-    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC);
-    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC);
+    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC, true);
+    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC, true);
 
     if (user_pcs.get(index) == 0) {
         cminus_panic("missing saved user pc", __FILE__, __LINE__);
@@ -618,22 +565,26 @@ void timer_init(Kernel kernel)
 
 void kernel_init(Kernel kernel)
 {
-    Span<int> pids = Span<int>.from(kernel.proc_pid, MINUX_MAX_PROC);
-    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
-    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC);
-    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC);
-    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC);
-    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC);
-    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC);
-    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC);
-    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC);
-    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC);
-    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC);
-    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC);
-    Span<int> stacks = Span<int>.from(kernel.user_stacks, MINUX_MAX_PROC * MINUX_USER_STACK_WORDS);
+    Span<int> pids = Span<int>.from(kernel.proc_pid, MINUX_MAX_PROC, true);
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
+    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC, true);
+    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC, true);
+    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC, true);
+    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC, true);
+    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC, true);
+    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC, true);
+    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC, true);
+    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC, true);
+    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC, true);
+    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC, true);
+    Span<int> stacks = Span<int>.from(kernel.user_stacks, MINUX_MAX_PROC * MINUX_USER_STACK_WORDS, true);
+    Span<int> ready_storage = Span<int>.from(kernel.ready_storage, MINUX_READY_QUEUE, true);
     int i = 0;
 
     console_init(kernel);
+    kernel.proc_slots = Bitmap.from(kernel.proc_slot_words, MINUX_MAX_PROC, true);
+    kernel.proc_slots.clear_all();
+    kernel.ready = RingBuffer<int>.from(kernel.ready_storage, MINUX_READY_QUEUE, true);
     while (i < MINUX_MAX_PROC) {
         pids.set(i, 0);
         states.set(i, PROC_EMPTY);
@@ -654,6 +605,12 @@ void kernel_init(Kernel kernel)
         stacks.set(i, 0);
         i++;
     }
+    i = 0;
+    while (i < ready_storage.len()) {
+        ready_storage.set(i, 0);
+        i++;
+    }
+    kernel.ready.clear();
     kernel.current_proc = 0;
     kernel.next_pid = 1;
     kernel.ticks = 0;
@@ -673,43 +630,43 @@ void kernel_init(Kernel kernel)
 
 void kernel_spawn(Kernel kernel, int entry)
 {
-    Span<int> pids = Span<int>.from(kernel.proc_pid, MINUX_MAX_PROC);
-    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
-    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC);
-    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC);
-    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC);
-    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC);
-    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC);
-    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC);
-    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC);
-    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC);
-    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC);
-    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC);
-    int i = 0;
+    Span<int> pids = Span<int>.from(kernel.proc_pid, MINUX_MAX_PROC, true);
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
+    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC, true);
+    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC, true);
+    Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC, true);
+    Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC, true);
+    Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC, true);
+    Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC, true);
+    Span<int> r0s = Span<int>.from(kernel.proc_r0, MINUX_MAX_PROC, true);
+    Span<int> r1s = Span<int>.from(kernel.proc_r1, MINUX_MAX_PROC, true);
+    Span<int> r2s = Span<int>.from(kernel.proc_r2, MINUX_MAX_PROC, true);
+    Span<int> r3s = Span<int>.from(kernel.proc_r3, MINUX_MAX_PROC, true);
+    __CMinusIndex<int> free_slot = kernel.proc_slots.alloc_opt();
+    int i;
     int pid;
 
-    while (i < MINUX_MAX_PROC) {
-        if (states.get(i) == PROC_EMPTY) {
-            pid = kernel.next_pid;
-            kernel.next_pid++;
-            pids.set(i, pid);
-            states.set(i, PROC_RUNNABLE);
-            entries.set(i, entry);
-            pcs.set(i, 0);
-            user_pcs.set(i, 0);
-            unsafe {
-                user_sps.set(i, (int)&kernel->user_stacks[(i + 1) * MINUX_USER_STACK_WORDS]);
-            }
-            user_lrs.set(i, 0);
-            user_cpsrs.set(i, ARM_MODE_USER);
-            r0s.set(i, 0);
-            r1s.set(i, 0);
-            r2s.set(i, 0);
-            r3s.set(i, 0);
-            return;
-        }
-        i++;
+    if (free_slot.is_None()) {
+        return;
     }
+    i = free_slot.get_Some();
+    pid = kernel.next_pid;
+    kernel.next_pid++;
+    pids.set(i, pid);
+    states.set(i, PROC_RUNNABLE);
+    entries.set(i, entry);
+    pcs.set(i, 0);
+    user_pcs.set(i, 0);
+    unsafe {
+        user_sps.set(i, (int)&kernel->user_stacks[(i + 1) * MINUX_USER_STACK_WORDS]);
+    }
+    user_lrs.set(i, 0);
+    user_cpsrs.set(i, ARM_MODE_USER);
+    r0s.set(i, 0);
+    r1s.set(i, 0);
+    r2s.set(i, 0);
+    r3s.set(i, 0);
+    kernel.ready.push(i);
     return;
 }
 
@@ -781,10 +738,11 @@ void kernel_sys_putchar(Kernel kernel, int ch)
 
 void kernel_sys_exit(Kernel kernel, int proc_index)
 {
-    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
 
     kernel_require_kernel(kernel);
     states.set(proc_index, PROC_ZOMBIE);
+    kernel.proc_slots.free_bit(proc_index);
 }
 
 void kernel_handle_user_trap(Kernel kernel, int index)
@@ -809,8 +767,8 @@ void kernel_handle_user_trap(Kernel kernel, int index)
 
 void kernel_user_step(Kernel kernel, int index)
 {
-    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC);
-    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC);
+    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC, true);
+    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC, true);
     int entry = entries.get(index);
     int pc = pcs.get(index);
     int ch = proc_char(entry, pc);
@@ -838,7 +796,7 @@ void kernel_user_step(Kernel kernel, int index)
 
 void kernel_run_shell_proc(Kernel kernel, int index)
 {
-    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC);
+    Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC, true);
     int pc = pcs.get(index);
     int ch = proc_char(2, pc);
 
@@ -855,7 +813,7 @@ void kernel_run_shell_proc(Kernel kernel, int index)
 
 void kernel_run_proc(Kernel kernel, int index)
 {
-    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC);
+    Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC, true);
     int entry = entries.get(index);
 
     kernel.current_proc = index;
@@ -868,7 +826,7 @@ void kernel_run_proc(Kernel kernel, int index)
 
 int kernel_has_runnable(Kernel kernel)
 {
-    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
     int i = 0;
 
     while (i < MINUX_MAX_PROC) {
@@ -882,22 +840,27 @@ int kernel_has_runnable(Kernel kernel)
 
 void kernel_schedule(Kernel kernel)
 {
-    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC);
-    int i;
+    Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
+    __CMinusIndex<int> queued;
+    int attempts;
     int next;
 
-    i = 0;
-    while (i < MINUX_MAX_PROC) {
-        next = kernel.current_proc + 1;
-        if (next >= MINUX_MAX_PROC) {
-            next = 0;
+    attempts = 0;
+    while (attempts < MINUX_MAX_PROC) {
+        queued = kernel.ready.pop_opt();
+        if (queued.is_None()) {
+            return;
         }
+        next = queued.get_Some();
         kernel.current_proc = next;
         if (states.get(next) == PROC_RUNNABLE) {
             kernel_run_proc(kernel, next);
+            if (states.get(next) == PROC_RUNNABLE) {
+                kernel.ready.push(next);
+            }
             return;
         }
-        i++;
+        attempts++;
     }
 }
 

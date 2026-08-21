@@ -1,0 +1,13 @@
+struct PageBits {
+    unsigned long words[1];
+};
+
+int main(void)
+{
+    stack PageBits pages;
+    Bitmap map;
+
+    map = Bitmap.from_words(pages.words);
+    map.set(1);
+    return map.test(1) ? 0 : 1;
+}

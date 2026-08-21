@@ -1,0 +1,62 @@
+#define OWNER_CAP (4 + 1)
+
+struct QueueStorage {
+    unsigned char bytes[4];
+};
+
+struct QueueOwner {
+    unsigned char bytes[OWNER_CAP];
+};
+
+int owner_capacity(QueueOwner owner)
+{
+    RingBuffer<unsigned char> q = RingBuffer<unsigned char>.from(owner.bytes);
+
+    return q.capacity();
+}
+
+int main(void)
+{
+    stack QueueStorage storage;
+    stack QueueOwner owner;
+    unsigned char drained_storage[3];
+    RingBuffer<unsigned char> q;
+    Span<unsigned char> drained;
+    struct __CMinusIndex<unsigned char> item;
+
+    if (owner_capacity(&owner) != 5) {
+        return 10;
+    }
+
+    q = RingBuffer<unsigned char>.from(storage.bytes);
+    if (q.capacity() != 4 || !q.is_empty()) {
+        return 1;
+    }
+
+    q.push(1);
+    q.push(2);
+    q.push(3);
+    item = q.pop_opt();
+    if (item.is_None() || item.get_Some() != 1) {
+        return 2;
+    }
+    q.push(4);
+    q.push(5);
+    if (!q.is_full() || q.len() != 4) {
+        return 3;
+    }
+    item = q.peek_opt();
+    if (item.is_None() || item.get_Some() != 2) {
+        return 4;
+    }
+
+    drained = q.drain_to_span(drained_storage, 3);
+    if (drained.len() != 3 || drained[0] != 2 || drained[1] != 3 || drained[2] != 4) {
+        return 5;
+    }
+    item = q.pop_opt();
+    if (item.is_None() || item.get_Some() != 5 || !q.is_empty()) {
+        return 6;
+    }
+    return 0;
+}

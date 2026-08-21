@@ -53,6 +53,7 @@ struct Manifest {
     char src[PATH_MAX_LEN];
     char out[PATH_MAX_LEN];
     char compiler[VALUE_MAX_LEN];
+    char std[VALUE_MAX_LEN];
     char cflags[VALUE_MAX_LEN];
     char ldflags[VALUE_MAX_LEN];
     char run[VALUE_MAX_LEN];
@@ -61,6 +62,8 @@ struct Manifest {
     int no_heap;
     int strip;
     int strip_sections;
+    int threads;
+    int c_compat;
 };
 
 struct SourceList {
@@ -217,11 +220,42 @@ static void collect_sources_dir(struct SourceList *sources, const char *dir)
     closedir(dp);
 }
 
+static void collect_c_sources_dir(struct SourceList *sources, const char *dir)
+{
+    DIR *dp;
+    struct dirent *ent;
+
+    dp = opendir(dir);
+    if (dp == NULL) {
+        return;
+    }
+    while ((ent = readdir(dp)) != NULL) {
+        char path[PATH_MAX_LEN];
+
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+        if (dir_exists(path)) {
+            collect_c_sources_dir(sources, path);
+        } else if (has_suffix(path, ".c")) {
+            source_list_add(sources, path);
+        }
+    }
+    closedir(dp);
+}
+
 static void collect_sources(struct SourceList *sources, const char *main_src)
 {
     memset(sources, 0, sizeof(*sources));
     source_list_add(sources, main_src);
     collect_sources_dir(sources, "src");
+}
+
+static void collect_c_sources(struct SourceList *sources)
+{
+    memset(sources, 0, sizeof(*sources));
+    collect_c_sources_dir(sources, "src");
 }
 
 static void generated_c_path(char *out, size_t out_size, const char *src, const struct Manifest *m)
@@ -257,6 +291,22 @@ static void append_generated_c_paths(char *cmd, size_t cmd_size, struct SourceLi
 
         generated_c_path(c_path, sizeof(c_path), sources->path[i], m);
         shell_quote(q_c, sizeof(q_c), c_path);
+        if (strlen(cmd) + strlen(q_c) + 2 >= cmd_size) {
+            die("cpm: command too long");
+        }
+        strcat(cmd, " ");
+        strcat(cmd, q_c);
+    }
+}
+
+static void append_raw_c_paths(char *cmd, size_t cmd_size, struct SourceList *sources)
+{
+    int i;
+
+    for (i = 0; i < sources->count; i++) {
+        char q_c[PATH_MAX_LEN * 2];
+
+        shell_quote(q_c, sizeof(q_c), sources->path[i]);
         if (strlen(cmd) + strlen(q_c) + 2 >= cmd_size) {
             die("cpm: command too long");
         }
@@ -564,6 +614,7 @@ static void manifest_defaults(struct Manifest *m)
     strcpy(m->version, "0.4.0");
     strcpy(m->src, "src/main.c-");
     strcpy(m->compiler, "cc");
+    m->std[0] = '\0';
     strcpy(m->cflags, "-std=gnu99 -Wall -Wextra");
     m->ldflags[0] = '\0';
     m->bare_runtime = 1;
@@ -621,6 +672,8 @@ static void read_manifest(struct Manifest *m)
                 unquote_value(m->out, sizeof(m->out), value);
             } else if (strcmp(section, "build") == 0 && strcmp(key, "compiler") == 0) {
                 unquote_value(m->compiler, sizeof(m->compiler), value);
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "std") == 0) {
+                unquote_value(m->std, sizeof(m->std), value);
             } else if (strcmp(section, "build") == 0 && strcmp(key, "cflags") == 0) {
                 unquote_value(m->cflags, sizeof(m->cflags), value);
             } else if (strcmp(section, "build") == 0 && strcmp(key, "ldflags") == 0) {
@@ -647,6 +700,14 @@ static void read_manifest(struct Manifest *m)
                 char unquoted[VALUE_MAX_LEN];
                 unquote_value(unquoted, sizeof(unquoted), value);
                 m->strip_sections = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "threads") == 0) {
+                char unquoted[VALUE_MAX_LEN];
+                unquote_value(unquoted, sizeof(unquoted), value);
+                m->threads = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
+            } else if (strcmp(section, "build") == 0 && strcmp(key, "c_compat") == 0) {
+                char unquoted[VALUE_MAX_LEN];
+                unquote_value(unquoted, sizeof(unquoted), value);
+                m->c_compat = strcmp(unquoted, "true") == 0 || strcmp(unquoted, "1") == 0;
             }
         }
     }
@@ -667,8 +728,10 @@ static void write_manifest(const char *name)
              "[build]\n"
              "src = \"src/main.c-\"\n"
              "compiler = \"cc\"\n"
+             "std = \"\"\n"
              "cflags = \"-std=gnu99 -Wall -Wextra\"\n"
-             "ldflags = \"\"\n",
+             "ldflags = \"\"\n"
+             "threads = false\n",
              name);
     write_file("C-.toml", text);
 }
@@ -1232,6 +1295,7 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
     char *slash;
     const char *translator = getenv("CPM_C_MINUS");
     struct SourceList sources;
+    struct SourceList c_sources;
     int i;
 
     if (translator == NULL || translator[0] == '\0') {
@@ -1240,6 +1304,7 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
     read_manifest(&m);
     mkdir_p("target/debug");
     collect_sources(&sources, m.src);
+    collect_c_sources(&c_sources);
     generate_common_header(&sources);
 
     shell_quote(q_translator, sizeof(q_translator), translator);
@@ -1256,8 +1321,9 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
         snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", c_path);
         shell_quote(q_src, sizeof(q_src), sources.path[i]);
         shell_quote(q_c, sizeof(q_c), tmp_path);
-        snprintf(cmd, sizeof(cmd), "C_MINUS_EMIT_UNIQ=%d %s%s%s %s > %s",
-                 emit_uniq, q_translator, m.bare ? " -bare" : "", m.no_heap ? " -no-heap" : "", q_src, q_c);
+        snprintf(cmd, sizeof(cmd), "C_MINUS_EMIT_UNIQ=%d %s%s%s%s %s > %s",
+                 emit_uniq, q_translator, m.bare ? " -bare" : "", m.no_heap ? " -no-heap" : "",
+                 m.c_compat ? " -c-compat" : "", q_src, q_c);
         if (run_cmd(cmd) != 0) {
             return 1;
         }
@@ -1283,12 +1349,18 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
      */
     if (m.bare && m.bare_runtime) {
         const char *opt = optimize ? CPM_SIZE_OPT_FLAGS : "";
+        char std_flag[VALUE_MAX_LEN + 8];
+
+        std_flag[0] = '\0';
+        if (m.std[0] != '\0') {
+            snprintf(std_flag, sizeof(std_flag), "-std=%s", m.std);
+        }
         write_file("target/debug/c-bare-runtime.c",
                    "#define CMINUS_BARE_IMPL\n#include <c-bare.h>\n");
         snprintf(cmd, sizeof(cmd),
-                 "%s %s %s %s -Ilib -Itarget/debug -c target/debug/c-bare-runtime.c "
+                 "%s %s %s %s %s -Ilib -Itarget/debug -c target/debug/c-bare-runtime.c "
                  "-o target/debug/c-bare-runtime.o",
-                 m.compiler, m.cflags, opt, CPM_BARE_RUNTIME_FLAGS);
+                 m.compiler, m.cflags, std_flag, opt, CPM_BARE_RUNTIME_FLAGS);
         if (run_cmd(cmd) != 0) {
             return 1;
         }
@@ -1305,10 +1377,17 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
         const char *opt = optimize ? CPM_SIZE_OPT_FLAGS : "";
         const char *extra = (extra_cflags != NULL) ? extra_cflags : "";
         const char *bare = m.bare ? (m.bare_runtime ? (strstr(m.compiler, "none-eabi") != NULL ? CPM_BARE_CROSS_PROGRAM_FLAGS : CPM_BARE_PROGRAM_FLAGS) : CPM_BARE_NO_RUNTIME_PROGRAM_FLAGS) : "";
-        snprintf(cmd, sizeof(cmd), "%s %s %s %s %s %s -Itarget/debug",
-                 m.compiler, m.cflags, extra, opt, bare, CPM_GC_SECTIONS_FLAGS);
+        char std_flag[VALUE_MAX_LEN + 8];
+
+        std_flag[0] = '\0';
+        if (m.std[0] != '\0') {
+            snprintf(std_flag, sizeof(std_flag), "-std=%s", m.std);
+        }
+        snprintf(cmd, sizeof(cmd), "%s %s %s %s %s %s %s %s -Itarget/debug -Isrc",
+                 m.compiler, m.cflags, std_flag, extra, m.threads && !m.bare ? "-pthread" : "", opt, bare, CPM_GC_SECTIONS_FLAGS);
     }
     append_generated_c_paths(cmd, sizeof(cmd), &sources, &m);
+    append_raw_c_paths(cmd, sizeof(cmd), &c_sources);
     if (m.bare && m.bare_runtime) {
         const char *rt = " target/debug/c-bare-runtime.o";
         if (strlen(cmd) + strlen(rt) + 1 >= sizeof(cmd)) {
@@ -1327,6 +1406,13 @@ static int cmd_build_with_flags(const char *extra_cflags, int optimize)
         }
         strcat(cmd, " ");
         strcat(cmd, m.ldflags);
+    }
+    if (m.threads && !m.bare) {
+        const char *thread_flags = " -pthread";
+        if (strlen(cmd) + strlen(thread_flags) + 1 >= sizeof(cmd)) {
+            die("cpm: command too long");
+        }
+        strcat(cmd, thread_flags);
     }
     if (run_cmd(cmd) != 0) {
         return 1;

@@ -1,0 +1,21 @@
+struct Data {
+    int a;
+    int b;
+};
+
+Span<struct Data> make_view(void)
+{
+    int raw[2] = { 1, 2 };
+    Span<struct Data> values = Span<struct Data>.map_from(raw, sizeof(raw), 1);
+
+    raw[0] = 3;
+    raw[1] = 4;
+    return values;
+}
+
+int main(void)
+{
+    Span<struct Data> values = make_view();
+
+    return values[0].a;
+}

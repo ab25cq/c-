@@ -18,6 +18,8 @@ Runtime/debugging dependencies:
 - `valgrind` for `cpm val` and Linux fallback leak checks
 - AddressSanitizer runtime for `cpm leak`
   - Fedora/RHEL: `libasan`
+- POSIX threads (`pthread`) for hosted `Thread`, `Mutex`, and `Cond`
+  - glibc and musl provide this through the system C library/toolchain
 - `execinfo.h` / `backtrace(3)` support for panic stack-frame output
   - glibc systems usually provide this with the C library
   - Alpine/musl may require `libexecinfo-dev`
@@ -76,8 +78,11 @@ edition = "2026"
 [build]
 src = "src/main.c-"
 compiler = "cc"
+std = ""
 cflags = "-std=gnu99 -Wall -Wextra"
 ldflags = ""
+threads = false
+c_compat = false
 ```
 
 `cpm build` lowers every `.c-` file under `src` with `c-`, writes generated C
@@ -96,6 +101,51 @@ automatically, shrinking the executable. `cpm run` builds the same way.
 
 `cpm val` and `cpm leak` keep the section garbage collection but build without
 `-Os`, so the allocations they are meant to inspect are not optimized away.
+
+`std` is optional. The default project template keeps `-std=gnu99` in
+`cflags` for C99 compatibility. Setting `std = "gnu11"` appends `-std=gnu11`
+after `cflags`, so C11 can be selected without breaking existing manifests.
+
+`c_compat = true` enables C compatibility mode for user source preprocessor
+lines. In that mode, top-level and statement-local C preprocessor directives
+such as `#define`, function-like macros, `#if`, `#ifdef`, `#ifndef`, `#elif`,
+`#else`, `#endif`, `#undef`, and `#pragma` are preserved in place in the
+generated C. C- still handles `<c-.h>` as the language standard library include.
+Use this mode when porting C code that relies heavily on macros.
+
+The compatibility path also preserves common C declarations and C99 constructs
+that are awkward for the safe-mode parser but normal in existing C code:
+braced `typedef struct`, `typedef union`, `typedef enum`, function-pointer
+typedefs, VLA declarations, `restrict`, array parameters such as
+`int values[static 1]`, flexible array members, variadic macros, compound
+literals, and nested/designated initializers such as
+`Point p = { .x = 1, .y = 2 };`. In `c_compat` user functions are emitted as
+plain C functions without C- ownership or stack-guard rewriting; the bundled
+`<c-.h>` standard library is still parsed as C- so safe-mode features keep
+working. `cpm` adds both `-Itarget/debug` and `-Isrc`, so local C headers
+included with `#include "name.h"` work in package builds.
+
+For code that should be emitted as C without C- rewriting, use `inline c`.
+The block is an unsafe raw-C boundary: C syntax is emitted directly, while
+declarations inside the block are only partially visible to C-'s safe-mode type
+and ownership tables. Prefer a small safe wrapper around raw C functions before
+calling them from safe code.
+
+```c
+inline c {
+#define SCALE 3
+typedef int (*Callback)(int);
+
+static inline int scale(int value)
+{
+    return value * SCALE;
+}
+}
+```
+
+`cpm` also compiles and links plain `src/**/*.c` files alongside generated C.
+Declare those functions in a local header and include it from `.c-` sources when
+mixing existing C modules into a C- package.
 
 `c-` automatically reads the project standard library header `<c-.h>` when a
 source file does not include it explicitly. During build, `cpm` also writes
@@ -547,7 +597,7 @@ int first = ptr->first();
 Generic method blocks are intentionally not part of this feature.
 
 The standard library currently provides `Ref<T>`, `Span<T>`, `Iterator<T>`,
-`Vec<T>`, `List<T>`, and `Map<K,V>`.
+`RingBuffer<T>`, `Bitmap`, `Vec<T>`, `List<T>`, and `Map<K,V>`.
 `Ref<T>` is a non-owning one-value reference with `from`, `is_null`, `get`, and
 `set`. It is a value type: a local `Ref<T>` stores only checked reference
 metadata in the current stack frame and does not allocate.
@@ -599,15 +649,35 @@ unsigned char first = used[0];
 ```
 
 `Span<T>.from(array)` and `FixedVec<T>.from(array)` infer the element count
-from a fixed array, including struct fields such as `pkt.bytes`. The explicit
-forms `from(array, len)` and `from_bytes(array, bytes)` are still available.
-`Span<T>` and `FixedVec<T>` are value types: declaring a local variable stores
-their metadata directly in the stack frame instead of allocating a managed heap
-object. Methods still validate the referenced memory before access, but the
-view/container header itself does not require heap storage.
+from a fixed array, including struct fields such as `pkt.bytes`.
+`RingBuffer<T>.from(array)` does the same for fixed-size queues. If the array
+length is a macro expression, C- derives the count from `sizeof(array)` instead
+of requiring the expression to be reduced by the parser. The explicit forms
+`from(array, len)` and `from_bytes(array, bytes)` are still available.
+`Span<T>`, `FixedVec<T>`, and `RingBuffer<T>` are value types: declaring a
+local variable stores their metadata directly in the stack frame instead of
+allocating a managed heap object. Methods still validate the referenced memory
+before access, but the view/container header itself does not require heap
+storage.
 Use `span.get(index)` and `span.set(index, value)` when code needs explicit
 checked reads and writes, especially in low-level code where nested expressions
 should stay easy for the compiler to diagnose.
+`Span<T>.fill(value)` fills the whole checked range and is intended for
+zeroing fixed kernel buffers without dropping back to raw `memset`.
+`Span<T>.slice(start, len)` returns a checked subrange, and
+`copy_from(src)` / `copy_from_count(src, count)` copy between checked ranges.
+These are useful for filesystem blocks, packets, page-table fragments, and
+other fixed memory regions where raw `memcpy` would otherwise be tempting.
+`Span<T>.map_from(buffer, len)` safely maps raw storage with a known length into
+a typed view. For fixed arrays, C- inserts `sizeof(buffer)` automatically and
+the runtime checks byte capacity and alignment before allowing typed access.
+Use `Span<struct Header>.map_from(bytes, 1)` for packet headers, disk blocks,
+MMIO-like records backed by fixed storage, and other layouts where copying would
+be wasteful but unchecked casts would be unsafe.
+For fixed NUL-terminated buffers, `cstr_len()`, `cstr_eq(other)`, and
+`copy_cstr_from(src)` provide bounded string-style operations over the same
+checked storage. They are useful for small kernel path buffers and firmware
+protocol fields without calling unsafe C string functions.
 Safe direct indexing of fixed arrays only allows compile-time constant indexes
 that are in range. Out-of-range constants are compile-time errors, and variable
 indexes must go through `Span<T>` or `FixedVec<T>` so bounds checks are always
@@ -620,6 +690,59 @@ mode. Normal `Type name = new Type;` still creates managed heap storage, while
 access. Stack structs are useful for packet buffers, device state, and fixed
 work areas where a microcontroller program must avoid dynamic allocation.
 
+For interrupt event queues, UART buffers, scheduler ready queues, and other
+bounded kernel FIFOs, use `RingBuffer<T>` over caller-owned fixed storage:
+
+```c
+struct ReadyQueue {
+    int slots[16];
+};
+
+stack ReadyQueue storage;
+RingBuffer<int> ready = RingBuffer<int>.from(storage.slots);
+
+ready.push(1);
+ready.push(2);
+struct __CMinusIndex<int> next = ready.pop_opt();
+```
+
+`RingBuffer<T>` provides `from`, `from_bytes`, `len`, `capacity`, `is_empty`,
+`is_full`, `clear`, `push`, `peek_opt`, `pop_opt`, and `drain_to_span`. `push`
+panics when the buffer is full; `peek_opt` and `pop_opt` return
+`__CMinusIndex<T>` so empty queues can be handled explicitly. `drain_to_span`
+copies queued values into caller-owned storage and returns a checked `Span<T>`
+over the copied range. In safe mode, raw pointer storage returned from `unsafe`
+functions cannot be converted into a `RingBuffer`; create the buffer from a
+fixed array, managed object field, or a validated unsafe wrapper.
+
+For page-frame allocation, file descriptors, PIDs, and other fixed slot maps,
+use `Bitmap` over caller-owned `unsigned long` storage:
+
+```c
+struct PageMap {
+    unsigned long words[4];
+};
+
+stack PageMap pages;
+Bitmap map = Bitmap.from(pages.words);
+
+struct __CMinusIndex<int> page = map.alloc_opt();
+if (page.is_Some()) {
+    int index = page.get_Some();
+    map.free_bit(index);
+}
+```
+
+`Bitmap.from(array)` infers the number of bits from `sizeof(array) * 8`.
+`from(array, bit_count)`, `from_words(array, word_count)`, and
+`from_bytes(array, byte_count)` are available when a smaller range is needed.
+The API provides `len`, `word_len`, `is_empty`, `test`, `set`, `clear_bit`,
+`clear_all`, `find_zero`, `alloc_opt`, and `free_bit`. Out-of-range bit access
+panics. If a numeric literal bit count exceeds a fixed array's capacity, C-
+rejects it at compile time. Safe code also rejects raw pointer storage from
+unsafe functions; board code should wrap raw memory in a small unsafe boundary
+before exposing a safe bitmap.
+
 For stricter embedded builds, pass `-no-heap` to `c-` or set this in
 `C-.toml`:
 
@@ -631,8 +754,8 @@ no_heap = true
 In no-heap safe mode, managed heap-producing expressions such as `new`,
 `clone`, `s"..."`, and heap-backed `Vec/List/Map` constructors are compile-time
 errors. Use stack structs, fixed arrays, `Optional<T>`, `Ref<T>`,
-`Span<T>` views, `FixedVec<T>`, `StaticCell<T>`, `Volatile<T>`,
-`Register<T>`, `Atomic<T>`, and `Critical` storage-oriented APIs instead. This
+`Span<T>` views, `FixedVec<T>`, `RingBuffer<T>`, `Bitmap`, `StaticCell<T>`,
+`Volatile<T>`, `Register<T>`, `Atomic<T>`, and `Critical` storage-oriented APIs instead. This
 mode is intended to keep safe C- code predictable on microcontrollers by making
 accidental heap use visible at build time. `Optional<T>` variants,
 `Ref<T>.from(...)`, `Span<T>.from(...)`, and `FixedVec<T>.from(...)` are allowed
@@ -855,9 +978,10 @@ so assigning `IrqFlags_Timer` to a `PageFlags` variable is a compile-time type
 error. This is intended for page-table bits, interrupt masks, CPU status bits,
 file modes, and other OS flag values where accidental mixing is easy.
 
-For shared state between normal code and interrupts, use `StaticCell<T>` for
-one-time or guarded storage, and value-type atomics plus critical-section
-guards for concurrent updates:
+For shared state between normal code, interrupts, and hosted threads, use
+`StaticCell<T>` for one-time or guarded storage, value-type atomics for lock-free
+scalar updates, critical-section guards for interrupt code, and pthread-backed
+`Thread`/`Mutex`/`Cond` for hosted C99 builds:
 
 ```c
 Atomic<unsigned int> ticks = Atomic<unsigned int>.init(0u);
@@ -878,10 +1002,47 @@ int read_ticks(void)
 ```
 
 `Atomic<T>` uses compiler atomic builtins and is intended for integer or
-pointer-sized scalar types. `Critical.enter()` returns a `Critical` value token
-and `leave()` is idempotent. The default runtime hooks are no-ops for hosted
-tests; a kernel or board layer can replace the interrupt save/restore
-implementation when integrating the runtime.
+pointer-sized scalar types. It does not require C11 `<stdatomic.h>`; C- emits
+GCC/Clang `__atomic` builtins, so the generated C can stay at C99/gnu99. The
+default methods use sequential consistency. Ordered variants such as
+`load_order`, `store_order`, `exchange_order`, `compare_exchange_order`, and
+`fetch_add_order` accept `AtomicRelaxed`, `AtomicAcquire`, `AtomicRelease`,
+`AtomicAcqRel`, or `AtomicSeqCst`.
+
+`Critical.enter()` returns a `Critical` value token and `leave()` is idempotent.
+The default runtime hooks are no-ops for hosted tests; a kernel or board layer
+can replace the interrupt save/restore implementation when integrating the
+runtime.
+
+Hosted thread support is a thin POSIX pthread wrapper:
+
+```c
+Atomic<int> total;
+Mutex gate;
+
+int worker(void)
+{
+    gate.lock();
+    total.fetch_add(1);
+    gate.unlock();
+    return 0;
+}
+
+int main(void)
+{
+    Thread t;
+
+    total = Atomic<int>.init(0);
+    gate = Mutex.init();
+    t = Thread.spawn(worker);
+    t.join();
+    gate.destroy();
+    return total.load() == 1 ? 0 : 1;
+}
+```
+
+Set `threads = true` in `C-.toml` to let `cpm build`, `cpm run`, `cpm val`, and
+`cpm leak` add `-pthread` automatically. Bare builds ignore this flag.
 
 `Vec<T>` and `List<T>` support `new`, `push`, `len`, `is_empty`, `clear`,
 `first`, `last`, `get`, `set`, checked indexed access, automatic deletion for

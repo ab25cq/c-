@@ -1,0 +1,28 @@
+#include <stdio.h>
+#define CCOMPAT_VALUE 21
+#define CCOMPAT_MUL(a, b) ((a) * (b))
+#ifdef CCOMPAT_VALUE
+#define CCOMPAT_HAS_VALUE 1
+#else
+#define CCOMPAT_HAS_VALUE 0
+#endif
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+
+int main(void)
+{
+    int unused_for_pragma = 0;
+
+#if CCOMPAT_HAS_VALUE
+    if (CCOMPAT_MUL(CCOMPAT_VALUE, 2) != 42) {
+        return 1;
+    }
+#else
+    return 2;
+#endif
+#undef CCOMPAT_VALUE
+    puts("c compat macros");
+    return 0;
+}
+
+#pragma GCC diagnostic pop

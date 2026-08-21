@@ -1,0 +1,78 @@
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define C99_SUM2(a, ...) ((a) + __VA_ARGS__)
+
+typedef struct C99Inner {
+    int x;
+    int y;
+} C99Inner;
+
+typedef struct C99Outer {
+    C99Inner inner;
+    int values[3];
+} C99Outer;
+
+typedef struct C99Flex {
+    size_t len;
+    int values[];
+} C99Flex;
+
+static int sum_vla(size_t n, int values[static 1])
+{
+    int total = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        total += values[i];
+    }
+    return total;
+}
+
+static int sum_restrict(size_t n, int * restrict values)
+{
+    int total = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        total += values[i];
+    }
+    return total;
+}
+
+static int sum_variadic(int count, ...)
+{
+    va_list ap;
+    int total = 0;
+
+    va_start(ap, count);
+    for (int i = 0; i < count; i++) {
+        total += va_arg(ap, int);
+    }
+    va_end(ap);
+    return total;
+}
+
+int main(void)
+{
+    int local_count = 3;
+    int vla[local_count];
+    C99Outer outer = {
+        .inner = { .x = 1, .y = 2 },
+        .values = { [0] = 3, [1] = 4, [2] = 5 },
+    };
+    C99Inner literal = (C99Inner){ .x = 6, .y = 7 };
+    C99Flex *flex = malloc(sizeof(C99Flex) + sizeof(int) * 2);
+    int result;
+
+    vla[0] = outer.inner.x + outer.inner.y;
+    vla[1] = outer.values[0] + outer.values[1];
+    vla[2] = literal.x + literal.y;
+    flex->len = 2;
+    flex->values[0] = C99_SUM2(2, 3);
+    flex->values[1] = sum_variadic(3, 1, 2, 3);
+    result = sum_vla(3, vla) + sum_restrict(flex->len, flex->values);
+    free(flex);
+    printf("%d\n", result);
+    return result == 34 ? 0 : 1;
+}
