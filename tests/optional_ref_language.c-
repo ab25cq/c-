@@ -1,0 +1,14 @@
+int main(void)
+{
+    int value = 7;
+    Ref<int> reference = Ref<int>.from(&value);
+    Optional<Ref<int>> some = new Optional<Ref<int>>.Some(reference);
+    Optional<Ref<int>> none = new Optional<Ref<int>>.None();
+    Ref<int> unwrapped = some.get_Some();
+
+    if (!some.is_Some() || !none.is_None() || unwrapped.get() != 7) {
+        return 1;
+    }
+    unwrapped.set(9);
+    return value == 9 ? 0 : 2;
+}

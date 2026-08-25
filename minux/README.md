@@ -11,7 +11,7 @@ The implementation uses C- safety features that matter for embedded and OS
 work:
 
 - `no_heap = true` in `C-.toml`
-- `stack Machine` for a large fixed machine state
+- bare `Machine`/`Kernel` values for large fixed stack state
 - `Span<T>` for bounds-checked RAM, register, code, and page-table access
 - `FixedVec<T>` for process-table storage without heap allocation
 - `unsafe` only around hosted I/O (`putchar`)

@@ -9,11 +9,11 @@ struct Pair {
 
 int main(void)
 {
-    Pair p = new Pair { left: s"7", right: s"9" };
+    Box<Pair> p = new Pair { left: s"7", right: s"9" };
 
     string left_copy = clone p->left;
     string right_copy = clone p->right;
-    Pair q = clone p;
+    Box<Pair> q = clone p;
 
     if (left_copy == NULL || right_copy == NULL || q == NULL) {
         return 1;

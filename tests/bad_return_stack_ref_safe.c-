@@ -7,7 +7,7 @@ Ref<int> make_ref(void)
 
 int main(void)
 {
-    Ref<int> ref = make_ref();
+    Ref<int> reference = make_ref();
 
-    return ref.get();
+    return reference.get();
 }

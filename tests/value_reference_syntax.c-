@@ -1,0 +1,27 @@
+struct Data {
+    int value;
+};
+
+int inspect(ref Data data)
+{
+    return data.value;
+}
+
+void update(mut ref Data data, int value)
+{
+    data.value = value;
+}
+
+int main(void)
+{
+    Data local;
+    Box<Data> boxed = new Data { value: 7 };
+    Box<Data> later;
+
+    update(&local, 5);
+    later = new Data { value: 9 };
+    if (inspect(&local) != 5) {
+        return 1;
+    }
+    return inspect(boxed) == 7 && inspect(later) == 9 ? 0 : 1;
+}

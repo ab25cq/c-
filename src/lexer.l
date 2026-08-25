@@ -28,6 +28,7 @@ static size_t pending_len;
 static size_t pending_cap;
 static int new_type_scan;
 static int object_init_depth;
+static int generic_angle_depth;
 static FILE *include_files[16];
 static int include_lines[16];
 static int include_unsafe[16];
@@ -232,7 +233,15 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
 {STRING}    { return emit_token(STRING_LITERAL); }
 {CHAR}      { return emit_token(CHAR_LITERAL); }
 
-"++"|"--"|"+="|"-="|"=="|"!="|"<="|">="|"&&"|"||"|"<<"|">>"|"*="|"/="|"%="|"&="|"|="|"^="|"->"|"::"|"..." {
+">>"        {
+                if (generic_angle_depth >= 2) {
+                    yyless(1);
+                    generic_angle_depth--;
+                    return emit_token(GT);
+                }
+                return emit_token(OP);
+            }
+"++"|"--"|"+="|"-="|"=="|"!="|"<="|">="|"&&"|"||"|"<<"|"*="|"/="|"%="|"&="|"|="|"^="|"->"|"::"|"..." {
                 return emit_token(OP);
             }
 
@@ -266,8 +275,13 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
 ":"         { return emit_token(COLON); }
 "="         { return emit_token(EQUAL); }
 "%"         { return emit_token(PERCENT); }
-"<"/[A-Za-z_] { return emit_token(LT); }
-">"         { return emit_token(GT); }
+"<"/[A-Za-z_] { generic_angle_depth++; return emit_token(LT); }
+">"         {
+                if (generic_angle_depth > 0) {
+                    generic_angle_depth--;
+                }
+                return emit_token(GT);
+            }
 
 [+\-*/!^&|<>?.~] {
                 return emit_token(OP);

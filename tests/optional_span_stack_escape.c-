@@ -1,0 +1,15 @@
+Optional<Span<int>> make_optional_span(void)
+{
+    int values[2] = { 3, 4 };
+    Span<int> view = Span<int>.from(values, 2);
+
+    return new Optional<Span<int>>.Some(view);
+}
+
+int main(void)
+{
+    Optional<Span<int>> maybe = make_optional_span();
+    Span<int> view = maybe.get_Some();
+
+    return view.get(0);
+}

@@ -4,7 +4,7 @@ struct Data {
 
 int main(void)
 {
-    stack Data data;
-    Data copy = clone data;
+    Data data;
+    Box<Data> copy = clone data;
     return copy.value;
 }

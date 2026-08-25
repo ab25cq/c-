@@ -35,7 +35,7 @@ int main(void)
     int read_local = 0;
     int read_box = 0;
     int total = 0;
-    Data box = new Data;
+    Box<Data> box = new Data;
 
     data[0] = 1;
     data[1] = 2;

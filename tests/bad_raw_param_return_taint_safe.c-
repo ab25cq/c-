@@ -8,6 +8,6 @@ char* raw_identity(char* value)
 int main(void)
 {
     string text = s"abc";
-    Ref<char> ref = Ref<char>.from(raw_identity(text));
+    Ref<char> reference = Ref<char>.from(raw_identity(text));
     return 0;
 }

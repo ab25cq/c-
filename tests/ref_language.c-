@@ -5,18 +5,18 @@ unsafe {
 int main(void)
 {
     int value = 10;
-    Ref<int> ref = Ref<int>.from(&value);
+    Ref<int> reference = Ref<int>.from(&value);
 
-    if (ref.is_null()) {
+    if (reference.is_null()) {
         return 1;
     }
-    if (ref.get() != 10) {
+    if (reference.get() != 10) {
         return 2;
     }
-    ref.set(25);
-    if (value != 25 || ref.get() != 25) {
+    reference.set(25);
+    if (value != 25 || reference.get() != 25) {
         return 3;
     }
-    printf("%d\n", ref.get());
+    printf("%d\n", reference.get());
     return 0;
 }

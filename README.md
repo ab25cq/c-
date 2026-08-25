@@ -2,7 +2,10 @@
 
 Small C-to-C translator experiment.
 
-Current language/package format version: `0.4.0`.
+Current language/package format version: `0.5.0`.
+
+The current surface syntax, safety rules, and an edition-gated direction for
+value/reference syntax are described in [LANGUAGE.md](LANGUAGE.md).
 
 ## Dependencies
 
@@ -72,7 +75,7 @@ The manifest is intentionally close to Cargo's shape:
 ```toml
 [package]
 name = "hello"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2026"
 
 [build]
@@ -368,7 +371,7 @@ them after linking:
 
 ```toml
 [package]
-version = "0.4.0"
+version = "0.5.0"
 
 [build]
 compiler = "clang"
@@ -395,11 +398,11 @@ so the source file and line are still reported but the frame dump is omitted.
 
 `s"..."` heap strings still rely on `asprintf`, which the bare runtime provides.
 
-Local pointer ownership is automatic for owning expressions. Heap allocation
-with `new` is limited to structs:
+Safe user structs are values by default. Use `Box<T>` when a struct must be a
+managed heap owner; heap allocation with `new` is limited to structs:
 
 ```c
-struct Item* item = new struct Item;
+Box<Item> item = new Item;
 ```
 
 `new`, `clone`, `s"..."`, `*_new()` functions, and owned-return function calls
@@ -419,10 +422,10 @@ borrow char* home = getenv("HOME");
 struct `new` expression to a `borrow` declaration is a compile-time error.
 
 The `new` operator allocates one zeroed struct object with `calloc` and returns
-an owning pointer:
+an owning `Box<T>`:
 
 ```c
-struct Item* item = new struct Item;
+Box<Item> item = new Item;
 ```
 
 is lowered to:
@@ -456,7 +459,7 @@ For structs, `new` may use the struct tag directly and may include a simple
 object initializer:
 
 ```c
-struct Person* person = new Person { name: strdup("aaa"), age: 48 };
+Box<Person> person = new Person { name: strdup("aaa"), age: 48 };
 ```
 
 This is lowered to a `calloc(1, sizeof(struct Person))` temporary followed by
@@ -638,7 +641,7 @@ struct Packet {
     unsigned char bytes[64];
 };
 
-stack Packet pkt;
+Packet pkt;
 Span<unsigned char> all = Span<unsigned char>.from(pkt.bytes);
 FixedVec<unsigned char> used = FixedVec<unsigned char>.from(pkt.bytes);
 
@@ -684,11 +687,22 @@ indexes must go through `Span<T>` or `FixedVec<T>` so bounds checks are always
 present. This keeps embedded code heap-light while avoiding unchecked C array
 access in safe mode.
 
-`stack Type name;` declares a user struct as an actual stack object in safe
-mode. Normal `Type name = new Type;` still creates managed heap storage, while
-`stack Type name;` emits a plain `struct Type name = {0};` and uses `.` field
-access. Stack structs are useful for packet buffers, device state, and fixed
-work areas where a microcontroller program must avoid dynamic allocation.
+A bare user struct is a value in safe mode. `Type name;` emits a zeroed
+`struct Type name` and uses `.` field access. `Box<Type> name = new Type;`
+creates managed heap storage. Struct values are
+useful for packet buffers, device state, and fixed work areas where a
+microcontroller program must avoid dynamic allocation.
+
+Function parameters make borrowing explicit. `ref Type value` is a shared,
+read-only reference and lowers to `const struct Type*`; `mut ref Type value` is
+a mutable reference and lowers to `struct Type*`. A bare `Type value` parameter
+passes the struct value rather than silently changing it into a pointer:
+
+```c
+int inspect(ref Device device);
+void reset(mut ref Device device);
+void consume(Device device);
+```
 
 For interrupt event queues, UART buffers, scheduler ready queues, and other
 bounded kernel FIFOs, use `RingBuffer<T>` over caller-owned fixed storage:
@@ -698,7 +712,7 @@ struct ReadyQueue {
     int slots[16];
 };
 
-stack ReadyQueue storage;
+ReadyQueue storage;
 RingBuffer<int> ready = RingBuffer<int>.from(storage.slots);
 
 ready.push(1);
@@ -723,7 +737,7 @@ struct PageMap {
     unsigned long words[4];
 };
 
-stack PageMap pages;
+PageMap pages;
 Bitmap map = Bitmap.from(pages.words);
 
 struct __CMinusIndex<int> page = map.alloc_opt();
@@ -753,7 +767,7 @@ no_heap = true
 
 In no-heap safe mode, managed heap-producing expressions such as `new`,
 `clone`, `s"..."`, and heap-backed `Vec/List/Map` constructors are compile-time
-errors. Use stack structs, fixed arrays, `Optional<T>`, `Ref<T>`,
+errors. Use struct values, fixed arrays, `Optional<T>`, `Ref<T>`,
 `Span<T>` views, `FixedVec<T>`, `RingBuffer<T>`, `Bitmap`, `StaticCell<T>`,
 `Volatile<T>`, `Register<T>`, `Atomic<T>`, and `Critical` storage-oriented APIs instead. This
 mode is intended to keep safe C- code predictable on microcontrollers by making
@@ -775,7 +789,7 @@ struct Uart {
 
 int main(void)
 {
-    stack Uart uart;
+    Uart uart;
 
     unsafe {
         uart.status = Register<unsigned int>.from_addr(0x10000000u);
@@ -805,7 +819,7 @@ mmio struct Uart {
 
 int main(void)
 {
-    stack Uart uart;
+    Uart uart;
 
     unsafe {
         uart.status = Register<unsigned int>.from_addr(0x10000000u);
@@ -1117,11 +1131,17 @@ does not allocate managed heap storage:
 ```c
 Optional<int> value = new Optional<int>.Some(123);
 Optional<int> empty = new Optional<int>.None();
+Optional<Ref<int>> borrowed = new Optional<Ref<int>>.Some(reference);
 
 if (value.is_Some() && empty.is_None()) {
     return value.get_Some();
 }
 ```
+
+Generic payload types may be nested. When an `Optional` contains `Ref<T>`,
+`Span<T>`, or another checked view, unwrapping copies the view together with its
+lifetime metadata. Access through a view whose local owner has returned still
+panics with `dangling stack reference`.
 
 Local variable declarations without initializers receive a zero initializer and
 are then zero-cleared immediately after the declaration with `memset`,

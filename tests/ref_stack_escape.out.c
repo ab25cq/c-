@@ -1492,9 +1492,9 @@ struct Ref_int make_ref(void)
     size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
 
     int value = 7;
-    struct Ref_int ref = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value, 0); });
+    struct Ref_int reference = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value, 0); });
 
-    __typeof__((ref)) __cminus_return6 = (ref);
+    __typeof__((reference)) __cminus_return6 = (reference);
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
     return __cminus_return6;
 }
@@ -1503,9 +1503,9 @@ int main(void)
 {    char __cminus_stack_anchor;
     size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
 
-    struct Ref_int ref = make_ref();
+    struct Ref_int reference = make_ref();
 
-    __typeof__((Ref_get_int(&ref))) __cminus_return7 = (Ref_get_int(&ref));
+    __typeof__((Ref_get_int(&reference))) __cminus_return7 = (Ref_get_int(&reference));
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
     return __cminus_return7;
 }

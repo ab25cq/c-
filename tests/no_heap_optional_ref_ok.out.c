@@ -1544,9 +1544,9 @@ int main(void)
 
     int value = 3;
     struct Optional_int maybe = make_value(9);
-    struct Ref_int ref = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value, 0); });
+    struct Ref_int reference = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value, 0); });
 
-    Ref_set_int(&ref, Ref_get_int(&ref) + Optional_int_get_Some(&maybe));
+    Ref_set_int(&reference, Ref_get_int(&reference) + Optional_int_get_Some(&maybe));
     __typeof__((value == 12 && Optional_int_is_Some(&maybe) ? 0 : 1)) __cminus_return7 = (value == 12 && Optional_int_is_Some(&maybe) ? 0 : 1);
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
     return __cminus_return7;

@@ -4,6 +4,6 @@ struct Data {
 
 int main(void)
 {
-    Data data = new Data;
+    Box<Data> data = new Data;
     return data.missing;
 }

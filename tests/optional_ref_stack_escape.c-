@@ -1,0 +1,15 @@
+Optional<Ref<int>> make_optional_ref(void)
+{
+    int value = 7;
+    Ref<int> reference = Ref<int>.from(&value);
+
+    return new Optional<Ref<int>>.Some(reference);
+}
+
+int main(void)
+{
+    Optional<Ref<int>> maybe = make_optional_ref();
+    Ref<int> reference = maybe.get_Some();
+
+    return reference.get();
+}

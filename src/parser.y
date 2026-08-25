@@ -214,6 +214,7 @@ struct Tags {
 struct GenericInstance {
     char arg[NAME_MAX_LEN];
     char concrete[NAME_MAX_LEN];
+    int emitted;
 };
 
 struct GenericTemplate {
@@ -443,6 +444,7 @@ static int is_generic_decl_head(const char *s);
 static int parse_generic_struct_head(const char *s, char *param, char *name);
 static int parse_generic_function_head(const char *s, char *param, char *name);
 static int parse_generic_angle_arg(const char *p, char *arg, const char **after);
+static struct GenericInstance *generic_instance_get(struct GenericTemplate *tmpl, const char *arg);
 static int parse_payload_enum_head(const char *s, char *param, char *name);
 static int parse_bitflags_head(const char *s, char *name, char *base);
 static struct Text *emit_bitflags_decl(const char *name, const char *base, const char *body);
@@ -1368,10 +1370,29 @@ static struct GenericInstance *payload_enum_instance_get(struct PayloadEnum *en,
 {
     int i;
     char clean_arg[NAME_MAX_LEN];
+    const char *p;
 
     copy_trimmed(clean_arg, sizeof(clean_arg), arg, arg + strlen(arg));
     if (clean_arg[0] == '\0') {
         strcpy(clean_arg, "void");
+    }
+    p = skip_ws(clean_arg);
+    if (is_ident_start((unsigned char)*p)) {
+        char generic_name[NAME_MAX_LEN];
+        char nested_arg[NAME_MAX_LEN];
+        const char *name_end = read_name(p, generic_name);
+        const char *after;
+        struct GenericTemplate *tmpl = generic_find(&g_generic_structs, generic_name);
+
+        if (tmpl != NULL && parse_generic_angle_arg(name_end, nested_arg, &after) &&
+            *skip_ws(after) == '\0') {
+            struct GenericInstance *nested = generic_instance_get(tmpl, nested_arg);
+            if (strlen(nested->concrete) + 8 > sizeof(clean_arg)) {
+                die("nested generic type name is too long");
+            }
+            strcpy(clean_arg, "struct ");
+            strcat(clean_arg, nested->concrete);
+        }
     }
     for (i = 0; i < en->inst_count; i++) {
         if (strcmp(en->inst[i].arg, clean_arg) == 0) {
@@ -2181,7 +2202,7 @@ static int skip_decl_word(const char *word)
     static const char *words[] = {
         "auto", "extern", "register", "static", "typedef", "const", "volatile",
         "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", "borrow", "owned",
-        "interrupt", "mmio", NULL
+        "interrupt", "mmio", "ref", "mut", NULL
     };
     int i;
     for (i = 0; words[i] != NULL; i++) {
@@ -2292,6 +2313,7 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
     enum TypeKind kind = TY_UNKNOWN;
     char tag[NAME_MAX_LEN];
     int saw_borrow = 0;
+    int saw_ref = 0;
 
     tag[0] = '\0';
     while (is_ident_start((unsigned char)*p)) {
@@ -2300,13 +2322,15 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
             p = skip_os_attribute(next, word);
             continue;
         }
-        if (!skip_decl_word(word) && strcmp(word, "stack") != 0) {
+        if (!skip_decl_word(word)) {
             break;
         }
         if (strcmp(word, "borrow") == 0) {
             saw_borrow = 1;
         } else if (strcmp(word, "owned") == 0) {
             saw_borrow = 0;
+        } else if (strcmp(word, "ref") == 0) {
+            saw_ref = 1;
         }
         p = skip_ws(next);
     }
@@ -2336,6 +2360,31 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
         const char *next = read_name(p, word);
         const char *after;
         struct GenericTemplate *tmpl = generic_find(&g_generic_structs, word);
+        if (strcmp(word, "Box") == 0 && parse_generic_angle_arg(next, arg, &after)) {
+            const char *arg_start = skip_ws(arg);
+            const char *arg_end;
+
+            if (starts_word(arg_start, "struct")) {
+                arg_start = skip_ws(arg_start + 6);
+            }
+            if (!is_ident_start((unsigned char)*arg_start)) {
+                return 0;
+            }
+            arg_end = read_name(arg_start, tag);
+            arg_end = skip_ws(arg_end);
+            if (*arg_end == '*') {
+                arg_end = skip_ws(arg_end + 1);
+            }
+            if (*arg_end != '\0') {
+                fprintf(stderr, "c-: type error: Box<T> currently requires a concrete user struct type\n");
+                exit(1);
+            }
+            *base_end = after;
+            *type = type_make(TY_STRUCT, 1, tag);
+            type->owned = 1;
+            type->raw_ptr = 0;
+            return 1;
+        }
         if (strcmp(word, "string") == 0) {
             *base_end = next;
             *type = type_make(TY_CHAR, 1, NULL);
@@ -2351,6 +2400,9 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
             struct GenericInstance *inst = generic_instance_get(tmpl, arg);
             *base_end = after;
             *type = type_make(TY_STRUCT, 0, inst->concrete);
+            if (saw_ref) {
+                type->ptr = 1;
+            }
             return 1;
         }
         {
@@ -2359,6 +2411,9 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
                 struct GenericInstance *inst = payload_enum_instance_get(payload_en, arg);
                 *base_end = after;
                 *type = type_make(TY_STRUCT, 0, inst->concrete);
+                if (saw_ref) {
+                    type->ptr = 1;
+                }
                 return 1;
             }
         }
@@ -2369,6 +2424,9 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
                 if (strcmp(g_tags.tag[i].name, word) == 0) {
                     *base_end = next;
                     *type = type_make(g_tags.tag[i].kind, 0, word);
+                    if (saw_ref) {
+                        type->ptr = 1;
+                    }
                     return 1;
                 }
             }
@@ -2394,6 +2452,9 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
 
     *base_end = p;
     *type = type_make(kind, 0, tag);
+    if (saw_ref) {
+        type->ptr = 1;
+    }
     return 1;
 }
 
@@ -2631,6 +2692,37 @@ static int is_safe_reference_type(struct Type type)
     return type.kind == TY_STRUCT;
 }
 
+static int is_heap_collection_type(struct Type type)
+{
+    return strncmp(type.tag, "Vec_", 4) == 0 ||
+           strncmp(type.tag, "List_", 5) == 0 ||
+           strncmp(type.tag, "Map_", 4) == 0 ||
+           strncmp(type.tag, "OwnedVec_", 9) == 0 ||
+           strncmp(type.tag, "OwnedList_", 10) == 0 ||
+           strncmp(type.tag, "OwnedMap_", 9) == 0 ||
+           strncmp(type.tag, "Iterator_", 9) == 0;
+}
+
+static int is_heap_payload_enum_type(struct Type type)
+{
+    int i;
+    int j;
+
+    for (i = 0; i < g_payload_enums.count; i++) {
+        struct PayloadEnum *en = &g_payload_enums.en[i];
+
+        if (strcmp(en->name, "Optional") == 0 || strcmp(en->name, "__CMinusIndex") == 0) {
+            continue;
+        }
+        for (j = 0; j < en->inst_count; j++) {
+            if (strcmp(en->inst[j].concrete, type.tag) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static int type_is_stored_safe_reference(struct Type type)
 {
     if (type.kind != TY_STRUCT || type.tag[0] == '\0') {
@@ -2740,6 +2832,46 @@ static struct Text *rewrite_bare_struct_reference_decl(struct Text *in, const ch
     return out;
 }
 
+static struct Text *rewrite_shared_struct_reference_decl(struct Text *in, const char *base_start, const char *base_end, const char *name_pos, struct Type type)
+{
+    struct Text *out = text_new();
+    const char *kind = type_kind_name(type.kind);
+
+    text_add_n(out, in->text, (size_t)(base_start - in->text));
+    text_add(out, "const ");
+    text_add(out, kind);
+    text_add_ch(out, ' ');
+    text_add(out, type.tag);
+    text_add_n(out, base_end, (size_t)(name_pos - base_end));
+    text_add_ch(out, '*');
+    text_add(out, name_pos);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *rewrite_box_struct_decl(struct Text *in, const char *base_start, const char *base_end, const char *name_pos, struct Type type)
+{
+    struct Text *out = text_new();
+    const char *kind = type_kind_name(type.kind);
+
+    text_add_n(out, in->text, (size_t)(base_start - in->text));
+    text_add(out, "owned ");
+    text_add(out, kind);
+    text_add_ch(out, ' ');
+    text_add(out, type.tag);
+    text_add_n(out, base_end, (size_t)(name_pos - base_end));
+    text_add_ch(out, '*');
+    text_add(out, name_pos);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
 static struct Text *rewrite_stack_struct_value_decl(struct Text *in, const char *base_start, const char *base_end, const char *name_pos, struct Type type)
 {
     struct Text *out = text_new();
@@ -2836,7 +2968,7 @@ static void check_safe_pointer_decl(const char *s)
         return;
     }
     if (pointer_token_before(s, name_pos)) {
-        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
+        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use Box<T> for ownership, ref T/mut ref T for parameters, or Ref/Span/Optional and checked collections\n");
         exit(1);
     }
 }
@@ -2850,6 +2982,9 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
     const char *name_pos;
     const char *string_start;
     int string_borrowed;
+    int explicit_ref;
+    int mutable_ref;
+    int explicit_box;
     char func_name[NAME_MAX_LEN];
     struct Type ret_type;
 
@@ -2859,19 +2994,31 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
     if (g_unsafe_depth > 0) {
         return in;
     }
+    if (starts_word(base, "stack")) {
+        fprintf(stderr, "c-: type error: 'stack Type name' syntax has been removed at %s:%d; use 'Type name'\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
     if (parse_function_signature(in->text, func_name, &ret_type)) {
         string_start = find_string_decl_keyword(base, &string_borrowed);
         if (string_start != NULL) {
             in = rewrite_string_decl_text(in, base, string_start, string_borrowed);
             return rewrite_safe_reference_params(in);
         }
-        if (ret_type.ptr == 0 && is_safe_reference_type(ret_type)) {
+        if (ret_type.kind == TY_STRUCT && ret_type.tag[0] != '\0') {
             name_pos = find_decl_name_pos(in->text, func_name);
             if (name_pos == NULL) {
                 return in;
             }
+            explicit_ref = has_decl_word_before(in->text, name_pos, "ref");
+            mutable_ref = has_decl_word_before(in->text, name_pos, "mut");
+            explicit_box = has_decl_word_before(in->text, name_pos, "Box");
+            if (mutable_ref && !explicit_ref) {
+                fprintf(stderr, "c-: type error: 'mut' must be followed by 'ref' in safe declarations\n");
+                exit(1);
+            }
             if (pointer_token_before(in->text, name_pos)) {
-                fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
+                fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use Box<T> for ownership, ref T/mut ref T for parameters, or Ref/Span/Optional and checked collections\n");
                 exit(1);
             }
             if (parse_base_type_prefix(base, &base_end, &base_type) &&
@@ -2879,8 +3026,21 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
                 !starts_word(base, "struct") &&
                 !starts_word(base, "union") &&
                 !starts_word(base, "enum")) {
-                in = rewrite_bare_struct_reference_decl(in, base, base_end, name_pos, base_type);
-            } else {
+                if (explicit_ref) {
+                    in = mutable_ref
+                        ? rewrite_bare_struct_reference_decl(in, base, base_end, name_pos, base_type)
+                        : rewrite_shared_struct_reference_decl(in, base, base_end, name_pos, base_type);
+                } else if (explicit_box) {
+                    in = rewrite_box_struct_decl(in, base, base_end, name_pos, base_type);
+                } else if (is_heap_collection_type(base_type) || is_heap_payload_enum_type(base_type)) {
+                    in = rewrite_bare_struct_reference_decl(in, base, base_end, name_pos, base_type);
+                } else if (ret_type.ptr == 0 && is_safe_reference_type(ret_type)) {
+                    in = rewrite_stack_struct_value_decl(in, base, base_end, name_pos, base_type);
+                }
+            } else if (ret_type.ptr == 0 &&
+                       (is_heap_collection_type(ret_type) || is_heap_payload_enum_type(ret_type))) {
+                in = insert_pointer_before_name(in, name_pos);
+            } else if (explicit_ref || explicit_box) {
                 in = insert_pointer_before_name(in, name_pos);
             }
         }
@@ -2893,18 +3053,31 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
     if (name_pos == NULL) {
         return in;
     }
-    if (has_decl_word_before(in->text, name_pos, "stack")) {
+    explicit_ref = has_decl_word_before(in->text, name_pos, "ref");
+    mutable_ref = has_decl_word_before(in->text, name_pos, "mut");
+    explicit_box = has_decl_word_before(in->text, name_pos, "Box");
+    if (mutable_ref && !explicit_ref) {
+        fprintf(stderr, "c-: type error: 'mut' must be followed by 'ref' in safe declarations\n");
+        exit(1);
+    }
+    if (explicit_ref || explicit_box) {
         if (parse_base_type_prefix(base, &base_end, &base_type) &&
             base_type.tag[0] != '\0' &&
             !starts_word(base, "struct") &&
             !starts_word(base, "union") &&
             !starts_word(base, "enum")) {
-            return rewrite_stack_struct_value_decl(in, base, base_end, name_pos, base_type);
+            if (explicit_ref && !mutable_ref) {
+                return rewrite_shared_struct_reference_decl(in, base, base_end, name_pos, base_type);
+            }
+            if (explicit_box) {
+                return rewrite_box_struct_decl(in, base, base_end, name_pos, base_type);
+            }
+            return rewrite_bare_struct_reference_decl(in, base, base_end, name_pos, base_type);
         }
-        return in;
+        return insert_pointer_before_name(in, name_pos);
     }
     if (pointer_token_before(in->text, name_pos)) {
-        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use string, Ref, Span, Optional, FixedVec, RingBuffer, Vec, List, Map, or a struct reference\n");
+        fprintf(stderr, "c-: type error: pointer declarations are only allowed inside unsafe; use Box<T> for ownership, ref T/mut ref T for parameters, or Ref/Span/Optional and checked collections\n");
         exit(1);
     }
     string_start = find_string_decl_keyword(base, &string_borrowed);
@@ -2923,9 +3096,15 @@ static struct Text *rewrite_safe_reference_decl(struct Text *in)
             !starts_word(base, "struct") &&
             !starts_word(base, "union") &&
             !starts_word(base, "enum")) {
-            return rewrite_bare_struct_reference_decl(in, base, base_end, name_pos, base_type);
+            if (is_heap_collection_type(base_type) || is_heap_payload_enum_type(base_type)) {
+                return rewrite_bare_struct_reference_decl(in, base, base_end, name_pos, base_type);
+            }
+            return rewrite_stack_struct_value_decl(in, base, base_end, name_pos, base_type);
         }
-        return insert_pointer_before_name(in, name_pos);
+        if (is_heap_collection_type(decl.type) || is_heap_payload_enum_type(decl.type)) {
+            return insert_pointer_before_name(in, name_pos);
+        }
+        return in;
     }
     return in;
 }
@@ -5311,6 +5490,43 @@ static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
     return out;
 }
 
+static int direct_grouping_parens_before(const char *stmt, const char *expr)
+{
+    const char *p = expr;
+    int count = 0;
+
+    while (p > stmt) {
+        const char *open;
+        const char *before;
+
+        while (p > stmt && isspace((unsigned char)p[-1])) {
+            p--;
+        }
+        if (p == stmt || p[-1] != '(') {
+            break;
+        }
+        open = p - 1;
+        before = open;
+        while (before > stmt && isspace((unsigned char)before[-1])) {
+            before--;
+        }
+        if (before > stmt && (is_ident((unsigned char)before[-1]) ||
+                              before[-1] == ')' || before[-1] == ']')) {
+            const char *word = before;
+
+            while (word > stmt && is_ident((unsigned char)word[-1])) {
+                word--;
+            }
+            if ((size_t)(before - word) != 6 || strncmp(word, "return", 6) != 0) {
+                break;
+            }
+        }
+        count++;
+        p = open;
+    }
+    return count;
+}
+
 static void check_safe_array_index_access(const char *stmt)
 {
     const char *p = stmt;
@@ -5326,11 +5542,13 @@ static void check_safe_array_index_access(const char *stmt)
         char name[NAME_MAX_LEN];
         const char *name_end;
         const char *scan;
+        const char *array_end;
         const char *open;
         const char *close;
         struct Type array_type;
         char array_label[NAME_MAX_LEN];
         long index;
+        int grouping_parens;
 
         if (*p == '"' || *p == '\'') {
             char quote = *p++;
@@ -5366,7 +5584,13 @@ static void check_safe_array_index_access(const char *stmt)
             }
             break;
         }
+        array_end = scan;
         open = skip_ws(scan);
+        grouping_parens = direct_grouping_parens_before(stmt, p);
+        while (grouping_parens > 0 && *open == ')') {
+            open = skip_ws(open + 1);
+            grouping_parens--;
+        }
         if (*open != '[') {
             p = name_end;
             continue;
@@ -5389,7 +5613,7 @@ static void check_safe_array_index_access(const char *stmt)
         if (*close != ']') {
             return;
         }
-        if (parse_array_expr_arg(p, open, array_label, &array_type, NULL)) {
+        if (parse_array_expr_arg(p, array_end, array_label, &array_type, NULL)) {
             if (!parse_int_literal_arg(open + 1, close, &index)) {
                 fprintf(stderr, "c-: type error: variable index into fixed array '%s' is not allowed in safe mode at %s:%d; create a Span with Span<T>.from(%s) and index the Span\n",
                         array_label, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno, array_label);
@@ -5726,7 +5950,7 @@ static void check_no_heap_safe_expr(const char *stmt)
     }
     if (source_has_heap_new_token(stmt) || stmt_has_word_call_or_token(stmt, "clone") ||
         source_has_collection_new_syntax(stmt)) {
-        fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, RingBuffer, or Register\n",
+        fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use value structs, fixed arrays, Span, FixedVec, RingBuffer, or Register\n",
                 mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
         exit(1);
     }
@@ -5760,7 +5984,7 @@ static void check_no_heap_safe_expr(const char *stmt)
              strcmp(name, "cminus_gc_calloc") == 0 ||
              strcmp(name, "cminus_gc_realloc") == 0 ||
              strcmp(name, "cminus_string_format") == 0)) {
-            fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use stack structs, fixed arrays, Span, FixedVec, RingBuffer, or Register\n",
+            fprintf(stderr, "c-: type error: managed heap allocation is not allowed in %s functions at %s:%d; use value structs, fixed arrays, Span, FixedVec, RingBuffer, or Register\n",
                     mode, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
             exit(1);
         }
@@ -10301,6 +10525,24 @@ static int args_contain_raw_pointer_input(const char *args_start, const char *ar
     return 0;
 }
 
+static int is_safe_stdlib_function_name(const char *name)
+{
+    static const char *prefixes[] = {
+        "Vec_", "List_", "Map_", "OwnedVec_", "OwnedList_", "OwnedMap_",
+        "Optional_", "Ref_", "Span_", "FixedVec_", "RingBuffer_",
+        "Bitmap_", "Register_", "Volatile_", "StaticCell_", "Atomic_",
+        "Critical_", "Iterator_", NULL
+    };
+    int i;
+
+    for (i = 0; prefixes[i] != NULL; i++) {
+        if (strncmp(name, prefixes[i], strlen(prefixes[i])) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static struct Text *rewrite_parameter_calls(struct Text *in)
 {
     const char *p = in->text;
@@ -10319,7 +10561,8 @@ static struct Text *rewrite_parameter_calls(struct Text *in)
                 if (close != NULL) {
                     if (g_unsafe_depth == 0 && fn->is_unsafe &&
                         strncmp(name, "cminus_", 7) != 0 &&
-                        strncmp(name, "__cminus", 8) != 0) {
+                        strncmp(name, "__cminus", 8) != 0 &&
+                        !is_safe_stdlib_function_name(name)) {
                         fprintf(stderr, "c-: type error: unsafe function '%s' can only be called inside unsafe\n",
                                 name);
                         exit(1);
@@ -11305,6 +11548,32 @@ static int unary_star_context(const char *start, const char *star)
     return 0;
 }
 
+static const char *skip_safe_deref_trivia(const char *p)
+{
+    while (1) {
+        p = skip_ws(p);
+        if (p[0] == '/' && p[1] == '*') {
+            const char *close = strstr(p + 2, "*/");
+
+            if (close == NULL) {
+                return p;
+            }
+            p = close + 2;
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '/') {
+            const char *newline = strchr(p + 2, '\n');
+
+            if (newline == NULL) {
+                return p + strlen(p);
+            }
+            p = newline + 1;
+            continue;
+        }
+        return p;
+    }
+}
+
 static void check_safe_pointer_deref(const char *stmt)
 {
     const char *p = stmt;
@@ -11313,6 +11582,24 @@ static void check_safe_pointer_deref(const char *stmt)
         return;
     }
     while (*p != '\0') {
+        if (p[0] == '/' && p[1] == '*') {
+            const char *close = strstr(p + 2, "*/");
+
+            if (close == NULL) {
+                return;
+            }
+            p = close + 2;
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '/') {
+            const char *newline = strchr(p + 2, '\n');
+
+            if (newline == NULL) {
+                return;
+            }
+            p = newline + 1;
+            continue;
+        }
         if (*p == '"' || *p == '\'') {
             char quote = *p++;
             while (*p != '\0') {
@@ -11326,15 +11613,33 @@ static void check_safe_pointer_deref(const char *stmt)
             }
             continue;
         }
-        if (*p == '*' && unary_star_context(stmt, p)) {
-            const char *name_start = skip_ws(p + 1);
+        if (is_ident_start((unsigned char)*p)) {
             char name[NAME_MAX_LEN];
-            struct Symbol *sym;
+            const char *name_end = read_name(p, name);
+            const char *after = skip_safe_deref_trivia(name_end);
+            struct Symbol *sym = symbol_find(name);
+            int grouping_parens = direct_grouping_parens_before(stmt, p);
+
+            while (grouping_parens > 0 && *after == ')') {
+                after = skip_safe_deref_trivia(after + 1);
+                grouping_parens--;
+            }
+
+            if (sym != NULL && sym->type.raw_ptr &&
+                (*after == '[' || (after[0] == '-' && after[1] == '>'))) {
+                fprintf(stderr, "c-: type error: raw pointer dereference is only allowed inside unsafe for pointer '%s'\n", name);
+                exit(1);
+            }
+            p = name_end;
+            continue;
+        }
+        if (*p == '*' && unary_star_context(stmt, p)) {
+            const char *name_start = skip_safe_deref_trivia(p + 1);
+            char name[NAME_MAX_LEN];
 
             if (is_ident_start((unsigned char)*name_start)) {
-                const char *name_end = read_name(name_start, name);
-                const char *operand_end = name_end;
-                const char *after_name;
+                struct Symbol *sym;
+
                 read_name(name_start, name);
                 sym = symbol_find(name);
                 if (sym != NULL) {
@@ -11351,29 +11656,11 @@ static void check_safe_pointer_deref(const char *stmt)
                         continue;
                     }
                 }
-                after_name = skip_ws(name_end);
-                if (*after_name == '(') {
-                    const char *close = matching_paren(after_name);
-                    if (close != NULL) {
-                        char *expr = xstrndup(name_start, (size_t)(close + 1 - name_start));
-                        struct Type type = expr_type(expr);
-                        free(expr);
-                        operand_end = close + 1;
-                        if (type.ptr > 0 || type.raw_ptr) {
-                            fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe for expression near '%s'\n", name);
-                            exit(1);
-                        }
-                    }
-                }
-                if (sym != NULL &&
-                    (sym->type.ptr > 0 ||
-                     (sym->type.kind == TY_STRUCT && strstr(name_start, "->") != NULL))) {
-                    fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe for pointer '%s'\n", name);
-                    exit(1);
-                }
-                p = operand_end;
-                continue;
+                fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe for expression near '%s'\n", name);
+                exit(1);
             }
+            fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe\n");
+            exit(1);
         }
         p++;
     }
@@ -11773,6 +12060,9 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 owned_add(decl.name, decl.type);
             }
             check_assignment_type(decl.name, decl.type, rhs_type);
+        }
+        if (decl.type.owned && decl.type.ptr > 0 && decl.type.kind == TY_STRUCT) {
+            owned_add(decl.name, decl.type);
         }
         symbol_add(decl.name, decl.type);
         if (decl.type.ptr == 0 && type_has_finalizer(decl.type)) {
@@ -12501,6 +12791,70 @@ static void fputs_with_trailing_newline(const char *s, FILE *out)
     }
 }
 
+static void emit_generic_struct_instance(FILE *out,
+                                         struct GenericTemplate *tmpl,
+                                         struct GenericInstance *inst)
+{
+    char param[NAME_MAX_LEN];
+    const char *head;
+    struct Text *concrete_head;
+    struct Text *concrete_body;
+
+    if (inst->emitted || strcmp(inst->arg, tmpl->param) == 0) {
+        return;
+    }
+    head = generic_template_body_start(tmpl->head, param);
+    concrete_head = replace_param_and_generics(head,
+                                               tmpl->param,
+                                               inst->arg,
+                                               tmpl->name,
+                                               inst->concrete);
+    concrete_body = replace_param_and_generics(tmpl->body,
+                                               tmpl->param,
+                                               inst->arg,
+                                               tmpl->name,
+                                               inst->concrete);
+    concrete_head = remove_percent(strip_attributes(concrete_head));
+    concrete_body = remove_percent(strip_attributes(concrete_body));
+    fputs(concrete_head->text, out);
+    fputs("{", out);
+    fputs_with_trailing_newline(concrete_body->text, out);
+    fputs("};\n", out);
+    inst->emitted = 1;
+    text_free(concrete_head);
+    text_free(concrete_body);
+}
+
+static void emit_payload_enum_generic_dependencies(FILE *out)
+{
+    int i;
+
+    for (i = 0; i < g_payload_enums.count; i++) {
+        struct PayloadEnum *en = &g_payload_enums.en[i];
+        int j;
+
+        for (j = 0; j < en->inst_count; j++) {
+            const char *p = skip_ws(en->inst[j].arg);
+            char concrete[NAME_MAX_LEN];
+            struct GenericInstance *dependency = NULL;
+            struct GenericTemplate *tmpl;
+
+            if (!starts_word(p, "struct")) {
+                continue;
+            }
+            p = skip_ws(p + 6);
+            if (!is_ident_start((unsigned char)*p)) {
+                continue;
+            }
+            read_name(p, concrete);
+            tmpl = generic_struct_find_by_concrete(concrete, &dependency);
+            if (tmpl != NULL && dependency != NULL) {
+                emit_generic_struct_instance(out, tmpl, dependency);
+            }
+        }
+    }
+}
+
 static void emit_generic_struct_instances(FILE *out)
 {
     int i;
@@ -12509,31 +12863,7 @@ static void emit_generic_struct_instances(FILE *out)
     for (i = 0; i < g_generic_structs.count; i++) {
         struct GenericTemplate *tmpl = &g_generic_structs.tmpl[i];
         for (j = 0; j < tmpl->inst_count; j++) {
-            char param[NAME_MAX_LEN];
-            const char *head = generic_template_body_start(tmpl->head, param);
-            struct Text *concrete_head;
-            struct Text *concrete_body;
-            if (strcmp(tmpl->inst[j].arg, tmpl->param) == 0) {
-                continue;
-            }
-            concrete_head = replace_param_and_generics(head,
-                                                       tmpl->param,
-                                                       tmpl->inst[j].arg,
-                                                       tmpl->name,
-                                                       tmpl->inst[j].concrete);
-            concrete_body = replace_param_and_generics(tmpl->body,
-                                                                    tmpl->param,
-                                                                    tmpl->inst[j].arg,
-                                                                    tmpl->name,
-                                                                    tmpl->inst[j].concrete);
-            concrete_head = remove_percent(strip_attributes(concrete_head));
-            concrete_body = remove_percent(strip_attributes(concrete_body));
-            fputs(concrete_head->text, out);
-            fputs("{", out);
-            fputs_with_trailing_newline(concrete_body->text, out);
-            fputs("};\n", out);
-            text_free(concrete_head);
-            text_free(concrete_body);
+            emit_generic_struct_instance(out, tmpl, &tmpl->inst[j]);
         }
     }
 }
@@ -13067,6 +13397,7 @@ int main(int argc, char **argv)
                 fputs("void cminus_panic(const char* message, const char* file, int line);\n", stdout);
             }
         }
+        emit_payload_enum_generic_dependencies(stdout);
         emit_payload_enum_instances(stdout);
         emit_generic_struct_instances(stdout);
         emit_generic_function_prototypes(stdout);

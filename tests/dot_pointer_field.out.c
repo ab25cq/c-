@@ -1496,19 +1496,33 @@ struct Parent {
     int count;
 };
 
+static void Parent_finalize(struct Parent* self)
+{
+    if (self == NULL) {
+        return;
+    }
+    if (self->child != NULL) {
+        cminus_gc_free(self->child);
+    }
+
+}
+
+
 static __attribute__((unused)) struct Parent* Parent_clone(struct Parent* self)
 {
     struct Parent* copy = cminus_gc_calloc(1, sizeof(struct Parent));
     if (copy == NULL || self == NULL) {
         return copy;
     }
-    copy->child = self->child;
+    if (self->child != NULL) {
+        copy->child = Child_clone(self->child);
+    }
     copy->count = self->count;
     return copy;
 }
 
 
-int child_value(struct Child *child)
+int child_value(const struct Child *child)
 {    char __cminus_stack_anchor;
     size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
 
@@ -1537,6 +1551,7 @@ int main(void)
     if (parent->child->value != 11) {
         __typeof__((1)) __cminus_return8 = (1);
         if (parent != NULL) {
+            Parent_finalize(parent);
             cminus_gc_free(parent);
         }
 
@@ -1546,6 +1561,7 @@ int main(void)
     if (parent->count != 12) {
         __typeof__((2)) __cminus_return9 = (2);
         if (parent != NULL) {
+            Parent_finalize(parent);
             cminus_gc_free(parent);
         }
 
@@ -1554,6 +1570,7 @@ int main(void)
     }
     __typeof__((0)) __cminus_return10 = (0);
     if (parent != NULL) {
+        Parent_finalize(parent);
         cminus_gc_free(parent);
     }
 

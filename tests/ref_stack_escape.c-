@@ -1,14 +1,14 @@
 Ref<int> make_ref(void)
 {
     int value = 7;
-    Ref<int> ref = Ref<int>.from(&value);
+    Ref<int> reference = Ref<int>.from(&value);
 
-    return ref;
+    return reference;
 }
 
 int main(void)
 {
-    Ref<int> ref = make_ref();
+    Ref<int> reference = make_ref();
 
-    return ref.get();
+    return reference.get();
 }

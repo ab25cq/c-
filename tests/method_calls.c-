@@ -6,15 +6,15 @@ struct data {
     int value;
 };
 
-void data_show(data self)
+void data_show(mut ref data self)
 {
     self->value = 42;
 }
 
 int main(void)
 {
-    data d = new data;
-    data p = new data;
+    Box<data> d = new data;
+    Box<data> p = new data;
 
     d.show();
     p.show();

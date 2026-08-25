@@ -1525,6 +1525,10 @@ int main(void)
     Vec_push_int(values, 32);
     printf("%s %d %d\n", text, ({ struct __CMinusIndex_int __index_result0 = Vec_get_opt_int(values, 0); if (__index_result0.tag == __CMinusIndex_int_TAG_None) { cminus_panic("index out of range", "tests/safe_reference_surface.c-", 24); } __index_result0.payload.Some; }) + ({ struct __CMinusIndex_int __index_result1 = Vec_get_opt_int(values, 1); if (__index_result1.tag == __CMinusIndex_int_TAG_None) { cminus_panic("index out of range", "tests/safe_reference_surface.c-", 24); } __index_result1.payload.Some; }), data->value);
     __typeof__((0)) __cminus_return7 = (0);
+    if (data != NULL) {
+        cminus_gc_free(data);
+    }
+
     if (values != NULL) {
         Vec_delete_int(values);
         cminus_gc_free(values);

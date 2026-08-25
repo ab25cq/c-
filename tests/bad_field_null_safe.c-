@@ -3,12 +3,12 @@ struct Child {
 };
 
 struct Parent {
-    Child child;
+    Box<Child> child;
 };
 
 int main(void)
 {
-    Parent parent = new Parent;
+    Box<Parent> parent = new Parent;
     parent.child = NULL;
     return 0;
 }

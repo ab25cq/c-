@@ -7,8 +7,8 @@ int main(void)
 {
     int value = 3;
     Optional<int> maybe = make_value(9);
-    Ref<int> ref = Ref<int>.from(&value);
+    Ref<int> reference = Ref<int>.from(&value);
 
-    ref.set(ref.get() + maybe.get_Some());
+    reference.set(reference.get() + maybe.get_Some());
     return value == 12 && maybe.is_Some() ? 0 : 1;
 }

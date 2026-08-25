@@ -4,6 +4,6 @@ struct Data {
 
 interrupt void timer_irq(void)
 {
-    Data data = new Data;
+    Box<Data> data = new Data;
     data.value = 1;
 }

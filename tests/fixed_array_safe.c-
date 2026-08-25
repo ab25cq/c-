@@ -4,7 +4,7 @@ struct Buffer {
 
 int main(void)
 {
-    Buffer buf = new Buffer;
+    Box<Buffer> buf = new Buffer;
     Span<int> view;
     Span<int> used;
     FixedVec<int> values;

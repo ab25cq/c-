@@ -4,7 +4,7 @@ struct Holder {
 
 int main(void)
 {
-    Holder holder = new Holder;
+    Box<Holder> holder = new Holder;
 
     holder->text = s"aaa";
     holder->text = s"bbb";

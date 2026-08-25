@@ -8,7 +8,7 @@ struct Data {
 
 int main(void)
 {
-    Data data = new Data;
+    Box<Data> data = new Data;
 
     data->text = s"aaa";
     data->text = s"bbb";

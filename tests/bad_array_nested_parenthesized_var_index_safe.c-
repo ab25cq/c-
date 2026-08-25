@@ -1,0 +1,7 @@
+int main(void)
+{
+    int values[3];
+    int index = 3;
+
+    return (((values)))[index];
+}

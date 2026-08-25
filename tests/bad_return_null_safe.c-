@@ -2,7 +2,7 @@ struct Data {
     int value;
 };
 
-Data make_data(void)
+Box<Data> make_data(void)
 {
     return NULL;
 }

@@ -1495,25 +1495,25 @@ int main(void)
     size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
 
     int value = 10;
-    struct Ref_int ref = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value, 0); });
+    struct Ref_int reference = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value, 0); });
 
-    if (Ref_is_null_int(&ref)) {
+    if (Ref_is_null_int(&reference)) {
         __typeof__((1)) __cminus_return6 = (1);
         cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
         return __cminus_return6;
     }
-    if (Ref_get_int(&ref) != 10) {
+    if (Ref_get_int(&reference) != 10) {
         __typeof__((2)) __cminus_return7 = (2);
         cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
         return __cminus_return7;
     }
-    Ref_set_int(&ref, 25);
-    if (value != 25 || Ref_get_int(&ref) != 25) {
+    Ref_set_int(&reference, 25);
+    if (value != 25 || Ref_get_int(&reference) != 25) {
         __typeof__((3)) __cminus_return8 = (3);
         cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
         return __cminus_return8;
     }
-    printf("%d\n", Ref_get_int(&ref));
+    printf("%d\n", Ref_get_int(&reference));
     __typeof__((0)) __cminus_return9 = (0);
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
     return __cminus_return9;

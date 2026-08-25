@@ -1,12 +1,12 @@
 int main(void)
 {
     int value = 7;
-    Ref<int> ref;
+    Ref<int> reference;
 
     unsafe {
-        ref = Ref<int>.from(&value);
+        reference = Ref<int>.from(&value);
     }
-    ref->data++;
-    ref->data--;
+    reference->data++;
+    reference->data--;
     return 0;
 }

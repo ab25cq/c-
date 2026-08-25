@@ -4,7 +4,7 @@ struct QueueStorage {
 
 int main(void)
 {
-    stack QueueStorage storage;
+    QueueStorage storage;
     RingBuffer<int> q;
     struct __CMinusIndex<int> item;
 

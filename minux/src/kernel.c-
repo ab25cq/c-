@@ -87,7 +87,7 @@ struct Kernel {
     int hw_user_svc_mode;
 };
 
-void console_init(Kernel kernel)
+void console_init(mut ref Kernel kernel)
 {
     unsafe {
         kernel.uart_dr = Register<unsigned int>.from_addr(UART0_DR_ADDR);
@@ -99,7 +99,7 @@ void console_init(Kernel kernel)
     }
 }
 
-void console_putc(Kernel kernel, int ch)
+void console_putc(mut ref Kernel kernel, int ch)
 {
     if (ch == '\n') {
         console_putc(kernel, '\r');
@@ -109,7 +109,7 @@ void console_putc(Kernel kernel, int ch)
     kernel.uart_dr.write(ch);
 }
 
-void console_write(Kernel kernel, Span<int> text)
+void console_write(mut ref Kernel kernel, Span<int> text)
 {
     int i = 0;
     int ch;
@@ -220,7 +220,7 @@ void text_program_app(Span<int> out)
     out.set(1, 0);
 }
 
-void fs_init(Kernel kernel)
+void fs_init(mut ref Kernel kernel)
 {
     Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES, true);
     Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN, true);
@@ -243,7 +243,7 @@ int fs_data_pos(int file_index, int offset)
     return file_index * MINUX_FILE_SIZE + offset;
 }
 
-int fs_name_equals(Kernel kernel, int file_index, Span<int> path)
+int fs_name_equals(mut ref Kernel kernel, int file_index, Span<int> path)
 {
     Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN, true);
     Span<int> name = names.slice(fs_name_pos(file_index, 0), MINUX_NAME_LEN);
@@ -251,7 +251,7 @@ int fs_name_equals(Kernel kernel, int file_index, Span<int> path)
     return name.cstr_eq(path);
 }
 
-int fs_find(Kernel kernel, Span<int> path)
+int fs_find(mut ref Kernel kernel, Span<int> path)
 {
     int i = 0;
 
@@ -264,7 +264,7 @@ int fs_find(Kernel kernel, Span<int> path)
     return -1;
 }
 
-int fs_alloc(Kernel kernel)
+int fs_alloc(mut ref Kernel kernel)
 {
     __CMinusIndex<int> free_slot = kernel.fs_slots.alloc_opt();
 
@@ -274,7 +274,7 @@ int fs_alloc(Kernel kernel)
     return free_slot.get_Some();
 }
 
-int fs_create(Kernel kernel, Span<int> path)
+int fs_create(mut ref Kernel kernel, Span<int> path)
 {
     Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN, true);
     Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES, true);
@@ -294,7 +294,7 @@ int fs_create(Kernel kernel, Span<int> path)
     return index;
 }
 
-int fs_write(Kernel kernel, int file_index, Span<int> text)
+int fs_write(mut ref Kernel kernel, int file_index, Span<int> text)
 {
     Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES, true);
     Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE, true);
@@ -314,7 +314,7 @@ int fs_write(Kernel kernel, int file_index, Span<int> text)
     return len;
 }
 
-int fs_read(Kernel kernel, int file_index, Span<int> out)
+int fs_read(mut ref Kernel kernel, int file_index, Span<int> out)
 {
     Span<int> sizes = Span<int>.from(kernel->fs_size, MINUX_MAX_FILES, true);
     Span<int> data = Span<int>.from(kernel->fs_data, MINUX_MAX_FILES * MINUX_FILE_SIZE, true);
@@ -334,7 +334,7 @@ int fs_read(Kernel kernel, int file_index, Span<int> out)
     return len;
 }
 
-void fs_list(Kernel kernel)
+void fs_list(mut ref Kernel kernel)
 {
     Span<int> names = Span<int>.from(kernel->fs_name, MINUX_MAX_FILES * MINUX_NAME_LEN, true);
     int i = 0;
@@ -358,7 +358,7 @@ void fs_list(Kernel kernel)
     }
 }
 
-void fs_demo(Kernel kernel)
+void fs_demo(mut ref Kernel kernel)
 {
     int header_buf[8];
     int path_buf[16];
@@ -411,7 +411,7 @@ int minux_svc_handler(unsigned int saved_cpsr, unsigned int saved_r0, unsigned i
     return 0;
 }
 
-void kernel_probe_user_mode(Kernel kernel)
+void kernel_probe_user_mode(mut ref Kernel kernel)
 {
     kernel.hw_user_svc_seen = 0;
     kernel.hw_user_svc_mode = 0;
@@ -426,12 +426,12 @@ void kernel_probe_user_mode(Kernel kernel)
     }
 }
 
-void kernel_enter_kernel(Kernel kernel)
+void kernel_enter_kernel(mut ref Kernel kernel)
 {
     kernel.cpu_mode = MODE_KERNEL;
 }
 
-void kernel_enter_user(Kernel kernel)
+void kernel_enter_user(mut ref Kernel kernel)
 {
     kernel.cpu_mode = MODE_USER;
     kernel.user_trap = USER_TRAP_NONE;
@@ -441,14 +441,14 @@ void kernel_enter_user(Kernel kernel)
     kernel.syscall_arg2 = 0;
 }
 
-void kernel_require_kernel(Kernel kernel)
+void kernel_require_kernel(mut ref Kernel kernel)
 {
     if (kernel.cpu_mode != MODE_KERNEL) {
         cminus_panic("kernel service called from user mode", __FILE__, __LINE__);
     }
 }
 
-void user_hardware_syscall(Kernel kernel, int number, int arg0, int arg1, int arg2)
+void user_hardware_syscall(mut ref Kernel kernel, int number, int arg0, int arg1, int arg2)
 {
     Span<int> user_sps = Span<int>.from(kernel.proc_user_sp, MINUX_MAX_PROC, true);
     if (kernel.cpu_mode != MODE_USER) {
@@ -459,7 +459,7 @@ void user_hardware_syscall(Kernel kernel, int number, int arg0, int arg1, int ar
     }
 }
 
-void kernel_save_user_context(Kernel kernel, int index)
+void kernel_save_user_context(mut ref Kernel kernel, int index)
 {
     Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC, true);
     Span<int> user_lrs = Span<int>.from(kernel.proc_user_lr, MINUX_MAX_PROC, true);
@@ -478,7 +478,7 @@ void kernel_save_user_context(Kernel kernel, int index)
     r3s.set(index, kernel.syscall_arg2);
 }
 
-void kernel_check_saved_user_frame(Kernel kernel, int index)
+void kernel_check_saved_user_frame(mut ref Kernel kernel, int index)
 {
     Span<int> user_pcs = Span<int>.from(kernel.proc_user_pc, MINUX_MAX_PROC, true);
     Span<int> user_cpsrs = Span<int>.from(kernel.proc_user_cpsr, MINUX_MAX_PROC, true);
@@ -546,7 +546,7 @@ int proc_char(int entry, int pc)
     return 0;
 }
 
-void timer_arm(Kernel kernel)
+void timer_arm(mut ref Kernel kernel)
 {
     unsigned int now = kernel.timer_clo.read();
 
@@ -554,7 +554,7 @@ void timer_arm(Kernel kernel)
     kernel.timer_c1.write(now + TIMER_INTERVAL);
 }
 
-void timer_init(Kernel kernel)
+void timer_init(mut ref Kernel kernel)
 {
     kernel.irq_enable1.set_bits(TIMER_MATCH1);
     timer_arm(kernel);
@@ -563,7 +563,7 @@ void timer_init(Kernel kernel)
     }
 }
 
-void kernel_init(Kernel kernel)
+void kernel_init(mut ref Kernel kernel)
 {
     Span<int> pids = Span<int>.from(kernel.proc_pid, MINUX_MAX_PROC, true);
     Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
@@ -628,7 +628,7 @@ void kernel_init(Kernel kernel)
     fs_init(kernel);
 }
 
-void kernel_spawn(Kernel kernel, int entry)
+void kernel_spawn(mut ref Kernel kernel, int entry)
 {
     Span<int> pids = Span<int>.from(kernel.proc_pid, MINUX_MAX_PROC, true);
     Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
@@ -670,7 +670,7 @@ void kernel_spawn(Kernel kernel, int entry)
     return;
 }
 
-void fs_load_program(Kernel kernel, Span<int> path)
+void fs_load_program(mut ref Kernel kernel, Span<int> path)
 {
     int file_index = fs_find(kernel, path);
     int image_buf[8];
@@ -687,20 +687,20 @@ void fs_load_program(Kernel kernel, Span<int> path)
     }
 }
 
-void shell_exec_pwd(Kernel kernel)
+void shell_exec_pwd(mut ref Kernel kernel)
 {
     kernel_require_kernel(kernel);
     console_putc(kernel, '/');
     console_putc(kernel, '\n');
 }
 
-void shell_exec_ls(Kernel kernel)
+void shell_exec_ls(mut ref Kernel kernel)
 {
     kernel_require_kernel(kernel);
     fs_list(kernel);
 }
 
-void shell_exec_run(Kernel kernel)
+void shell_exec_run(mut ref Kernel kernel)
 {
     int path_buf[16];
     Span<int> path = Span<int>.from(path_buf, 16);
@@ -710,7 +710,7 @@ void shell_exec_run(Kernel kernel)
     fs_load_program(kernel, path);
 }
 
-void shell_after_line(Kernel kernel, int pc)
+void shell_after_line(mut ref Kernel kernel, int pc)
 {
     if (pc == 5) {
         shell_exec_pwd(kernel);
@@ -721,7 +721,7 @@ void shell_after_line(Kernel kernel, int pc)
     }
 }
 
-void kernel_sys_write(Kernel kernel, int fd, Span<int> text)
+void kernel_sys_write(mut ref Kernel kernel, int fd, Span<int> text)
 {
     kernel_require_kernel(kernel);
     if (fd != FD_STDOUT) {
@@ -730,13 +730,13 @@ void kernel_sys_write(Kernel kernel, int fd, Span<int> text)
     console_write(kernel, text);
 }
 
-void kernel_sys_putchar(Kernel kernel, int ch)
+void kernel_sys_putchar(mut ref Kernel kernel, int ch)
 {
     kernel_require_kernel(kernel);
     console_putc(kernel, ch);
 }
 
-void kernel_sys_exit(Kernel kernel, int proc_index)
+void kernel_sys_exit(mut ref Kernel kernel, int proc_index)
 {
     Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
 
@@ -745,7 +745,7 @@ void kernel_sys_exit(Kernel kernel, int proc_index)
     kernel.proc_slots.free_bit(proc_index);
 }
 
-void kernel_handle_user_trap(Kernel kernel, int index)
+void kernel_handle_user_trap(mut ref Kernel kernel, int index)
 {
     if (kernel.user_trap == USER_TRAP_NONE) {
         return;
@@ -765,7 +765,7 @@ void kernel_handle_user_trap(Kernel kernel, int index)
     }
 }
 
-void kernel_user_step(Kernel kernel, int index)
+void kernel_user_step(mut ref Kernel kernel, int index)
 {
     Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC, true);
     Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC, true);
@@ -794,7 +794,7 @@ void kernel_user_step(Kernel kernel, int index)
     }
 }
 
-void kernel_run_shell_proc(Kernel kernel, int index)
+void kernel_run_shell_proc(mut ref Kernel kernel, int index)
 {
     Span<int> pcs = Span<int>.from(kernel.proc_pc, MINUX_MAX_PROC, true);
     int pc = pcs.get(index);
@@ -811,7 +811,7 @@ void kernel_run_shell_proc(Kernel kernel, int index)
     kernel_user_step(kernel, index);
 }
 
-void kernel_run_proc(Kernel kernel, int index)
+void kernel_run_proc(mut ref Kernel kernel, int index)
 {
     Span<int> entries = Span<int>.from(kernel.proc_entry, MINUX_MAX_PROC, true);
     int entry = entries.get(index);
@@ -824,7 +824,7 @@ void kernel_run_proc(Kernel kernel, int index)
     kernel_user_step(kernel, index);
 }
 
-int kernel_has_runnable(Kernel kernel)
+int kernel_has_runnable(mut ref Kernel kernel)
 {
     Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
     int i = 0;
@@ -838,7 +838,7 @@ int kernel_has_runnable(Kernel kernel)
     return 0;
 }
 
-void kernel_schedule(Kernel kernel)
+void kernel_schedule(mut ref Kernel kernel)
 {
     Span<int> states = Span<int>.from(kernel.proc_state, MINUX_MAX_PROC, true);
     __CMinusIndex<int> queued;
@@ -864,7 +864,7 @@ void kernel_schedule(Kernel kernel)
     }
 }
 
-void kernel_idle(Kernel kernel)
+void kernel_idle(mut ref Kernel kernel)
 {
     while (kernel_has_runnable(kernel)) {
         if (kernel.need_resched) {
@@ -874,7 +874,7 @@ void kernel_idle(Kernel kernel)
     }
 }
 
-void kernel_on_timer(Kernel kernel)
+void kernel_on_timer(mut ref Kernel kernel)
 {
     if (kernel.timer_cs.has_bits(TIMER_MATCH1)) {
         kernel.timer_cs.write(TIMER_MATCH1);
@@ -893,7 +893,7 @@ void minux_irq_handler(void)
     }
 }
 
-void kernel_banner(Kernel kernel)
+void kernel_banner(mut ref Kernel kernel)
 {
     int text[16];
     Span<int> out = Span<int>.from(text, 16);
@@ -904,7 +904,7 @@ void kernel_banner(Kernel kernel)
 
 int main(void)
 {
-    stack Kernel kernel;
+    Kernel kernel;
 
     kernel_init(&kernel);
     unsafe {

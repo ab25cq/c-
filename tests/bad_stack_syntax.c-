@@ -1,0 +1,9 @@
+struct Data {
+    int value;
+};
+
+int main(void)
+{
+    stack Data data;
+    return data.value;
+}

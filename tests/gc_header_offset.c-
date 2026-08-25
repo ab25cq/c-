@@ -4,7 +4,7 @@ struct Data {
 
 int main(void)
 {
-    Data first = new Data;
+    Box<Data> first = new Data;
 
     unsafe {
         struct __CMinusGCHeader* first_header = __cminus_gc_header_from_payload(first);

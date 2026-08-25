@@ -8,7 +8,7 @@ struct QueueOwner {
     unsigned char bytes[OWNER_CAP];
 };
 
-int owner_capacity(QueueOwner owner)
+int owner_capacity(mut ref QueueOwner owner)
 {
     RingBuffer<unsigned char> q = RingBuffer<unsigned char>.from(owner.bytes);
 
@@ -17,8 +17,8 @@ int owner_capacity(QueueOwner owner)
 
 int main(void)
 {
-    stack QueueStorage storage;
-    stack QueueOwner owner;
+    QueueStorage storage;
+    QueueOwner owner;
     unsigned char drained_storage[3];
     RingBuffer<unsigned char> q;
     Span<unsigned char> drained;

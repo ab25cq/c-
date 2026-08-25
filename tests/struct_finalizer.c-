@@ -5,14 +5,14 @@ struct Child {
 };
 
 struct Holder {
-    Child child;
+    Box<Child> child;
 };
 
 int main(void)
 {
-    Holder stack = new Holder;
+    Box<Holder> stack = new Holder;
 
-    Holder heap = new Holder;
+    Box<Holder> heap = new Holder;
 
     return stack != NULL && heap != NULL ? 0 : 1;
 }

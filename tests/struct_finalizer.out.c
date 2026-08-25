@@ -1495,13 +1495,27 @@ struct Holder {
     struct Child *child;
 };
 
+static void Holder_finalize(struct Holder* self)
+{
+    if (self == NULL) {
+        return;
+    }
+    if (self->child != NULL) {
+        cminus_gc_free(self->child);
+    }
+
+}
+
+
 static __attribute__((unused)) struct Holder* Holder_clone(struct Holder* self)
 {
     struct Holder* copy = cminus_gc_calloc(1, sizeof(struct Holder));
     if (copy == NULL || self == NULL) {
         return copy;
     }
-    copy->child = self->child;
+    if (self->child != NULL) {
+        copy->child = Child_clone(self->child);
+    }
     return copy;
 }
 

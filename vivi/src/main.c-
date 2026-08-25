@@ -32,23 +32,29 @@ struct Editor {
     int pending;
 };
 
-void editor_free_lines(Editor ed);
-void editor_clamp(Editor ed);
+void editor_free_lines(mut ref Editor ed);
+void editor_clamp(mut ref Editor ed);
 
 string str_copy(borrow string s)
 {
     string out;
     int len;
+    int pos;
 
     if (s == NULL) {
         s = "";
     }
-    len = strlen(s);
+    len = s.len();
     out = cminus_gc_calloc(len + 1, sizeof(char));
     if (out == NULL) {
         abort();
     }
-    strcpy(out, s);
+    pos = 0;
+    while (pos < len) {
+        out[pos] = s[pos];
+        pos++;
+    }
+    out[len] = '\0';
     return out;
 }
 
@@ -66,7 +72,7 @@ string str_append_char(borrow string line, int ch)
     if (line == NULL) {
         line = "";
     }
-    len = strlen(line);
+    len = line.len();
     out = cminus_gc_calloc(len + 2, sizeof(char));
     if (out == NULL) {
         abort();
@@ -91,7 +97,7 @@ string str_insert_char(borrow string line, int col, int ch)
     if (line == NULL) {
         line = "";
     }
-    len = strlen(line);
+    len = line.len();
     if (col < 0) {
         col = 0;
     }
@@ -130,7 +136,7 @@ string str_delete_char(borrow string line, int col)
     if (line == NULL) {
         return str_empty();
     }
-    len = strlen(line);
+    len = line.len();
     if (len <= 0 || col < 0 || col >= len) {
         out = str_copy(line);
         return out;
@@ -161,7 +167,7 @@ string str_slice(borrow string line, int start, int end)
     if (line == NULL) {
         line = "";
     }
-    len = strlen(line);
+    len = line.len();
     if (start < 0) {
         start = 0;
     }
@@ -189,6 +195,7 @@ string str_join(borrow string left, borrow string right)
     string out;
     int llen;
     int rlen;
+    int pos;
 
     if (left == NULL) {
         left = "";
@@ -196,14 +203,23 @@ string str_join(borrow string left, borrow string right)
     if (right == NULL) {
         right = "";
     }
-    llen = strlen(left);
-    rlen = strlen(right);
+    llen = left.len();
+    rlen = right.len();
     out = cminus_gc_calloc(llen + rlen + 1, sizeof(char));
     if (out == NULL) {
         abort();
     }
-    strcpy(out, left);
-    strcat(out, right);
+    pos = 0;
+    while (pos < llen) {
+        out[pos] = left[pos];
+        pos++;
+    }
+    pos = 0;
+    while (pos < rlen) {
+        out[llen + pos] = right[pos];
+        pos++;
+    }
+    out[llen + rlen] = '\0';
     return out;
 }
 
@@ -212,7 +228,19 @@ string str_append_string(borrow string left, borrow string right)
     return str_join(left, right);
 }
 
-string editor_snapshot(Editor ed)
+int str_find(borrow string line, borrow string needle)
+{
+    unsafe {
+        char* found = strstr(line, needle);
+
+        if (found == NULL) {
+            return -1;
+        }
+        return found - line;
+    }
+}
+
+string editor_snapshot(mut ref Editor ed)
 {
     string out;
     string next;
@@ -251,7 +279,7 @@ void editor_clear_string_vec(Vec<string> values)
     Vec_clear<string>(values);
 }
 
-void editor_record_undo(Editor ed)
+void editor_record_undo(mut ref Editor ed)
 {
     string snap;
 
@@ -260,7 +288,7 @@ void editor_record_undo(Editor ed)
     editor_clear_string_vec(ed->redo_stack);
 }
 
-void editor_restore_snapshot(Editor ed, string snap)
+void editor_restore_snapshot(mut ref Editor ed, string snap)
 {
     int start;
     int pos;
@@ -272,7 +300,7 @@ void editor_restore_snapshot(Editor ed, string snap)
         List_push<string>(ed->lines, str_empty());
         return;
     }
-    len = strlen(snap);
+    len = snap.len();
     start = 0;
     pos = 0;
     while (pos <= len) {
@@ -292,7 +320,7 @@ void editor_restore_snapshot(Editor ed, string snap)
     ed->dirty = 1;
 }
 
-void editor_set_message(Editor ed, borrow string text)
+void editor_set_message(mut ref Editor ed, borrow string text)
 {
     if (ed->message != NULL) {
         cminus_gc_free(ed->message);
@@ -300,7 +328,7 @@ void editor_set_message(Editor ed, borrow string text)
     ed->message = str_copy(text);
 }
 
-void editor_replace_line(Editor ed, int row, string value)
+void editor_replace_line(mut ref Editor ed, int row, string value)
 {
     string old;
 
@@ -312,7 +340,7 @@ void editor_replace_line(Editor ed, int row, string value)
     ed->dirty = 1;
 }
 
-void editor_free_lines(Editor ed)
+void editor_free_lines(mut ref Editor ed)
 {
     int index;
     int count;
@@ -328,7 +356,7 @@ void editor_free_lines(Editor ed)
     }
 }
 
-void editor_init(Editor ed, borrow string path)
+void editor_init(mut ref Editor ed, borrow string path)
 {
     List<string> lines;
     Vec<string> viewport;
@@ -364,10 +392,12 @@ void editor_init(Editor ed, borrow string path)
     Map_set<int,int>(ed->motions, 'l', 2);
 }
 
-void editor_load(Editor ed)
+void editor_load(mut ref Editor ed)
 {
     char buf[4096];
+    Span<char> buf_view = Span<char>.from(buf);
     Optional<FILE*> fp_opt = xfopen(ed->path, "r");
+    int reading = 1;
 
     if (!fp_opt.is_Some()) {
         string empty = str_empty();
@@ -375,22 +405,30 @@ void editor_load(Editor ed)
         return;
     }
     __auto_type fp = fp_opt.get_Some();
-    while (fgets(buf, sizeof(buf), fp) != NULL) {
-        int len = strlen(buf);
-        if (len > 0 && buf[len - 1] == '\n') {
-            buf[len - 1] = '\0';
+    while (reading) {
+        unsafe {
+            reading = fgets(buf, sizeof(buf), fp) != NULL;
+        }
+        if (!reading) {
+            break;
+        }
+        int len = buf_view.cstr_len();
+        if (len > 0 && buf_view.get(len - 1) == '\n') {
+            buf_view.set(len - 1, '\0');
         }
         string line = str_copy(buf);
         List_push<string>(ed->lines, move line);
     }
-    fclose(fp);
+    unsafe {
+        fclose(fp);
+    }
     if (List_is_empty<string>(ed->lines)) {
         string empty = str_empty();
         List_push<string>(ed->lines, move empty);
     }
 }
 
-int editor_save(Editor ed)
+int editor_save(mut ref Editor ed)
 {
     int index;
     int count;
@@ -404,17 +442,21 @@ int editor_save(Editor ed)
     count = List_len<string>(ed->lines);
     index = 0;
     while (index < count) {
-        fputs(List_get<string>(ed->lines, index), fp);
-        fputc('\n', fp);
+        unsafe {
+            fputs(List_get<string>(ed->lines, index), fp);
+            fputc('\n', fp);
+        }
         index++;
     }
-    fclose(fp);
+    unsafe {
+        fclose(fp);
+    }
     ed->dirty = 0;
     editor_set_message(ed, "written");
     return 1;
 }
 
-void editor_clamp(Editor ed)
+void editor_clamp(mut ref Editor ed)
 {
     int line_count;
     string line;
@@ -433,7 +475,7 @@ void editor_clamp(Editor ed)
         ed->row = line_count - 1;
     }
     line = List_get<string>(ed->lines, ed->row);
-    len = strlen(line);
+    len = line.len();
     if (ed->col < 0) {
         ed->col = 0;
     }
@@ -451,7 +493,7 @@ void editor_clamp(Editor ed)
     }
 }
 
-void editor_collect_viewport(Editor ed, int height)
+void editor_collect_viewport(mut ref Editor ed, int height)
 {
     int index;
     int count;
@@ -465,7 +507,7 @@ void editor_collect_viewport(Editor ed, int height)
     }
 }
 
-void editor_draw(Editor ed)
+void editor_draw(mut ref Editor ed)
 {
     int height;
     int width;
@@ -473,14 +515,18 @@ void editor_draw(Editor ed)
     int count;
     string mode_text;
 
-    getmaxyx(stdscr, height, width);
-    erase();
+    unsafe {
+        getmaxyx(stdscr, height, width);
+        erase();
+    }
     editor_collect_viewport(ed, height - 1);
     count = Vec_len<string>(ed->viewport);
     index = 0;
     while (index < count) {
-        mvprintw(index, 0, "%4d ", ed->top + index + 1);
-        mvaddnstr(index, 5, Vec_get<string>(ed->viewport, index), width - 6);
+        unsafe {
+            mvprintw(index, 0, "%4d ", ed->top + index + 1);
+            mvaddnstr(index, 5, Vec_get<string>(ed->viewport, index), width - 6);
+        }
         index++;
     }
     if (ed->mode == ModeInsert) {
@@ -492,24 +538,26 @@ void editor_draw(Editor ed)
     } else {
         mode_text = "";
     }
-    attron(A_REVERSE);
-    if (ed->mode == ModeCommand || ed->mode == ModeSearch) {
-        mvprintw(height - 1, 0, "%s%s", mode_text, ed->command);
-    } else {
-        mvprintw(height - 1, 0, "%s %s  %s  %d,%d  %s",
-                 mode_text,
-                 ed->dirty ? "[+]" : "[-]",
-                 ed->path,
-                 ed->row + 1,
-                 ed->col + 1,
-                 ed->message);
+    unsafe {
+        attron(A_REVERSE);
+        if (ed->mode == ModeCommand || ed->mode == ModeSearch) {
+            mvprintw(height - 1, 0, "%s%s", mode_text, ed->command);
+        } else {
+            mvprintw(height - 1, 0, "%s %s  %s  %d,%d  %s",
+                     mode_text,
+                     ed->dirty ? "[+]" : "[-]",
+                     ed->path,
+                     ed->row + 1,
+                     ed->col + 1,
+                     ed->message);
+        }
+        attroff(A_REVERSE);
+        wmove(stdscr, ed->row - ed->top, ed->col + 5);
+        refresh();
     }
-    attroff(A_REVERSE);
-    wmove(stdscr, ed->row - ed->top, ed->col + 5);
-    refresh();
 }
 
-void editor_move(Editor ed, int motion)
+void editor_move(mut ref Editor ed, int motion)
 {
     if (motion == -1) {
         ed->col--;
@@ -523,7 +571,7 @@ void editor_move(Editor ed, int motion)
     editor_clamp(ed);
 }
 
-void editor_insert_char(Editor ed, int ch)
+void editor_insert_char(mut ref Editor ed, int ch)
 {
     string old_line;
     string new_line;
@@ -535,13 +583,13 @@ void editor_insert_char(Editor ed, int ch)
     ed->col++;
 }
 
-void editor_delete_char(Editor ed)
+void editor_delete_char(mut ref Editor ed)
 {
     string old_line;
     string new_line;
 
     old_line = List_get<string>(ed->lines, ed->row);
-    if (strlen(old_line) <= 0) {
+    if (old_line.len() <= 0) {
         return;
     }
     new_line = str_delete_char(old_line, ed->col);
@@ -550,7 +598,7 @@ void editor_delete_char(Editor ed)
     editor_clamp(ed);
 }
 
-void editor_backspace(Editor ed)
+void editor_backspace(mut ref Editor ed)
 {
     string joined;
     if (ed->col > 0) {
@@ -567,7 +615,7 @@ void editor_backspace(Editor ed)
         editor_record_undo(ed);
         prev = List_get<string>(ed->lines, ed->row - 1);
         current = List_get<string>(ed->lines, ed->row);
-        prev_len = strlen(prev);
+        prev_len = prev.len();
         joined = str_join(prev, current);
         cminus_gc_free(prev);
         List_set<string>(ed->lines, ed->row - 1, move joined);
@@ -581,7 +629,7 @@ void editor_backspace(Editor ed)
     }
 }
 
-void editor_new_line(Editor ed, int below)
+void editor_new_line(mut ref Editor ed, int below)
 {
     int insert_at;
 
@@ -604,7 +652,7 @@ void editor_new_line(Editor ed, int below)
     editor_clamp(ed);
 }
 
-void editor_split_line(Editor ed)
+void editor_split_line(mut ref Editor ed)
 {
     string line;
     string left;
@@ -613,7 +661,7 @@ void editor_split_line(Editor ed)
     editor_record_undo(ed);
     line = List_get<string>(ed->lines, ed->row);
     left = str_slice(line, 0, ed->col);
-    right = str_slice(line, ed->col, strlen(line));
+    right = str_slice(line, ed->col, line.len());
     cminus_gc_free(line);
     List_set<string>(ed->lines, ed->row, move left);
     List_insert<string>(ed->lines, ed->row + 1, move right);
@@ -623,7 +671,7 @@ void editor_split_line(Editor ed)
     editor_clamp(ed);
 }
 
-void editor_delete_line(Editor ed)
+void editor_delete_line(mut ref Editor ed)
 {
     struct __CMinusIndex<string> removed;
 
@@ -646,20 +694,22 @@ void editor_delete_line(Editor ed)
     editor_clamp(ed);
 }
 
-int editor_find(Editor ed, borrow string needle)
+int editor_find(mut ref Editor ed, borrow string needle)
 {
     int index;
     int count;
+    int col;
 
-    if (needle == NULL || strlen(needle) == 0) {
+    if (needle == NULL || needle.len() == 0) {
         return 0;
     }
     count = List_len<string>(ed->lines);
     index = ed->row;
     while (index < count) {
-        if (strstr(List_get<string>(ed->lines, index), needle) != NULL) {
+        col = str_find(List_get<string>(ed->lines, index), needle);
+        if (col >= 0) {
             ed->row = index;
-            ed->col = strstr(List_get<string>(ed->lines, index), needle) - List_get<string>(ed->lines, index);
+            ed->col = col;
             editor_clamp(ed);
             return 1;
         }
@@ -667,9 +717,10 @@ int editor_find(Editor ed, borrow string needle)
     }
     index = 0;
     while (index < ed->row) {
-        if (strstr(List_get<string>(ed->lines, index), needle) != NULL) {
+        col = str_find(List_get<string>(ed->lines, index), needle);
+        if (col >= 0) {
             ed->row = index;
-            ed->col = strstr(List_get<string>(ed->lines, index), needle) - List_get<string>(ed->lines, index);
+            ed->col = col;
             editor_clamp(ed);
             return 1;
         }
@@ -678,7 +729,7 @@ int editor_find(Editor ed, borrow string needle)
     return 0;
 }
 
-void editor_clear_command(Editor ed)
+void editor_clear_command(mut ref Editor ed)
 {
     if (ed->command != NULL) {
         cminus_gc_free(ed->command);
@@ -686,19 +737,19 @@ void editor_clear_command(Editor ed)
     ed->command = str_empty();
 }
 
-void editor_finish_command(Editor ed)
+void editor_finish_command(mut ref Editor ed)
 {
-    if (strcmp(ed->command, "q") == 0) {
+    if (ed->command.eq("q")) {
         if (ed->dirty) {
             editor_set_message(ed, "no write since last change");
         } else {
             ed->running = 0;
         }
-    } else if (strcmp(ed->command, "q!") == 0) {
+    } else if (ed->command.eq("q!")) {
         ed->running = 0;
-    } else if (strcmp(ed->command, "w") == 0) {
+    } else if (ed->command.eq("w")) {
         editor_save(ed);
-    } else if (strcmp(ed->command, "wq") == 0) {
+    } else if (ed->command.eq("wq")) {
         if (editor_save(ed)) {
             ed->running = 0;
         }
@@ -709,7 +760,7 @@ void editor_finish_command(Editor ed)
     ed->mode = ModeNormal;
 }
 
-void editor_finish_search(Editor ed)
+void editor_finish_search(mut ref Editor ed)
 {
     if (!editor_find(ed, ed->command)) {
         editor_set_message(ed, "pattern not found");
@@ -718,7 +769,7 @@ void editor_finish_search(Editor ed)
     ed->mode = ModeNormal;
 }
 
-void editor_append_command_char(Editor ed, int ch)
+void editor_append_command_char(mut ref Editor ed, int ch)
 {
     string next;
 
@@ -727,15 +778,15 @@ void editor_append_command_char(Editor ed, int ch)
     ed->command = next;
 }
 
-void editor_handle_command_key(Editor ed, int ch)
+void editor_handle_command_key(mut ref Editor ed, int ch)
 {
     string next;
     if (ch == 27) {
         editor_clear_command(ed);
         ed->mode = ModeNormal;
     } else if (ch == KEY_BACKSPACE || ch == 127) {
-        if (strlen(ed->command) > 0) {
-            next = str_slice(ed->command, 0, strlen(ed->command) - 1);
+        if (ed->command.len() > 0) {
+            next = str_slice(ed->command, 0, ed->command.len() - 1);
             cminus_gc_free(ed->command);
             ed->command = next;
         }
@@ -750,7 +801,7 @@ void editor_handle_command_key(Editor ed, int ch)
     }
 }
 
-void editor_handle_insert_key(Editor ed, int ch)
+void editor_handle_insert_key(mut ref Editor ed, int ch)
 {
     if (ch == 27) {
         ed->mode = ModeNormal;
@@ -767,7 +818,7 @@ void editor_handle_insert_key(Editor ed, int ch)
     editor_clamp(ed);
 }
 
-void editor_undo(Editor ed)
+void editor_undo(mut ref Editor ed)
 {
     struct __CMinusIndex<string> prev;
     string current;
@@ -784,7 +835,7 @@ void editor_undo(Editor ed)
     editor_set_message(ed, "undo");
 }
 
-void editor_redo(Editor ed)
+void editor_redo(mut ref Editor ed)
 {
     struct __CMinusIndex<string> next;
     string current;
@@ -801,7 +852,7 @@ void editor_redo(Editor ed)
     editor_set_message(ed, "redo");
 }
 
-void editor_yank_line(Editor ed)
+void editor_yank_line(mut ref Editor ed)
 {
     if (ed->yank != NULL) {
         cminus_gc_free(ed->yank);
@@ -810,12 +861,12 @@ void editor_yank_line(Editor ed)
     editor_set_message(ed, "1 line yanked");
 }
 
-void editor_paste_line(Editor ed, int below)
+void editor_paste_line(mut ref Editor ed, int below)
 {
     int row;
     string copy;
 
-    if (ed->yank == NULL || strlen(ed->yank) == 0) {
+    if (ed->yank == NULL || ed->yank.len() == 0) {
         editor_set_message(ed, "nothing to paste");
         return;
     }
@@ -835,7 +886,7 @@ void editor_paste_line(Editor ed, int below)
     editor_clamp(ed);
 }
 
-void editor_handle_normal_key(Editor ed, int ch)
+void editor_handle_normal_key(mut ref Editor ed, int ch)
 {
     struct __CMinusIndex<int> motion;
 
@@ -936,7 +987,7 @@ void editor_handle_normal_key(Editor ed, int ch)
     }
 }
 
-void editor_handle_key(Editor ed, int ch)
+void editor_handle_key(mut ref Editor ed, int ch)
 {
     if (ed->mode == ModeInsert) {
         editor_handle_insert_key(ed, ch);
@@ -947,7 +998,7 @@ void editor_handle_key(Editor ed, int ch)
     }
 }
 
-void editor_destroy(Editor ed)
+void editor_destroy(mut ref Editor ed)
 {
     editor_free_lines(ed);
     editor_clear_string_vec(ed->undo_stack);
@@ -965,12 +1016,11 @@ void editor_destroy(Editor ed)
 
 int run_self_test(void)
 {
-    Editor ed;
+    Box<Editor> ed = new Editor;
     struct __CMinusIndex<int> command;
     string line1;
     string line2;
 
-    ed = new Editor;
     editor_init(ed, "/tmp/vivi-self-test.txt");
     line1 = str_copy("日本語 line");
     line2 = str_copy("second");
@@ -1032,21 +1082,29 @@ int run_self_test(void)
 
 int app_main(borrow string path)
 {
-    Editor ed;
+    Box<Editor> ed = new Editor;
 
-    setlocale(LC_ALL, "");
-    ed = new Editor;
+    unsafe {
+        setlocale(LC_ALL, "");
+        initscr();
+        raw();
+        keypad(stdscr, TRUE);
+        noecho();
+    }
     editor_init(ed, path);
     editor_load(ed);
-    initscr();
-    raw();
-    keypad(stdscr, TRUE);
-    noecho();
     while (ed->running) {
+        int ch;
+
         editor_draw(ed);
-        editor_handle_key(ed, getch());
+        unsafe {
+            ch = getch();
+        }
+        editor_handle_key(ed, ch);
     }
-    endwin();
+    unsafe {
+        endwin();
+    }
     editor_destroy(ed);
     return 0;
 }

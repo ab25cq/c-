@@ -80,7 +80,7 @@ struct Machine {
     int irq_pending;
 };
 
-void minux_raise(Machine m, int trap)
+void minux_raise(mut ref Machine m, int trap)
 {
     m.last_trap = trap;
     m.trap_pc = m.pc;
@@ -126,7 +126,7 @@ int minux_translate(Span<int> page_table, int virtual_word, int ram_len)
     return phys_word;
 }
 
-int minux_load_word(Machine m, int virtual_word)
+int minux_load_word(mut ref Machine m, int virtual_word)
 {
     Span<int> ram = Span<int>.from(m.ram, MINUX_RAM_WORDS);
     Span<int> page_table = Span<int>.from(m.page_table, MINUX_VPAGES);
@@ -135,7 +135,7 @@ int minux_load_word(Machine m, int virtual_word)
     return ram.get(phys);
 }
 
-void minux_store_word(Machine m, int virtual_word, int value)
+void minux_store_word(mut ref Machine m, int virtual_word, int value)
 {
     Span<int> ram = Span<int>.from(m.ram, MINUX_RAM_WORDS);
     Span<int> page_table = Span<int>.from(m.page_table, MINUX_VPAGES);
@@ -144,7 +144,7 @@ void minux_store_word(Machine m, int virtual_word, int value)
     ram.set(phys, value);
 }
 
-void minux_store_cstr(Machine m, int addr, int c0, int c1, int c2, int c3, int c4, int c5, int c6, int c7)
+void minux_store_cstr(mut ref Machine m, int addr, int c0, int c1, int c2, int c3, int c4, int c5, int c6, int c7)
 {
     minux_store_word(m, addr + 0, c0);
     minux_store_word(m, addr + 1, c1);
@@ -156,7 +156,7 @@ void minux_store_cstr(Machine m, int addr, int c0, int c1, int c2, int c3, int c
     minux_store_word(m, addr + 7, c7);
 }
 
-int minux_cstr_eq(Machine m, int addr, int c0, int c1, int c2, int c3, int c4, int c5, int c6, int c7)
+int minux_cstr_eq(mut ref Machine m, int addr, int c0, int c1, int c2, int c3, int c4, int c5, int c6, int c7)
 {
     return minux_load_word(m, addr + 0) == c0 &&
         minux_load_word(m, addr + 1) == c1 &&
@@ -168,7 +168,7 @@ int minux_cstr_eq(Machine m, int addr, int c0, int c1, int c2, int c3, int c4, i
         minux_load_word(m, addr + 7) == c7;
 }
 
-void minux_clear_machine(Machine m)
+void minux_clear_machine(mut ref Machine m)
 {
     Span<int> ram = Span<int>.from(m.ram, MINUX_RAM_WORDS);
     Span<int> page_table = Span<int>.from(m.page_table, MINUX_VPAGES);
@@ -231,7 +231,7 @@ void minux_clear_machine(Machine m)
     m.irq_pending = 0;
 }
 
-void minux_init_mmu(Machine m)
+void minux_init_mmu(mut ref Machine m)
 {
     Span<int> page_table = Span<int>.from(m.page_table, MINUX_VPAGES);
     int i = 0;
@@ -242,7 +242,7 @@ void minux_init_mmu(Machine m)
     }
 }
 
-void minux_spawn_init(Machine m)
+void minux_spawn_init(mut ref Machine m)
 {
     Span<int> proc_pids = Span<int>.from(m.proc_pid_storage, MINUX_MAX_PROC);
     Span<int> proc_states = Span<int>.from(m.proc_state_storage, MINUX_MAX_PROC);
@@ -266,7 +266,7 @@ void minux_spawn_init(Machine m)
     m.pc = init_entry;
 }
 
-void minux_save_current(Machine m)
+void minux_save_current(mut ref Machine m)
 {
     Span<int> regs = Span<int>.from(m.regs, MINUX_REGS);
     Span<int> proc_pcs = Span<int>.from(m.proc_pc_storage, MINUX_MAX_PROC);
@@ -287,7 +287,7 @@ void minux_save_current(Machine m)
     proc_r2.set(index, r2);
 }
 
-void minux_load_current(Machine m, int index)
+void minux_load_current(mut ref Machine m, int index)
 {
     Span<int> regs = Span<int>.from(m.regs, MINUX_REGS);
     Span<int> proc_pids = Span<int>.from(m.proc_pid_storage, MINUX_MAX_PROC);
@@ -310,7 +310,7 @@ void minux_load_current(Machine m, int index)
     regs.set(2, r2);
 }
 
-int minux_find_next_runnable(Machine m)
+int minux_find_next_runnable(mut ref Machine m)
 {
     Span<int> proc_states = Span<int>.from(m.proc_state_storage, MINUX_MAX_PROC);
     int i = 1;
@@ -329,7 +329,7 @@ int minux_find_next_runnable(Machine m)
     return -1;
 }
 
-void minux_schedule(Machine m)
+void minux_schedule(mut ref Machine m)
 {
     int next;
 
@@ -342,7 +342,7 @@ void minux_schedule(Machine m)
     minux_load_current(m, next);
 }
 
-void minux_exit_current(Machine m)
+void minux_exit_current(mut ref Machine m)
 {
     Span<int> proc_states = Span<int>.from(m.proc_state_storage, MINUX_MAX_PROC);
 
@@ -350,7 +350,7 @@ void minux_exit_current(Machine m)
     minux_schedule(m);
 }
 
-void minux_emit(Machine m, int pc, int opcode, int a, int b, int c)
+void minux_emit(mut ref Machine m, int pc, int opcode, int a, int b, int c)
 {
     Span<int> code_ops = Span<int>.from(m.insn_opcode, MINUX_MAX_CODE);
     Span<int> code_a = Span<int>.from(m.a, MINUX_MAX_CODE);
@@ -363,7 +363,7 @@ void minux_emit(Machine m, int pc, int opcode, int a, int b, int c)
     code_c.set(pc, c);
 }
 
-void minux_load_kernel(Machine m)
+void minux_load_kernel(mut ref Machine m)
 {
     int pc = 0;
 
@@ -414,7 +414,7 @@ void minux_load_kernel(Machine m)
     minux_emit(m, pc, OP_SYSCALL, SYS_EXIT, 0, 0); pc++;
 }
 
-void minux_init_vfs(Machine m)
+void minux_init_vfs(mut ref Machine m)
 {
     Span<int> file_names = Span<int>.from(m.file_name_storage, MINUX_MAX_FILES);
     Span<int> file_bases = Span<int>.from(m.file_data_base_storage, MINUX_MAX_FILES);
@@ -425,7 +425,7 @@ void minux_init_vfs(Machine m)
     file_lens.set(0, 3);
 }
 
-int minux_open_path(Machine m, int path_addr)
+int minux_open_path(mut ref Machine m, int path_addr)
 {
     if (minux_cstr_eq(m, path_addr, '/', 'm', 'o', 't', 'd', 0, 0, 0)) {
         return 3;
@@ -433,7 +433,7 @@ int minux_open_path(Machine m, int path_addr)
     return -1;
 }
 
-int minux_read_fd(Machine m, int fd, int addr, int len)
+int minux_read_fd(mut ref Machine m, int fd, int addr, int len)
 {
     int i = 0;
     int ch;
@@ -449,7 +449,7 @@ int minux_read_fd(Machine m, int fd, int addr, int len)
     return i;
 }
 
-void minux_write_fd(Machine m, int fd, int addr, int len)
+void minux_write_fd(mut ref Machine m, int fd, int addr, int len)
 {
     int i = 0;
     int ch;
@@ -466,7 +466,7 @@ void minux_write_fd(Machine m, int fd, int addr, int len)
     }
 }
 
-void minux_syscall(Machine m, int number)
+void minux_syscall(mut ref Machine m, int number)
 {
     Span<int> regs = Span<int>.from(m.regs, MINUX_REGS);
     int fd;
@@ -503,7 +503,7 @@ void minux_syscall(Machine m, int number)
     }
 }
 
-void minux_timer_tick(Machine m)
+void minux_timer_tick(mut ref Machine m)
 {
     m.timer_counter++;
     if (m.timer_reload > 0 && m.timer_counter >= m.timer_reload) {
@@ -512,7 +512,7 @@ void minux_timer_tick(Machine m)
     }
 }
 
-void minux_handle_interrupts(Machine m)
+void minux_handle_interrupts(mut ref Machine m)
 {
     if (!m.irq_pending) {
         return;
@@ -523,7 +523,7 @@ void minux_handle_interrupts(Machine m)
     minux_schedule(m);
 }
 
-void minux_step(Machine m)
+void minux_step(mut ref Machine m)
 {
     Span<int> regs = Span<int>.from(m.regs, MINUX_REGS);
     Span<int> code_ops = Span<int>.from(m.insn_opcode, MINUX_MAX_CODE);
@@ -575,7 +575,7 @@ void minux_step(Machine m)
     minux_timer_tick(m);
 }
 
-void minux_boot(Machine m)
+void minux_boot(mut ref Machine m)
 {
     int budget = 10000;
 
@@ -595,7 +595,7 @@ void minux_boot(Machine m)
 
 int main(void)
 {
-    stack Machine machine;
+    Machine machine;
 
     minux_boot(&machine);
     return 0;

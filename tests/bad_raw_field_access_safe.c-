@@ -11,6 +11,6 @@ int present(int* raw)
 
 int main(void)
 {
-    Holder holder = new Holder();
+    Box<Holder> holder = new Holder();
     return present(holder.raw);
 }

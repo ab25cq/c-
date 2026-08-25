@@ -6,7 +6,7 @@ struct Item {
 
 int main(void)
 {
-    Item item = new Item;
+    Box<Item> item = new Item;
 
     unsafe {
         int* owned_value = calloc(1, sizeof(int));

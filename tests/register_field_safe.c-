@@ -7,7 +7,7 @@ int main(void)
 {
     unsigned int status_cell = 0;
     unsigned int data_cell = 0;
-    stack Uart uart;
+    Uart uart;
 
     unsafe {
         uart.status = Register<unsigned int>.from_addr((unsigned long)&status_cell);

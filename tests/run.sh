@@ -23,6 +23,14 @@ grep 'cminus_gc_free(p);' tests/types_ok.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/types_ok.out.c -o tests/types_ok.out
 ./tests/types_ok.out
 
+./c- tests/value_reference_syntax.c- > tests/value_reference_syntax.out.c
+grep 'struct Data local = {0};' tests/value_reference_syntax.out.c >/dev/null
+grep 'const struct Data \*data' tests/value_reference_syntax.out.c >/dev/null
+grep 'struct Data \*data, int value' tests/value_reference_syntax.out.c >/dev/null
+grep 'struct Data \*boxed = ' tests/value_reference_syntax.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/value_reference_syntax.out.c -o tests/value_reference_syntax.out
+./tests/value_reference_syntax.out
+
 ./c- tests/local_zero.c- > tests/local_zero.out.c
 grep '#include <string.h>' tests/local_zero.out.c >/dev/null
 grep 'int value = {0};' tests/local_zero.out.c >/dev/null
@@ -482,6 +490,18 @@ if ./c- tests/bad_array_var_index_safe.c- > /dev/null 2> tests/bad_array_var_ind
 fi
 grep "variable index into fixed array 'data' is not allowed in safe mode" tests/bad_array_var_index_safe.err >/dev/null
 
+if ./c- tests/bad_array_parenthesized_var_index_safe.c- > /dev/null 2> tests/bad_array_parenthesized_var_index_safe.err; then
+    echo "parenthesized variable fixed array index unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "variable index into fixed array 'values' is not allowed in safe mode" tests/bad_array_parenthesized_var_index_safe.err >/dev/null
+
+if ./c- tests/bad_array_nested_parenthesized_var_index_safe.c- > /dev/null 2> tests/bad_array_nested_parenthesized_var_index_safe.err; then
+    echo "nested parenthesized variable fixed array index unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "variable index into fixed array 'values' is not allowed in safe mode" tests/bad_array_nested_parenthesized_var_index_safe.err >/dev/null
+
 if ./c- tests/bad_span_field_len.c- > /dev/null 2> tests/bad_span_field_len.err; then
     echo "oversized field Span unexpectedly succeeded" >&2
     exit 1
@@ -532,6 +552,29 @@ if ./tests/ref_stack_escape.out > tests/ref_stack_escape.out.log 2> tests/ref_st
     exit 1
 fi
 grep 'panic: dangling stack reference' tests/ref_stack_escape.err >/dev/null
+
+./c- tests/optional_ref_language.c- > tests/optional_ref_language.out.c
+test "$(grep -c '^struct Optional_Ref_int{' tests/optional_ref_language.out.c)" = "1"
+cc -std=gnu99 -Wall -Wextra tests/optional_ref_language.out.c -o tests/optional_ref_language.out
+./tests/optional_ref_language.out
+
+./c- tests/optional_ref_stack_escape.c- > tests/optional_ref_stack_escape.out.c
+test "$(grep -c '^struct Optional_Ref_int{' tests/optional_ref_stack_escape.out.c)" = "1"
+cc -std=gnu99 -Wall -Wextra tests/optional_ref_stack_escape.out.c -o tests/optional_ref_stack_escape.out
+if ./tests/optional_ref_stack_escape.out > tests/optional_ref_stack_escape.out.log 2> tests/optional_ref_stack_escape.err; then
+    echo "escaped stack Ref inside Optional unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/optional_ref_stack_escape.err >/dev/null
+
+./c- tests/optional_span_stack_escape.c- > tests/optional_span_stack_escape.out.c
+test "$(grep -c '^struct Optional_Span_int{' tests/optional_span_stack_escape.out.c)" = "1"
+cc -std=gnu99 -Wall -Wextra tests/optional_span_stack_escape.out.c -o tests/optional_span_stack_escape.out
+if ./tests/optional_span_stack_escape.out > tests/optional_span_stack_escape.out.log 2> tests/optional_span_stack_escape.err; then
+    echo "escaped stack Span inside Optional unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: dangling stack reference' tests/optional_span_stack_escape.err >/dev/null
 
 ./c- tests/fixedvec_stack_escape.c- > tests/fixedvec_stack_escape.out.c
 grep 'FixedVec_from_int(raw, 2, 0)' tests/fixedvec_stack_escape.out.c >/dev/null
@@ -769,6 +812,54 @@ if ./c- tests/bad_pointer_deref_call_safe.c- > /dev/null 2> tests/bad_pointer_de
 fi
 grep 'pointer dereference is only allowed inside unsafe' tests/bad_pointer_deref_call_safe.err >/dev/null
 
+if ./c- tests/bad_pointer_deref_parenthesized_safe.c- > /dev/null 2> tests/bad_pointer_deref_parenthesized_safe.err; then
+    echo "parenthesized pointer dereference outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'pointer dereference is only allowed inside unsafe' tests/bad_pointer_deref_parenthesized_safe.err >/dev/null
+
+if ./c- tests/bad_pointer_deref_nested_parenthesized_safe.c- > /dev/null 2> tests/bad_pointer_deref_nested_parenthesized_safe.err; then
+    echo "nested parenthesized pointer dereference outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'pointer dereference is only allowed inside unsafe' tests/bad_pointer_deref_nested_parenthesized_safe.err >/dev/null
+
+if ./c- tests/bad_pointer_deref_address_safe.c- > /dev/null 2> tests/bad_pointer_deref_address_safe.err; then
+    echo "address-of pointer dereference outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'pointer dereference is only allowed inside unsafe' tests/bad_pointer_deref_address_safe.err >/dev/null
+
+if ./c- tests/bad_array_decay_deref_safe.c- > /dev/null 2> tests/bad_array_decay_deref_safe.err; then
+    echo "array decay dereference outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'pointer dereference is only allowed inside unsafe' tests/bad_array_decay_deref_safe.err >/dev/null
+
+if ./c- tests/bad_pointer_subscript_safe.c- > /dev/null 2> tests/bad_pointer_subscript_safe.err; then
+    echo "raw pointer subscript outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'raw pointer dereference is only allowed inside unsafe' tests/bad_pointer_subscript_safe.err >/dev/null
+
+if ./c- tests/bad_raw_pointer_arrow_safe.c- > /dev/null 2> tests/bad_raw_pointer_arrow_safe.err; then
+    echo "raw pointer arrow access outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'raw pointer dereference is only allowed inside unsafe' tests/bad_raw_pointer_arrow_safe.err >/dev/null
+
+if ./c- tests/bad_parenthesized_pointer_subscript_safe.c- > /dev/null 2> tests/bad_parenthesized_pointer_subscript_safe.err; then
+    echo "parenthesized raw pointer subscript outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'raw pointer dereference is only allowed inside unsafe' tests/bad_parenthesized_pointer_subscript_safe.err >/dev/null
+
+if ./c- tests/bad_parenthesized_raw_pointer_arrow_safe.c- > /dev/null 2> tests/bad_parenthesized_raw_pointer_arrow_safe.err; then
+    echo "parenthesized raw pointer arrow access outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'raw pointer dereference is only allowed inside unsafe' tests/bad_parenthesized_raw_pointer_arrow_safe.err >/dev/null
+
 if ./c- tests/bad_c_string_call_safe.c- > /dev/null 2> tests/bad_c_string_call_safe.err; then
     echo "C string function outside unsafe unexpectedly succeeded" >&2
     exit 1
@@ -853,7 +944,7 @@ cc -std=gnu99 -Wall -Wextra tests/unsafe_pointer_deref.out.c -o tests/unsafe_poi
 test "$(./tests/unsafe_pointer_deref.out)" = "7"
 
 ./c- tests/safe_pointer_arith.c- > tests/safe_pointer_arith.out.c
-grep 'ref.data++;' tests/safe_pointer_arith.out.c >/dev/null
+grep 'reference.data++;' tests/safe_pointer_arith.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/safe_pointer_arith.out.c -o tests/safe_pointer_arith.out
 ./tests/safe_pointer_arith.out
 
@@ -886,9 +977,9 @@ cc -std=gnu99 -Wall -Wextra tests/gc_header_offset.out.c -o tests/gc_header_offs
 
 ./c- tests/ref_language.c- > tests/ref_language.out.c
 grep 'struct Ref_int Ref_from_int' tests/ref_language.out.c >/dev/null
-grep 'struct Ref_int ref = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value' tests/ref_language.out.c >/dev/null
-grep 'Ref_get_int(&ref)' tests/ref_language.out.c >/dev/null
-grep 'Ref_set_int(&ref, 25)' tests/ref_language.out.c >/dev/null
+grep 'struct Ref_int reference = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value' tests/ref_language.out.c >/dev/null
+grep 'Ref_get_int(&reference)' tests/ref_language.out.c >/dev/null
+grep 'Ref_set_int(&reference, 25)' tests/ref_language.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/ref_language.out.c -o tests/ref_language.out
 test "$(./tests/ref_language.out)" = "25"
 
@@ -1229,6 +1320,12 @@ fi
 cc -std=gnu99 -Wall -Wextra tests/stack_struct.out.c -o tests/stack_struct.out
 ./tests/stack_struct.out
 
+if ./c- tests/bad_stack_syntax.c- > tests/bad_stack_syntax.out.c 2> tests/bad_stack_syntax.err; then
+    echo "removed stack struct syntax unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "'stack Type name' syntax has been removed" tests/bad_stack_syntax.err >/dev/null
+
 ./c- -no-heap tests/no_heap_stack_ok.c- > tests/no_heap_stack_ok.out.c
 grep 'struct Data data = {0};' tests/no_heap_stack_ok.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/no_heap_stack_ok.out.c -o tests/no_heap_stack_ok.out
@@ -1299,7 +1396,7 @@ cc -std=gnu99 -Wall -Wextra tests/no_heap_static_volatile_ok.out.c -o tests/no_h
 
 ./c- -no-heap tests/no_heap_optional_ref_ok.c- > tests/no_heap_optional_ref_ok.out.c
 grep 'struct Optional_int maybe = make_value(9);' tests/no_heap_optional_ref_ok.out.c >/dev/null
-grep 'struct Ref_int ref = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value' tests/no_heap_optional_ref_ok.out.c >/dev/null
+grep 'struct Ref_int reference = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value' tests/no_heap_optional_ref_ok.out.c >/dev/null
 if grep 'cminus_gc_calloc(1, sizeof(struct Optional_int))' tests/no_heap_optional_ref_ok.out.c >/dev/null; then
     echo "no-heap Optional unexpectedly allocated managed heap" >&2
     exit 1
@@ -1357,7 +1454,7 @@ struct Data {
 
 int main(void)
 {
-    stack Data data;
+    Data data;
 
     data.value = 12;
     return data.value == 12 ? 0 : 1;
@@ -1383,7 +1480,7 @@ if ./c- tests/bad_type_struct.c- > /dev/null 2> tests/bad_type_struct.err; then
     echo "bad struct assignment unexpectedly succeeded" >&2
     exit 1
 fi
-grep "cannot assign struct B\\* to struct A\\*" tests/bad_type_struct.err >/dev/null
+grep "cannot assign struct B to struct A" tests/bad_type_struct.err >/dev/null
 
 if ./c- tests/bad_owned_arith.c- > /dev/null 2> tests/bad_owned_arith.err; then
     echo "bad owned pointer declaration unexpectedly succeeded" >&2

@@ -4,7 +4,7 @@ struct Holder {
 
 int main(void)
 {
-    Holder holder = new Holder;
+    Box<Holder> holder = new Holder;
     Span<int> values = Span<int>.from(holder.data, 3);
     Span<int> bytes = Span<int>.from_bytes(holder.data, sizeof(holder.data));
     int n;

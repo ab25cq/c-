@@ -2,7 +2,7 @@ struct Data {
     int value;
 };
 
-int read_data(Data data)
+int read_data(ref Data data)
 {
     return data.value;
 }

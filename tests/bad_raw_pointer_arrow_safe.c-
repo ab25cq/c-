@@ -1,0 +1,15 @@
+unsafe {
+struct RawData {
+    int value;
+};
+}
+
+int main(void)
+{
+    RawData value;
+
+    unsafe {
+        struct RawData* pointer = &value;
+    }
+    return pointer->value;
+}

@@ -3,19 +3,19 @@ struct Child {
 };
 
 struct Parent {
-    Child child;
+    Box<Child> child;
     int count;
 };
 
-int child_value(Child child)
+int child_value(ref Child child)
 {
     return child.value;
 }
 
 int main(void)
 {
-    Parent parent = new Parent;
-    Child child = new Child;
+    Box<Parent> parent = new Parent;
+    Box<Child> child = new Child;
 
     child.value = 11;
     parent.child = move child;

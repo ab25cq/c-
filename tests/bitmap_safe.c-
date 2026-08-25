@@ -4,7 +4,7 @@ struct PageBits {
 
 int main(void)
 {
-    stack PageBits pages;
+    PageBits pages;
     Bitmap map;
     struct __CMinusIndex<int> slot;
 

@@ -9,7 +9,7 @@ struct SafeSlots {
     Bitmap bits;
 };
 
-int slot_seen(SafeSlots slots)
+int slot_seen(mut ref SafeSlots slots)
 {
     slots.bits = Bitmap.from(slots.words, 8);
     slots.bits.set(3);
@@ -18,8 +18,8 @@ int slot_seen(SafeSlots slots)
 
 int main(void)
 {
-    Holder holder = new Holder;
-    stack SafeSlots slots;
+    Box<Holder> holder = new Holder;
+    SafeSlots slots;
     Vec<int> values = Vec<int>.new();
     List<int> lines = List<int>.new();
     Map<int,int> lookup = Map<int,int>.new();

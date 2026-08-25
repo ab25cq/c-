@@ -611,7 +611,7 @@ static void manifest_defaults(struct Manifest *m)
 {
     memset(m, 0, sizeof(*m));
     strcpy(m->name, "app");
-    strcpy(m->version, "0.4.0");
+    strcpy(m->version, "0.5.0");
     strcpy(m->src, "src/main.c-");
     strcpy(m->compiler, "cc");
     m->std[0] = '\0';
@@ -722,7 +722,7 @@ static void write_manifest(const char *name)
     snprintf(text, sizeof(text),
              "[package]\n"
              "name = \"%s\"\n"
-             "version = \"0.4.0\"\n"
+             "version = \"0.5.0\"\n"
              "edition = \"2026\"\n"
              "\n"
              "[build]\n"

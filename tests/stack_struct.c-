@@ -5,7 +5,7 @@ struct Data {
 
 int main(void)
 {
-    stack Data data;
+    Data data;
 
     data.value = 7;
     data.items[0] = 3;

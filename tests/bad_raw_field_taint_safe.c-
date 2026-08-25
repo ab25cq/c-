@@ -6,7 +6,7 @@ struct Holder {
 
 int main(void)
 {
-    Holder holder = new Holder();
+    Box<Holder> holder = new Holder();
     Span<char> values = Span<char>.from(holder.raw, 4);
     return 0;
 }

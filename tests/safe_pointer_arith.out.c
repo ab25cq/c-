@@ -1491,13 +1491,13 @@ int main(void)
     size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
 
     int value = 7;
-    struct Ref_int ref = {0};
-    memset(&ref, 0, sizeof(ref));
+    struct Ref_int reference = {0};
+    memset(&reference, 0, sizeof(reference));
  {
-        ref = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value, 0); });
+        reference = ({ cminus_stack_note_caller_range(&value, sizeof(value)); Ref_from_int(&value, 0); });
     }
-    ref.data++;
-    ref.data--;
+    reference.data++;
+    reference.data--;
     __typeof__((0)) __cminus_return6 = (0);
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
     return __cminus_return6;
