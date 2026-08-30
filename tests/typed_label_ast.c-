@@ -1,0 +1,20 @@
+int cminus_label_ast_probe(void)
+{
+    int value = 0;
+
+    {
+        value = 4;
+    }
+    goto resume;
+resume:
+    value += 1;
+    if (value < 5) {
+        goto resume;
+    }
+    return value;
+}
+
+int main(void)
+{
+    return cminus_label_ast_probe() == 5 ? 0 : 1;
+}

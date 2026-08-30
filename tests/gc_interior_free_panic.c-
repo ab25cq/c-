@@ -1,0 +1,10 @@
+unsafe {
+int main(void)
+{
+    void* allocation = cminus_gc_calloc(1, 32);
+    void* interior = (char*)allocation + 1;
+
+    cminus_gc_free(interior);
+    return 1;
+}
+}

@@ -1,0 +1,9 @@
+unsafe {
+#include <stdlib.h>
+}
+
+int main(void)
+{
+    (/* wrapper */ malloc)/**/(8);
+    return 0;
+}

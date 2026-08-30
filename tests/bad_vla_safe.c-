@@ -1,0 +1,6 @@
+int main(void)
+{
+    int count = 8;
+    int values[count];
+    return 0;
+}

@@ -1,0 +1,25 @@
+enum TypedSymbolMode {
+    TYPED_SYMBOL_ZERO = 0,
+    TYPED_SYMBOL_ONE = 1,
+};
+
+int cminus_typed_symbol_probe(enum TypedSymbolMode mode)
+{
+    return mode == TYPED_SYMBOL_ONE ? __LINE__ : 0;
+}
+
+int cminus_typed_symbol_call(void)
+{
+    return cminus_typed_symbol_probe(TYPED_SYMBOL_ONE);
+}
+
+int cminus_typed_builtin_probe(void)
+{
+    return cminus_checked_int_add(1, 2);
+}
+
+int main(void)
+{
+    return cminus_typed_symbol_call() > 0 &&
+        cminus_typed_builtin_probe() == 3 ? 0 : 1;
+}

@@ -1,0 +1,24 @@
+int cminus_update_ast_probe(void)
+{
+    int value = 1;
+
+    value++;
+    ++value;
+    value--;
+    --value;
+    for (int i = 0; i < 2; i++) {
+        value += i;
+    }
+    int bits = 1;
+    bits <<= 2;
+    bits |= 2;
+    bits ^= 1;
+    bits &= 6;
+    bits >>= 1;
+    return value + bits;
+}
+
+int main(void)
+{
+    return cminus_update_ast_probe() == 5 ? 0 : 1;
+}

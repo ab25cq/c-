@@ -1,0 +1,8 @@
+Ref<int> saved;
+
+int main(void)
+{
+    int local = 7;
+    saved = Ref<int>.from(&local);
+    return 0;
+}

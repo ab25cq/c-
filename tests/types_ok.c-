@@ -5,10 +5,12 @@ struct Pair {
     int y;
 };
 
+unsafe {
 union Cell {
     int i;
     char c;
 };
+}
 
 enum Kind {
     KIND_A = 0,
@@ -18,9 +20,11 @@ enum Kind {
 int main(void)
 {
     Box<Pair> p = new Pair;
-    union Cell cell;
     enum Kind kind = KIND_A;
-    cell.i = 7;
     p->x = kind;
-    return cell.i - 7;
+    unsafe {
+        union Cell cell;
+        cell.i = 7;
+        return cell.i - 7;
+    }
 }

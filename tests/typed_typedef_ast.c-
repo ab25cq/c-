@@ -1,0 +1,14 @@
+typedef unsigned long Word;
+typedef Word Counter;
+typedef int (*Unary)(int);
+
+Counter cminus_typedef_ast_probe(Counter value)
+{
+    Counter result = value + 1;
+    return result;
+}
+
+int main(void)
+{
+    return cminus_typedef_ast_probe(4) == 5 ? 0 : 1;
+}

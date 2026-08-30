@@ -1,0 +1,9 @@
+int main(void)
+{
+    List<int> list = List<int>.new();
+    int output[2];
+    int capacity = 2;
+
+    list.to_span(output, capacity);
+    return 0;
+}

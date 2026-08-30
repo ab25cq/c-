@@ -1,0 +1,20 @@
+#define CMINUS_TYPED_EXPANSION_VALUE 5
+
+struct ExpansionData {
+    int value;
+};
+
+int cminus_expansion_ast_probe(void)
+{
+    ExpansionData data;
+    string text = s"initial";
+
+    data.value = CMINUS_TYPED_EXPANSION_VALUE;
+    text = s"updated";
+    return text.eq("updated") ? data.value : 0;
+}
+
+int main(void)
+{
+    return cminus_expansion_ast_probe() == 5 ? 0 : 1;
+}

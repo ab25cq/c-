@@ -1,0 +1,7 @@
+int main(void)
+{
+    owned string text = s"hello";
+    borrow string view = ((text));
+    owned string other = move text;
+    return view[0];
+}

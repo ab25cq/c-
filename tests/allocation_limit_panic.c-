@@ -1,0 +1,7 @@
+int main(void)
+{
+    unsafe {
+        cminus_gc_calloc((size_t)CMINUS_MAX_ALLOCATION + 1u, 1);
+    }
+    return 0;
+}

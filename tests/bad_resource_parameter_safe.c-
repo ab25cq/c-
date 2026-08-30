@@ -1,0 +1,9 @@
+void take_mutex(Mutex value)
+{
+    value.lock();
+}
+
+int main(void)
+{
+    return 0;
+}

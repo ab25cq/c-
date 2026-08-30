@@ -4,5 +4,6 @@ tests/*.out
 tests/*.out.o
 tests/*.err
 tests/*.out.log
+tests/*.ast
 *.o
 /a.out

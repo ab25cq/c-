@@ -1,0 +1,11 @@
+int main(void)
+{
+    int value = 10;
+    Ref<int> reference = Ref<int>.from(&value);
+    owned string source = s"abc";
+    borrow string view = source;
+    char first = view[0];
+    owned string destination = move source;
+
+    return reference.get() == value && destination[0] == first ? 0 : 1;
+}

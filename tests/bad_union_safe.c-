@@ -1,0 +1,9 @@
+union Bits {
+    int integer;
+    float decimal;
+};
+
+int main(void)
+{
+    return 0;
+}

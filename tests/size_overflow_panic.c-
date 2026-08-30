@@ -1,0 +1,9 @@
+#include <stdint.h>
+
+int main(void)
+{
+    unsafe {
+        cminus_gc_calloc((size_t)-1, 2);
+    }
+    return 0;
+}

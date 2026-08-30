@@ -1,0 +1,7 @@
+typedef int* RawInt;
+
+int main(void)
+{
+    RawInt value;
+    return 0;
+}

@@ -1,0 +1,5 @@
+int main(void)
+{
+    string text = s"abc";
+    return text.eq(text.starts_with("a") ? "abc" : "") ? 0 : 1;
+}

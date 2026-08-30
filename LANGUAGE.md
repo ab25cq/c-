@@ -266,7 +266,10 @@ Ordinary uninitialized locals are also zero-initialized by the translator.
 
 Fixed C arrays are permitted. In safe mode, direct indexing uses only an
 in-range compile-time constant. Variable indexing must go through a checked
-view such as `Span<T>` or `FixedVec<T>`.
+view such as `Span<T>` or `FixedVec<T>`. A local array larger than 64 KiB is
+rejected in safe mode; use `Box` or a checked heap collection instead. Safe
+functions also have runtime depth and tracked-byte stack budgets, whose default
+limits are 1024 frames and 2 MiB.
 
 ## 8. Functions and parameters
 
@@ -411,6 +414,11 @@ translator may remain unknown and be delegated to C.
 
 Safe structs cannot store `Ref<T>` or `Span<T>` fields because C- `0.5` has no
 lifetime parameters for stored references.
+
+Hosted `Thread`, `Mutex`, and `Cond` values and the `Critical` guard are
+non-copyable in safe mode. They cannot be passed by value or stored as safe
+struct fields; pass them with `ref`/`mut ref`. This prevents two value aliases
+from joining, destroying, or leaving the same runtime resource twice.
 
 ## 12. Unsafe boundary
 

@@ -1,0 +1,22 @@
+int cminus_cast_unary_ast_probe(int value)
+{
+    int negative = -value;
+    int inverse = ~value;
+    int truth = !value;
+    int converted = 0;
+    int bytes = 0;
+    int alignment = 0;
+
+    unsafe {
+        converted = (int)value;
+        bytes = (int)sizeof(value);
+        alignment = (int)_Alignof(int);
+    }
+
+    return negative + inverse + truth + converted + bytes + alignment;
+}
+
+int main(void)
+{
+    return cminus_cast_unary_ast_probe(1) == 6 ? 0 : 1;
+}

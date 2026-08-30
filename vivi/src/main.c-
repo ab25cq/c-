@@ -58,6 +58,24 @@ string str_copy(borrow string s)
     return out;
 }
 
+string str_copy_span(Span<char> source)
+{
+    string out;
+    int len = source.cstr_len();
+    int pos = 0;
+
+    out = cminus_gc_calloc(len + 1, sizeof(char));
+    if (out == NULL) {
+        abort();
+    }
+    while (pos < len) {
+        out[pos] = source.get(pos);
+        pos++;
+    }
+    out[len] = '\0';
+    return move out;
+}
+
 string str_empty(void)
 {
     return str_copy("");
@@ -252,11 +270,9 @@ string editor_snapshot(mut ref Editor ed)
     index = 0;
     while (index < count) {
         next = str_append_string(out, List_get<string>(ed->lines, index));
-        cminus_gc_free(out);
-        out = next;
+        out = move next;
         next = str_append_string(out, "\n");
-        cminus_gc_free(out);
-        out = next;
+        out = move next;
         index++;
     }
     return out;
@@ -416,7 +432,7 @@ void editor_load(mut ref Editor ed)
         if (len > 0 && buf_view.get(len - 1) == '\n') {
             buf_view.set(len - 1, '\0');
         }
-        string line = str_copy(buf);
+        string line = str_copy_span(buf_view);
         List_push<string>(ed->lines, move line);
     }
     unsafe {
@@ -774,8 +790,7 @@ void editor_append_command_char(mut ref Editor ed, int ch)
     string next;
 
     next = str_append_char(ed->command, ch);
-    cminus_gc_free(ed->command);
-    ed->command = next;
+    ed->command = move next;
 }
 
 void editor_handle_command_key(mut ref Editor ed, int ch)
@@ -787,8 +802,7 @@ void editor_handle_command_key(mut ref Editor ed, int ch)
     } else if (ch == KEY_BACKSPACE || ch == 127) {
         if (ed->command.len() > 0) {
             next = str_slice(ed->command, 0, ed->command.len() - 1);
-            cminus_gc_free(ed->command);
-            ed->command = next;
+            ed->command = move next;
         }
     } else if (ch == '\n') {
         if (ed->mode == ModeCommand) {

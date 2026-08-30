@@ -1,0 +1,14 @@
+int cminus_cleanup_ast_probe(void)
+{
+    string text = s"temporary";
+
+    if (text.eq("temporary")) {
+        return 7;
+    }
+    return 1;
+}
+
+int main(void)
+{
+    return cminus_cleanup_ast_probe() == 7 ? 0 : 1;
+}

@@ -1,0 +1,11 @@
+enum TypedValues {
+    TYPED_VALUE_ZERO, /* a comma, inside trivia must not split a member */
+    TYPED_VALUE_FOUR = 1 << 2,
+    TYPED_VALUE_FIVE,
+};
+
+int main(void)
+{
+    enum TypedValues value = TYPED_VALUE_FIVE;
+    return value == 5 ? 0 : 1;
+}

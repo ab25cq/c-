@@ -1,5 +1,6 @@
 %{
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,7 +10,7 @@ extern int yylineno;
 
 #define NAME_MAX_LEN 64
 #define MAX_OWNED 128
-#define MAX_FUNCS 128
+#define MAX_FUNCS 512
 #define MAX_SYMBOLS 256
 #define MAX_TAGS 128
 #define MAX_FINALIZERS 128
@@ -19,6 +20,8 @@ extern int yylineno;
 #define MAX_GENERIC_INSTANCES 512
 #define MAX_ENUM_VARIANTS 64
 #define DEFAULT_EXPR_MAX 256
+#define MAX_SAFETY_LOWERINGS 256
+#define MAX_SAFE_LOCAL_ARRAY_BYTES (64UL * 1024UL)
 
 struct Text {
     char *text;
@@ -30,6 +33,7 @@ struct Text {
 
 enum TypeKind {
     TY_UNKNOWN,
+    TY_GENERIC,
     TY_VOID,
     TY_CHAR,
     TY_SHORT,
@@ -40,7 +44,10 @@ enum TypeKind {
     TY_STRUCT,
     TY_UNION,
     TY_ENUM,
-    TY_BITFLAGS
+    TY_BITFLAGS,
+    TY_TYPEDEF,
+    TY_FUNCTION,
+    TY_TYPE_CONSTRUCTOR
 };
 
 struct Type {
@@ -54,6 +61,8 @@ struct Type {
     int size;
     int align;
     char tag[NAME_MAX_LEN];
+    char applied_name[NAME_MAX_LEN];
+    char applied_args[DEFAULT_EXPR_MAX];
 };
 
 struct Owned {
@@ -73,6 +82,19 @@ struct BorrowLinks {
     int dead[MAX_OWNED];
     int stack_owner[MAX_OWNED];
     int count;
+};
+
+struct PendingSemantics {
+    int active;
+    int is_return;
+    int is_assignment;
+    int owned;
+    int borrowed;
+    int stack_owner;
+    int dead;
+    char target[NAME_MAX_LEN];
+    char owner[NAME_MAX_LEN];
+    char move_source[NAME_MAX_LEN];
 };
 
 struct OwnedField {
@@ -120,12 +142,61 @@ enum NodeKind {
     ND_DECL,
     ND_ASSIGN,
     ND_FUNCALL,
+    ND_FUNCDEF,
+    ND_FUNCDECL,
+    ND_PARAM,
+    ND_RETURN_TYPE,
+    ND_TYPEDEF,
+    ND_TYPE_PARAM,
+    ND_TYPE,
+    ND_TYPE_ARGUMENT,
+    ND_FIELD,
+    ND_ARRAY_DIMENSION,
+    ND_ENUM_MEMBER,
+    ND_OWNERSHIP,
+    ND_LIFETIME,
+    ND_MOVE_TRANSFER,
     ND_IF,
     ND_WHILE,
+    ND_FOR,
+    ND_SWITCH,
     ND_DO,
+    ND_GOTO,
+    ND_BREAK,
+    ND_CONTINUE,
+    ND_STATIC_ASSERT,
+    ND_LABEL,
+    ND_CASE,
+    ND_DEFAULT,
+    ND_STRUCTDEF,
+    ND_UNIONDEF,
+    ND_ENUMDEF,
+    ND_PP,
+    ND_CLEANUP,
+    ND_EXPANSION,
+    ND_DIRECTIVE,
+    ND_GENERIC_STRUCT,
+    ND_GENERIC_PROTO,
+    ND_GENERIC_FUNCTION,
+    ND_GENERIC_STRUCT_TEMPLATE,
+    ND_GENERIC_FUNCTION_TEMPLATE,
+    ND_PAYLOAD_ENUM_TEMPLATE,
+    ND_PAYLOAD_VARIANT,
+    ND_BITFLAGSDEF,
+    ND_BITFLAG_MEMBER,
+    ND_UNSAFE,
+    ND_INLINE_C,
+    ND_RUNTIME_PRELUDE,
+    ND_PAYLOAD_HELPERS,
+    ND_DEFAULT_MACRO,
+    ND_TRANSLATION_UNIT,
+    ND_SOURCE_PREFIX,
+    ND_SOURCE_BODY,
     ND_S_STRING,
     ND_RAW
 };
+
+struct SafetyExprNode;
 
 struct Obj {
     struct Obj *next;
@@ -154,12 +225,107 @@ struct Node {
     struct Node *lhs;
     struct Node *rhs;
     struct Node *body;
+    struct Node *params;
+    struct Node *return_type;
+    struct Node *type_params;
+    struct Node *type_node;
+    struct Node *type_args;
+    struct Node *dimensions;
+    struct Node *ownership;
+    struct Node *lifetime;
+    struct Node *move_transfer;
     struct Node *cond;
     struct Node *then;
     struct Node *els;
     struct Type *ty;
     struct Obj *var;
+    struct SafetyExprNode *expr;
+    struct SafetyExprNode *init_expr;
+    struct SafetyExprNode *inc_expr;
+    char name[NAME_MAX_LEN];
+    char type_name[NAME_MAX_LEN];
+    char *open_tok;
+    char *body_tok;
+    char *close_tok;
     char *tok;
+    int stack_owner;
+    int caller_owner;
+    int dead;
+    int runtime_checked;
+    int array_len;
+    long enum_value;
+    int has_enum_value;
+};
+
+struct AggregateAst {
+    char tag[NAME_MAX_LEN];
+    struct Node *node;
+};
+
+struct AggregateAsts {
+    struct AggregateAst item[MAX_GENERIC_TEMPLATES];
+    int count;
+};
+
+enum SafetyExprKind {
+    SAFETY_EXPR_IDENTIFIER,
+    SAFETY_EXPR_LITERAL,
+    SAFETY_EXPR_GROUP,
+    SAFETY_EXPR_GENERIC,
+    SAFETY_EXPR_MOVE,
+    SAFETY_EXPR_UNARY,
+    SAFETY_EXPR_UNARY_ADDRESS,
+    SAFETY_EXPR_UNARY_DEREF,
+    SAFETY_EXPR_CAST,
+    SAFETY_EXPR_SIZEOF,
+    SAFETY_EXPR_ALIGNOF,
+    SAFETY_EXPR_STATEMENT,
+    SAFETY_EXPR_INITIALIZER,
+    SAFETY_EXPR_OFFSETOF,
+    SAFETY_EXPR_CALL,
+    SAFETY_EXPR_INDEX,
+    SAFETY_EXPR_MEMBER,
+    SAFETY_EXPR_BINARY,
+    SAFETY_EXPR_UPDATE,
+    SAFETY_EXPR_CONDITIONAL,
+    SAFETY_EXPR_FIXED_INDEX,
+    SAFETY_EXPR_RAW_DECAY,
+    SAFETY_EXPR_UNSAFE_CALL
+};
+
+enum SafetyUnknownReason {
+    SAFETY_UNKNOWN_NONE,
+    SAFETY_UNKNOWN_UNCLASSIFIED,
+    SAFETY_UNKNOWN_UNRESOLVED_SYMBOL,
+    SAFETY_UNKNOWN_UNRESOLVED_CALL_RETURN,
+    SAFETY_UNKNOWN_TARGET_SIZE,
+    SAFETY_UNKNOWN_CONTEXTUAL_LITERAL,
+    SAFETY_UNKNOWN_MEMBER_TYPE,
+    SAFETY_UNKNOWN_SYMBOLIC_GENERIC,
+    SAFETY_UNKNOWN_STATEMENT_RESULT,
+    SAFETY_UNKNOWN_CONTEXTUAL_INITIALIZER,
+    SAFETY_UNKNOWN_OPERAND_TYPE
+};
+
+struct SafetyExprNode {
+    enum SafetyExprKind kind;
+    struct Type type;
+    struct Type function_return_type;
+    char name[NAME_MAX_LEN];
+    char type_name[NAME_MAX_LEN];
+    char generic_arg[NAME_MAX_LEN];
+    char op[8];
+    const char *start;
+    const char *end;
+    struct SafetyExprNode *lhs;
+    struct SafetyExprNode *rhs;
+    struct SafetyExprNode *child;
+    struct SafetyExprNode *next;
+    long integer;
+    int has_constant_integer;
+    int postfix;
+    int statement_result;
+    enum SafetyUnknownReason unknown_reason;
 };
 
 struct Funcs {
@@ -173,6 +339,7 @@ struct ParamInfo {
     char name[NAME_MAX_LEN];
     char def[DEFAULT_EXPR_MAX];
     struct Type type;
+    int borrowed;
 };
 
 struct FunctionParams {
@@ -200,6 +367,16 @@ struct Symbols {
     int count;
 };
 
+struct TypedefAlias {
+    char name[NAME_MAX_LEN];
+    struct Type type;
+};
+
+struct TypedefAliases {
+    struct TypedefAlias alias[MAX_SYMBOLS];
+    int count;
+};
+
 struct Tag {
     enum TypeKind kind;
     char name[NAME_MAX_LEN];
@@ -222,6 +399,7 @@ struct GenericTemplate {
     char name[NAME_MAX_LEN];
     char head[DEFAULT_EXPR_MAX * 2];
     char *body;
+    struct Node *ast;
     struct GenericInstance inst[MAX_GENERIC_INSTANCES];
     int inst_count;
 };
@@ -240,6 +418,7 @@ struct PayloadVariant {
 struct PayloadEnum {
     char param[NAME_MAX_LEN];
     char name[NAME_MAX_LEN];
+    struct Node *ast;
     struct PayloadVariant variant[MAX_ENUM_VARIANTS];
     int variant_count;
     struct GenericInstance inst[MAX_GENERIC_INSTANCES];
@@ -253,14 +432,20 @@ struct PayloadEnums {
 
 static struct Text *g_output;
 static struct Text *g_defines;
+static struct Node *g_consumed_directives;
+static struct Node *g_generated_artifacts;
+static struct Node *g_template_nodes;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
 static struct MovedLocals g_moved_locals;
 static struct BorrowLinks g_borrow_links;
+static struct PendingSemantics g_pending_semantics;
+static struct AggregateAsts g_aggregate_asts;
 static struct Funcs g_malloc_funcs;
 static struct FunctionParamTable g_param_funcs;
 static struct Symbols g_globals;
 static struct Symbols g_locals;
+static struct TypedefAliases g_typedefs;
 static struct Tags g_tags;
 static struct GenericTemplates g_generic_structs;
 static struct GenericTemplates g_generic_funcs;
@@ -281,6 +466,7 @@ static int g_right_value_id;
 static int g_need_string_h;
 static int g_need_stdlib_h;
 static int g_current_generic_kind;
+static char g_current_generic_param[NAME_MAX_LEN];
 static int g_current_payload_enum;
 static int g_foreach_id;
 static int g_index_id;
@@ -300,6 +486,7 @@ static int g_current_bitflags;
 static char g_current_bitflags_name[NAME_MAX_LEN];
 static char g_current_bitflags_base[NAME_MAX_LEN];
 static int g_current_struct_mmio;
+static int g_dump_typed_ast;
 static char g_current_function_name[NAME_MAX_LEN];
 static struct Type g_current_function_ret;
 static int g_current_function_stack_guard;
@@ -320,14 +507,50 @@ static void text_add(struct Text *n, const char *p);
 static void text_add_ch(struct Text *n, char c);
 static struct Text *text_join(struct Text *a, struct Text *b);
 static struct Text *text_join3(struct Text *a, struct Text *b, struct Text *c);
-static struct Text *text_join4(struct Text *a, struct Text *b, struct Text *c, struct Text *d);
 static void text_free(struct Text *n);
 static struct Node *ast_new(enum NodeKind kind, const char *tok);
 static struct Node *ast_append(struct Node *head, struct Node *node);
 static struct Node *ast_raw(enum NodeKind kind, const char *tok);
 static struct Node *ast_block(struct Node *body);
+static struct Node *ast_function(const char *head, struct Node *body);
+static struct Node *ast_function_declaration(const char *head);
+static struct Node *ast_function_parameters(const char *name);
+static struct Node *ast_return_type(struct Type type);
+static struct Node *ast_type_parameters(const char *parameters);
+static struct Node *ast_type_node(struct Type type);
+static struct Node *ast_type_arguments(const char *arguments);
+static struct Node *ast_enum_members(const char *body, struct Type enum_type);
+static void aggregate_ast_add(const char *tag, struct Node *node);
+static struct Node *aggregate_ast_find(const char *tag);
+static void ast_attach_semantics(struct Node *node);
+static struct Node *ast_control(const char *head, const char *open,
+                                const char *body_text, const char *close,
+                                struct Node *body);
+static void validate_safe_typed_ast(const struct Node *node);
+static void validate_safe_control_ast(const struct Node *node);
+static void ast_emit_node(struct Text *out, const struct Node *node);
+static void emit_ast_output(FILE *out, const struct Node *node);
+static struct Text *finalize_typed_label(struct Text *in, enum NodeKind kind);
+static struct Text *finalize_typed_block(struct Text *lb, struct Text *body,
+                                         struct Text *rb);
+static struct Text *finalize_typed_raw(struct Text *in, enum NodeKind kind);
+static struct Node *ast_aggregate(const char *head, const char *open,
+                                  const char *body_text, const char *close,
+                                  struct Node *body);
+static struct Text *finalize_typed_statement(struct Text *in, enum NodeKind fallback);
+static void dump_typed_ast(FILE *out, const struct Node *node, int depth);
+static void ast_final_resolve_nodes(struct Node *node);
+static void ast_final_register_functions(struct Node *node);
+static void emit_generated_text(FILE *out, enum NodeKind kind,
+                                const char *name, struct Text *text);
+static void emit_generated_text_ast(FILE *out, enum NodeKind kind,
+                                    const char *name, struct Text *text,
+                                    struct Node *body);
+static struct Text *read_generated_stream(FILE *stream);
 static struct Type *type_copy(struct Type type);
 static struct Type type_make(enum TypeKind kind, int ptr, const char *tag);
+static void type_set_application(struct Type *type, const char *name,
+                                 const char *arguments);
 static struct Type type_unknown(void);
 static struct Obj *obj_new(const char *name, struct Type type, int is_local, int is_function);
 static void tag_add(enum TypeKind kind, const char *name);
@@ -339,6 +562,7 @@ static void begin_function(void);
 static void begin_top_block(struct Text *head);
 static int source_has_cminus_include(FILE *fp);
 static struct Text *process_pp_line(struct Text *line);
+static struct Text *consume_pp_line(struct Text *line);
 static struct Text *process_standalone_semi(struct Text *semi);
 static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb);
 static struct Text *finish_c_compat_braced_decl(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb, struct Text *suffix, struct Text *semi);
@@ -384,6 +608,9 @@ static void check_dead_borrow_use(const char *stmt);
 static void check_borrow_escape_return(const char *stmt);
 static int extract_direct_borrow_owner(const char *expr, char *owner);
 static int extract_safe_reference_borrow_owner(const char *expr, char *owner);
+static void pending_semantics_clear(void);
+static void pending_semantics_capture_statement(const char *statement);
+static void pending_semantics_capture_return(const char *statement);
 static int word_occurs_after_first_token(const char *stmt, const char *word);
 static void check_null_assignment(const char *stmt);
 static struct Text *rewrite_optional_null_assignment(struct Text *in);
@@ -395,6 +622,22 @@ static void check_safe_reference_raw_inputs(const char *stmt);
 static void check_safe_raw_field_access(const char *stmt);
 static void check_safe_c_function_calls(const char *stmt);
 static void check_safe_array_index_access(const char *stmt);
+static struct SafetyExprNode *safety_parse_range(const char *start, const char *end);
+static struct SafetyExprNode *safety_parse_forest_range(const char *start,
+                                                        const char *end);
+static struct SafetyExprNode *safety_parse_forest(const char *stmt);
+static void safety_expr_free(struct SafetyExprNode *node);
+static void safety_expr_bind_identifier(struct SafetyExprNode *expr,
+                                        const char *name,
+                                        struct Type type);
+static const struct SafetyExprNode *safety_strip_groups(const struct SafetyExprNode *node);
+static int safety_ast_plain_identifier(const char *start, const char *end, char *name);
+static int safety_ast_move_identifier(const char *start, const char *end, char *name);
+static int safety_ast_borrow_root(const char *start, const char *end, char *owner);
+static int safety_ast_reference_borrow_owner(const char *expr, char *owner);
+static struct Type safety_ast_expr_type(const char *expr);
+static int safety_ast_has_generic_start(const struct SafetyExprNode *node, const char *start);
+static const char *skip_safe_deref_trivia(const char *p);
 static struct Text *rewrite_inferred_array_from_calls(struct Text *in);
 static void register_unsafe_metadata(const char *body);
 static void emit_generic_default_macro(FILE *out, const char *func_name, struct FunctionParams *fn);
@@ -499,11 +742,11 @@ translation_unit
 
 external_item
     : PP_LINE
-        { $$ = process_pp_line($1); }
+        { $$ = finalize_typed_raw(process_pp_line($1), ND_PP); }
     | SEMI
         { $$ = process_standalone_semi($1); }
     | top_seq SEMI
-        { $$ = process_external_decl($1, $2); }
+        { $$ = finalize_typed_statement(process_external_decl($1, $2), ND_DECL); }
     | top_seq LBRACE compound_items RBRACE top_seq SEMI
         { $$ = finish_c_compat_braced_decl($1, $2, $3, $4, $5, $6); }
     | top_seq LBRACE
@@ -539,23 +782,23 @@ compound_items
 
 compound_item
     : PP_LINE
-        { $$ = process_pp_line($1); }
+        { $$ = finalize_typed_raw(process_pp_line($1), ND_PP); }
     | SEMI
         { $$ = $1; }
     | return_statement
         { $$ = $1; }
     | stmt_seq SEMI
-        { $$ = process_statement($1, $2); }
+        { $$ = finalize_typed_statement(process_statement($1, $2), ND_EXPR_STMT); }
     | stmt_seq COMMA
         { $$ = text_join($1, $2); $$->tail_return = 0; }
     | IDENT COLON
-        { $$ = text_join($1, $2); $$->tail_return = 0; }
+        { $$ = finalize_typed_label(text_join($1, $2), ND_LABEL); $$->tail_return = 0; }
     | DEFAULT COLON
-        { $$ = text_join($1, $2); $$->tail_return = 0; }
+        { $$ = finalize_typed_label(text_join($1, $2), ND_DEFAULT); $$->tail_return = 0; }
     | CASE stmt_seq COLON
-        { $$ = text_join3($1, $2, $3); $$->tail_return = 0; }
+        { $$ = finalize_typed_label(text_join3($1, $2, $3), ND_CASE); $$->tail_return = 0; }
     | LBRACE compound_items RBRACE
-        { $$ = text_join3($1, $2, $3); $$->tail_return = 0; }
+        { $$ = finalize_typed_block($1, $2, $3); $$->tail_return = 0; }
     | stmt_seq LBRACE
         { begin_stmt_block($1); }
       compound_items RBRACE
@@ -564,9 +807,9 @@ compound_item
 
 return_statement
     : RETURN SEMI
-        { $$ = process_return($1, text_new(), $2); }
+        { $$ = finalize_typed_statement(process_return($1, text_new(), $2), ND_RETURN); }
     | RETURN stmt_seq SEMI
-        { $$ = process_return($1, $2, $3); }
+        { $$ = finalize_typed_statement(process_return($1, $2, $3), ND_RETURN); }
     ;
 
 stmt_seq
@@ -793,11 +1036,6 @@ static struct Text *text_join(struct Text *a, struct Text *b)
 static struct Text *text_join3(struct Text *a, struct Text *b, struct Text *c)
 {
     return text_join(text_join(a, b), c);
-}
-
-static struct Text *text_join4(struct Text *a, struct Text *b, struct Text *c, struct Text *d)
-{
-    return text_join(text_join3(a, b, c), d);
 }
 
 static void text_free(struct Text *n)
@@ -1058,6 +1296,52 @@ static const char *parse_generic_prefix(const char *s, char *param)
     return skip_ws(close + 1);
 }
 
+static int current_generic_parameter_named(const char *name)
+{
+    const char *p = g_current_generic_param;
+
+    while (*p != '\0') {
+        const char *start;
+        const char *end;
+
+        while (*p == ',' || isspace((unsigned char)*p)) {
+            p++;
+        }
+        start = p;
+        while (*p != '\0' && *p != ',') {
+            p++;
+        }
+        end = p;
+        while (end > start && isspace((unsigned char)end[-1])) {
+            end--;
+        }
+        if ((size_t)(end - start) == strlen(name) &&
+            strncmp(start, name, (size_t)(end - start)) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int generic_argument_uses_current_parameter(const char *arg)
+{
+    const char *p = arg;
+
+    while (*p != '\0') {
+        if (is_ident_start((unsigned char)*p)) {
+            char name[NAME_MAX_LEN];
+
+            p = read_name(p, name);
+            if (current_generic_parameter_named(name)) {
+                return 1;
+            }
+        } else {
+            p++;
+        }
+    }
+    return 0;
+}
+
 static int parse_generic_struct_head(const char *s, char *param, char *name)
 {
     const char *p = parse_generic_prefix(s, param);
@@ -1289,6 +1573,13 @@ static struct Text *emit_bitflags_decl(const char *name, const char *base, const
 {
     const char *p = body;
     struct Text *out = text_new();
+    struct Node *bitflags_ast = ast_new(ND_BITFLAGSDEF, NULL);
+
+    strncpy(bitflags_ast->name, name, NAME_MAX_LEN - 1);
+    bitflags_ast->name[NAME_MAX_LEN - 1] = '\0';
+    strncpy(bitflags_ast->type_name, base, NAME_MAX_LEN - 1);
+    bitflags_ast->type_name[NAME_MAX_LEN - 1] = '\0';
+    bitflags_ast->ty = type_copy(type_make(TY_BITFLAGS, 0, name));
 
     text_add(out, "\ntypedef ");
     text_add(out, base);
@@ -1297,6 +1588,7 @@ static struct Text *emit_bitflags_decl(const char *name, const char *base, const
     text_add(out, ";\nenum {\n");
     while (*p != '\0') {
         char variant[NAME_MAX_LEN];
+        const char *variant_start;
         const char *name_end;
         const char *eq;
         const char *value_start;
@@ -1311,6 +1603,7 @@ static struct Text *emit_bitflags_decl(const char *name, const char *base, const
             p++;
             continue;
         }
+        variant_start = p;
         name_end = read_name(p, variant);
         eq = skip_ws(name_end);
         if (*eq != '=') {
@@ -1333,12 +1626,30 @@ static struct Text *emit_bitflags_decl(const char *name, const char *base, const
         text_add(out, " = ");
         text_add_n(out, value_start, (size_t)(value_end - value_start));
         text_add(out, ",\n");
+        {
+            char *member_text = xstrndup(variant_start,
+                                         (size_t)(value_end - variant_start));
+            struct Node *member = ast_new(ND_BITFLAG_MEMBER, member_text);
+            const char *member_eq = strchr(member->tok, '=');
+
+            free(member_text);
+            strncpy(member->name, variant, NAME_MAX_LEN - 1);
+            member->name[NAME_MAX_LEN - 1] = '\0';
+            member->ty = type_copy(type_make(TY_BITFLAGS, 0, name));
+            if (member_eq != NULL) {
+                member->expr = safety_parse_range(member_eq + 1,
+                                                  member->tok + strlen(member->tok));
+            }
+            bitflags_ast->body = ast_append(bitflags_ast->body, member);
+        }
         p = value_end;
         while (*p != '\0' && *p != ',') {
             p++;
         }
     }
     text_add(out, "};\n");
+    bitflags_ast->tok = xstrdup(out->text);
+    out->ast = bitflags_ast;
     return out;
 }
 
@@ -1439,7 +1750,8 @@ static struct PayloadVariant *payload_enum_variant_find(struct PayloadEnum *en, 
     return NULL;
 }
 
-static void payload_enum_add(const char *param, const char *name, const char *body)
+static void payload_enum_add(const char *param, const char *name, const char *body,
+                             struct Node *ast)
 {
     struct PayloadEnum *en;
     const char *p = body;
@@ -1451,12 +1763,16 @@ static void payload_enum_add(const char *param, const char *name, const char *bo
     memset(en, 0, sizeof(*en));
     strncpy(en->param, param, NAME_MAX_LEN - 1);
     strncpy(en->name, name, NAME_MAX_LEN - 1);
+    en->ast = ast;
+    g_template_nodes = ast_append(g_template_nodes, ast);
 
     while (*p != '\0') {
         char variant[NAME_MAX_LEN];
         char payload[NAME_MAX_LEN];
+        const char *variant_start;
         const char *name_end;
         const char *q;
+        struct Node *variant_ast;
 
         p = skip_ws(p);
         if (*p == ',') {
@@ -1467,6 +1783,7 @@ static void payload_enum_add(const char *param, const char *name, const char *bo
             p++;
             continue;
         }
+        variant_start = p;
         name_end = read_name(p, variant);
         q = skip_ws(name_end);
         payload[0] = '\0';
@@ -1484,6 +1801,30 @@ static void payload_enum_add(const char *param, const char *name, const char *bo
         while (*p != '\0' && *p != ',') {
             p++;
         }
+        {
+            char *variant_text = xstrndup(variant_start,
+                                          (size_t)(p - variant_start));
+
+            variant_ast = ast_new(ND_PAYLOAD_VARIANT, variant_text);
+            free(variant_text);
+        }
+        strncpy(variant_ast->name, variant, NAME_MAX_LEN - 1);
+        variant_ast->name[NAME_MAX_LEN - 1] = '\0';
+        if (payload[0] != '\0') {
+            struct Type payload_type = type_unknown();
+            enum TypeKind kind = keyword_type(payload);
+
+            strncpy(variant_ast->type_name, payload, NAME_MAX_LEN - 1);
+            variant_ast->type_name[NAME_MAX_LEN - 1] = '\0';
+            if (kind != TY_UNKNOWN) {
+                payload_type = type_make(kind, 0, NULL);
+            } else {
+                strncpy(payload_type.tag, payload, NAME_MAX_LEN - 1);
+                payload_type.tag[NAME_MAX_LEN - 1] = '\0';
+            }
+            variant_ast->ty = type_copy(payload_type);
+        }
+        ast->body = ast_append(ast->body, variant_ast);
     }
 }
 
@@ -1661,7 +2002,8 @@ static struct GenericTemplate *generic_add(struct GenericTemplates *templates,
                                            const char *param,
                                            const char *name,
                                            const char *head,
-                                           const char *body)
+                                           const char *body,
+                                           struct Node *ast)
 {
     struct GenericTemplate *tmpl;
 
@@ -1674,6 +2016,8 @@ static struct GenericTemplate *generic_add(struct GenericTemplates *templates,
     strncpy(tmpl->name, name, NAME_MAX_LEN - 1);
     strncpy(tmpl->head, head, sizeof(tmpl->head) - 1);
     tmpl->body = xstrdup(body);
+    tmpl->ast = ast;
+    g_template_nodes = ast_append(g_template_nodes, ast);
     return tmpl;
 }
 
@@ -1879,6 +2223,8 @@ static struct Type type_make(enum TypeKind kind, int ptr, const char *tag)
     t.size = 0;
     t.align = 1;
     t.tag[0] = '\0';
+    t.applied_name[0] = '\0';
+    t.applied_args[0] = '\0';
     if (tag != NULL) {
         strncpy(t.tag, tag, NAME_MAX_LEN - 1);
         t.tag[NAME_MAX_LEN - 1] = '\0';
@@ -1927,6 +2273,20 @@ static struct Type type_make(enum TypeKind kind, int ptr, const char *tag)
     return t;
 }
 
+static void type_set_application(struct Type *type, const char *name,
+                                 const char *arguments)
+{
+    if (type == NULL || name == NULL || arguments == NULL) {
+        return;
+    }
+    if (strlen(name) >= sizeof(type->applied_name) ||
+        strlen(arguments) >= sizeof(type->applied_args)) {
+        die("generic type application is too long");
+    }
+    strcpy(type->applied_name, name);
+    strcpy(type->applied_args, arguments);
+}
+
 static struct Type type_unknown(void)
 {
     return type_make(TY_UNKNOWN, 0, NULL);
@@ -1952,6 +2312,8 @@ static const char *type_kind_name(enum TypeKind kind)
     switch (kind) {
     case TY_VOID:
         return "void";
+    case TY_GENERIC:
+        return "generic";
     case TY_CHAR:
         return "char";
     case TY_SHORT:
@@ -1972,6 +2334,12 @@ static const char *type_kind_name(enum TypeKind kind)
         return "enum";
     case TY_BITFLAGS:
         return "bitflags";
+    case TY_TYPEDEF:
+        return "typedef";
+    case TY_FUNCTION:
+        return "function";
+    case TY_TYPE_CONSTRUCTOR:
+        return "type-constructor";
     default:
         return "unknown";
     }
@@ -1989,7 +2357,22 @@ static void type_to_string(struct Type t, char *buf, size_t size)
     }
     stars[i] = '\0';
 
-    if (t.kind == TY_BITFLAGS) {
+    if (t.kind == TY_FUNCTION) {
+        char return_text[NAME_MAX_LEN * 2];
+
+        if (t.base == NULL) {
+            snprintf(buf, size, "fn()->unknown");
+        } else {
+            type_to_string(*t.base, return_text, sizeof(return_text));
+            snprintf(buf, size, "fn()->%s", return_text);
+        }
+        return;
+    }
+    if (t.kind == TY_TYPE_CONSTRUCTOR) {
+        snprintf(buf, size, "type %s", t.tag);
+        return;
+    }
+    if (t.kind == TY_BITFLAGS || t.kind == TY_GENERIC || t.kind == TY_TYPEDEF) {
         snprintf(buf, size, "%s%s", t.tag, stars);
     } else if (t.kind == TY_STRUCT || t.kind == TY_UNION || t.kind == TY_ENUM) {
         snprintf(buf, size, "%s %s%s", type_kind_name(t.kind), t.tag, stars);
@@ -2011,7 +2394,10 @@ static void append_c_type(struct Text *out, struct Type t)
 {
     int i;
 
-    if (t.kind == TY_STRUCT || t.kind == TY_UNION || t.kind == TY_ENUM) {
+    if (t.kind == TY_GENERIC || t.kind == TY_TYPEDEF ||
+        t.kind == TY_TYPE_CONSTRUCTOR) {
+        text_add(out, t.tag);
+    } else if (t.kind == TY_STRUCT || t.kind == TY_UNION || t.kind == TY_ENUM) {
         text_add(out, type_kind_name(t.kind));
         if (t.tag[0] != '\0') {
             text_add(out, " ");
@@ -2030,7 +2416,13 @@ static int type_same_unowned(struct Type a, struct Type b)
     if (a.kind != b.kind || a.ptr != b.ptr) {
         return 0;
     }
-    if (a.kind == TY_STRUCT || a.kind == TY_UNION || a.kind == TY_ENUM || a.kind == TY_BITFLAGS) {
+    if (a.kind == TY_FUNCTION) {
+        return a.base != NULL && b.base != NULL &&
+            type_same_unowned(*a.base, *b.base);
+    }
+    if (a.kind == TY_STRUCT || a.kind == TY_UNION || a.kind == TY_ENUM ||
+        a.kind == TY_BITFLAGS || a.kind == TY_GENERIC || a.kind == TY_TYPEDEF ||
+        a.kind == TY_TYPE_CONSTRUCTOR) {
         return strcmp(a.tag, b.tag) == 0;
     }
     return 1;
@@ -2039,6 +2431,9 @@ static int type_same_unowned(struct Type a, struct Type b)
 static int type_compatible(struct Type lhs, struct Type rhs)
 {
     if (!type_is_known(lhs) || !type_is_known(rhs)) {
+        return 1;
+    }
+    if (lhs.kind == TY_TYPEDEF || rhs.kind == TY_TYPEDEF) {
         return 1;
     }
     if (type_same_unowned(lhs, rhs)) {
@@ -2159,6 +2554,10 @@ static void symbol_add_to(struct Symbols *symbols, const char *name, struct Type
         return;
     }
     if (old != NULL) {
+        if (type.applied_name[0] == '\0' && old->type.applied_name[0] != '\0') {
+            strcpy(type.applied_name, old->type.applied_name);
+            strcpy(type.applied_args, old->type.applied_args);
+        }
         old->type = type;
         if (old->var != NULL) {
             old->var->ty = type_copy(type);
@@ -2197,12 +2596,47 @@ static void symbol_add(const char *name, struct Type type)
     }
 }
 
+static struct TypedefAlias *typedef_alias_find(const char *name)
+{
+    int i;
+
+    for (i = g_typedefs.count - 1; i >= 0; i--) {
+        if (strcmp(g_typedefs.alias[i].name, name) == 0) {
+            return &g_typedefs.alias[i];
+        }
+    }
+    return NULL;
+}
+
+static void typedef_alias_add(const char *name, struct Type type)
+{
+    struct TypedefAlias *existing = typedef_alias_find(name);
+    struct TypedefAlias *alias;
+
+    if (existing != NULL) {
+        existing->type = type;
+        return;
+    }
+    if (g_typedefs.count >= MAX_SYMBOLS) {
+        die("too many typedef names");
+    }
+    alias = &g_typedefs.alias[g_typedefs.count++];
+    strncpy(alias->name, name, NAME_MAX_LEN - 1);
+    alias->name[NAME_MAX_LEN - 1] = '\0';
+    alias->type = type;
+}
+
+static void typedef_alias_add_opaque(const char *name)
+{
+    typedef_alias_add(name, type_make(TY_TYPEDEF, 0, name));
+}
+
 static int skip_decl_word(const char *word)
 {
     static const char *words[] = {
         "auto", "extern", "register", "static", "typedef", "const", "volatile",
         "restrict", "inline", "signed", "unsigned", "_Atomic", "uniq", "borrow", "owned",
-        "interrupt", "mmio", "ref", "mut", NULL
+        "interrupt", "mmio", "ref", "mut", "CMINUS_THREAD_LOCAL", NULL
     };
     int i;
     for (i = 0; words[i] != NULL; i++) {
@@ -2298,6 +2732,7 @@ static int has_decl_word_before(const char *s, const char *limit, const char *wo
 struct DeclInfo {
     int is_decl;
     int is_function;
+    int is_typedef;
     int has_init;
     int is_array;
     const char *init;
@@ -2360,6 +2795,26 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
         const char *next = read_name(p, word);
         const char *after;
         struct GenericTemplate *tmpl = generic_find(&g_generic_structs, word);
+        if (parse_generic_angle_arg(next, arg, &after) &&
+            generic_argument_uses_current_parameter(arg)) {
+            if (strlen(word) + strlen(arg) + 3 > sizeof(tag)) {
+                die("generic type name is too long");
+            }
+            strcpy(tag, word);
+            strcat(tag, "<");
+            strcat(tag, arg);
+            strcat(tag, ">");
+            *base_end = after;
+            *type = type_make(TY_GENERIC, 0, tag);
+            type_set_application(type, word, arg);
+            if (strcmp(word, "Box") == 0) {
+                type->ptr = 1;
+                type->owned = 1;
+            } else if (saw_ref) {
+                type->ptr = 1;
+            }
+            return 1;
+        }
         if (strcmp(word, "Box") == 0 && parse_generic_angle_arg(next, arg, &after)) {
             const char *arg_start = skip_ws(arg);
             const char *arg_end;
@@ -2381,6 +2836,7 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
             }
             *base_end = after;
             *type = type_make(TY_STRUCT, 1, tag);
+            type_set_application(type, word, arg);
             type->owned = 1;
             type->raw_ptr = 0;
             return 1;
@@ -2400,6 +2856,7 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
             struct GenericInstance *inst = generic_instance_get(tmpl, arg);
             *base_end = after;
             *type = type_make(TY_STRUCT, 0, inst->concrete);
+            type_set_application(type, word, arg);
             if (saw_ref) {
                 type->ptr = 1;
             }
@@ -2411,15 +2868,34 @@ static int parse_base_type_prefix(const char *s, const char **base_end, struct T
                 struct GenericInstance *inst = payload_enum_instance_get(payload_en, arg);
                 *base_end = after;
                 *type = type_make(TY_STRUCT, 0, inst->concrete);
+                type_set_application(type, word, arg);
                 if (saw_ref) {
                     type->ptr = 1;
                 }
                 return 1;
             }
         }
+        if (current_generic_parameter_named(word)) {
+            *base_end = next;
+            *type = type_make(TY_GENERIC, 0, word);
+            if (saw_ref) {
+                type->ptr = 1;
+            }
+            return 1;
+        }
         kind = keyword_type(word);
         if (kind == TY_UNKNOWN) {
+            struct TypedefAlias *alias = typedef_alias_find(word);
             int i;
+
+            if (alias != NULL) {
+                *base_end = next;
+                *type = alias->type;
+                if (saw_ref) {
+                    type->ptr++;
+                }
+                return 1;
+            }
             for (i = 0; i < g_tags.count; i++) {
                 if (strcmp(g_tags.tag[i].name, word) == 0) {
                     *base_end = next;
@@ -2494,6 +2970,9 @@ static int parse_function_signature(const char *s, char *name, struct Type *ret)
 
     name[0] = '\0';
     *ret = type_unknown();
+    if (has_decl_word_before(s, s + strlen(s), "typedef")) {
+        return 0;
+    }
     if (!parse_base_type_prefix(s, &base_end, &base)) {
         return 0;
     }
@@ -2547,6 +3026,42 @@ static int parse_function_signature(const char *s, char *name, struct Type *ret)
     return 1;
 }
 
+static int parse_function_pointer_decl(const char *base_end,
+                                       const char *limit,
+                                       struct Type return_type,
+                                       struct DeclInfo *decl)
+{
+    const char *open;
+
+    for (open = base_end; open < limit; open++) {
+        const char *star;
+        const char *name_end;
+        const char *close;
+        const char *params;
+        char name[NAME_MAX_LEN];
+
+        if (*open != '(') continue;
+        star = skip_ws(open + 1);
+        if (star >= limit || *star != '*') continue;
+        star = skip_ws(star + 1);
+        if (star >= limit || !is_ident_start((unsigned char)*star)) continue;
+        name_end = read_name(star, name);
+        close = skip_ws(name_end);
+        if (close >= limit || *close != ')') continue;
+        params = skip_ws(close + 1);
+        if (params >= limit || *params != '(') continue;
+        if ((size_t)(name_end - star) >= sizeof(decl->name)) return 0;
+
+        memcpy(decl->name, star, (size_t)(name_end - star));
+        decl->name[name_end - star] = '\0';
+        decl->type = type_make(TY_FUNCTION, 0, NULL);
+        decl->type.base = type_copy(return_type);
+        decl->is_decl = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static int parse_decl(const char *s, struct DeclInfo *decl)
 {
     const char *p = skip_ws(s);
@@ -2563,9 +3078,13 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
 
     memset(decl, 0, sizeof(*decl));
     decl->type = type_unknown();
+    decl->is_typedef = has_decl_word_before(p, p + strlen(p), "typedef");
 
     (void)word;
     if (!parse_base_type_prefix(p, &base_end, &base_type)) {
+        return 0;
+    }
+    if (base_type.applied_name[0] != '\0' && *skip_ws(base_end) == '(') {
         return 0;
     }
     eq = find_assignment(s);
@@ -2574,6 +3093,9 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
         limit = s + eq;
         decl->has_init = 1;
         decl->init = s + eq + 1;
+    }
+    if (parse_function_pointer_decl(base_end, limit, base_type, decl)) {
+        return 1;
     }
     for (scan = base_end; scan < limit; scan++) {
         if (*scan == '[') {
@@ -2620,6 +3142,12 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     if ((size_t)(name_end - name_start) >= NAME_MAX_LEN) {
         return 0;
     }
+    if (decl->is_typedef) {
+        ptr = 0;
+        for (scan = base_end; scan < name_start; scan++) {
+            if (*scan == '*') ptr++;
+        }
+    }
     memcpy(decl->name, name_start, (size_t)(name_end - name_start));
     decl->name[name_end - name_start] = '\0';
     decl->type = base_type;
@@ -2639,6 +3167,25 @@ static int parse_decl(const char *s, struct DeclInfo *decl)
     }
     decl->is_decl = 1;
     return 1;
+}
+
+void cminus_process_braced_initializer(const char *text)
+{
+    struct DeclInfo decl;
+
+    if (parse_decl(text, &decl) && decl.is_decl && decl.name[0] != '\0' &&
+        !decl.is_function) {
+        symbol_add(decl.name, decl.type);
+    }
+    if (g_unsafe_depth > 0) {
+        return;
+    }
+    check_safe_pointer_deref(text);
+    check_casts(text);
+    check_safe_heap_calls(text);
+    check_safe_c_function_calls(text);
+    check_safe_raw_field_access(text);
+    check_safe_array_index_access(text);
 }
 
 static const char *find_decl_name_pos(const char *s, const char *name)
@@ -2692,6 +3239,15 @@ static int is_safe_reference_type(struct Type type)
     return type.kind == TY_STRUCT;
 }
 
+static int type_is_runtime_resource_value(struct Type type)
+{
+    return type.kind == TY_STRUCT && type.ptr == 0 &&
+        (strcmp(type.tag, "Thread") == 0 ||
+         strcmp(type.tag, "Mutex") == 0 ||
+         strcmp(type.tag, "Cond") == 0 ||
+         strcmp(type.tag, "Critical") == 0);
+}
+
 static int is_heap_collection_type(struct Type type)
 {
     return strncmp(type.tag, "Vec_", 4) == 0 ||
@@ -2731,7 +3287,28 @@ static int type_is_stored_safe_reference(struct Type type)
     return strcmp(type.tag, "Ref") == 0 ||
            strcmp(type.tag, "Span") == 0 ||
            strncmp(type.tag, "Ref_", 4) == 0 ||
-           strncmp(type.tag, "Span_", 5) == 0;
+           strncmp(type.tag, "Span_", 5) == 0 ||
+           (strncmp(type.tag, "Optional_", 9) == 0 &&
+            (strstr(type.tag + 9, "Ref_") != NULL ||
+             strstr(type.tag + 9, "Span_") != NULL));
+}
+
+static int type_is_heap_container_with_safe_reference(struct Type type)
+{
+    const char *tag = type.tag;
+    int heap_container;
+
+    if (type.kind != TY_STRUCT || tag[0] == '\0') {
+        return 0;
+    }
+    heap_container = strncmp(tag, "Vec_", 4) == 0 ||
+        strncmp(tag, "List_", 5) == 0 ||
+        strncmp(tag, "Map_", 4) == 0 ||
+        strncmp(tag, "OwnedVec_", 9) == 0 ||
+        strncmp(tag, "OwnedList_", 10) == 0 ||
+        strncmp(tag, "OwnedMap_", 9) == 0;
+    return heap_container &&
+        (strstr(tag, "Ref_") != NULL || strstr(tag, "Span_") != NULL);
 }
 
 static const char *find_string_decl_keyword(const char *base, int *borrowed)
@@ -3414,6 +3991,7 @@ static struct Text *rewrite_generics(struct Text *in)
 {
     struct Text *out = text_new();
     const char *p = in->text;
+    struct SafetyExprNode *safety_forest = safety_parse_forest(in->text);
 
     while (*p != '\0') {
         if (is_ident_start((unsigned char)*p)) {
@@ -3424,6 +4002,7 @@ static struct Text *rewrite_generics(struct Text *in)
             const char *member;
             struct GenericTemplate *struct_tmpl = generic_find(&g_generic_structs, name);
             struct PayloadEnum *payload_en = payload_enum_find(name);
+            int generic_expr_site = safety_ast_has_generic_start(safety_forest, p);
 
             if (struct_tmpl != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
                 if (strcmp(arg, struct_tmpl->param) == 0) {
@@ -3432,7 +4011,7 @@ static struct Text *rewrite_generics(struct Text *in)
                     continue;
                 }
                 member = skip_ws(after);
-                if (*member == '.') {
+                if (*member == '.' && generic_expr_site) {
                     char method[NAME_MAX_LEN];
                     char func_name[NAME_MAX_LEN];
                     struct GenericTemplate *func_tmpl;
@@ -3528,6 +4107,7 @@ static struct Text *rewrite_generics(struct Text *in)
             const char *after;
             const char *call;
             struct GenericTemplate *tmpl = generic_find(&g_generic_funcs, name);
+            int generic_expr_site = safety_ast_has_generic_start(safety_forest, p);
 
             if (tmpl != NULL && parse_generic_angle_arg(name_end, arg, &after)) {
                 struct GenericInstance *inst = generic_instance_get(tmpl, arg);
@@ -3542,6 +4122,11 @@ static struct Text *rewrite_generics(struct Text *in)
                 text_free(concrete_head);
                 call = skip_ws(after);
                 if (*call == '(') {
+                    if (!generic_expr_site) {
+                        text_add_n(out, p, (size_t)(after - p));
+                        p = after;
+                        continue;
+                    }
                     text_add(out, inst->concrete);
                     text_add_n(out, after, (size_t)(call - after));
                     p = call;
@@ -3557,6 +4142,7 @@ static struct Text *rewrite_generics(struct Text *in)
     out->tail_return = in->tail_return;
     out->ast = in->ast;
     in->ast = NULL;
+    safety_expr_free(safety_forest);
     text_free(in);
     return out;
 }
@@ -3754,11 +4340,161 @@ static int type_has_finalizer(struct Type type)
     return fin != NULL && fin->count > 0;
 }
 
+static void aggregate_ast_add(const char *tag, struct Node *node)
+{
+    int i;
+
+    if (tag == NULL || tag[0] == '\0' || node == NULL) {
+        return;
+    }
+    for (i = g_aggregate_asts.count - 1; i >= 0; i--) {
+        if (strcmp(g_aggregate_asts.item[i].tag, tag) == 0) {
+            g_aggregate_asts.item[i].node = node;
+            return;
+        }
+    }
+    if (g_aggregate_asts.count >= MAX_GENERIC_TEMPLATES) {
+        die("too many aggregate AST definitions");
+    }
+    strncpy(g_aggregate_asts.item[g_aggregate_asts.count].tag,
+            tag, NAME_MAX_LEN - 1);
+    g_aggregate_asts.item[g_aggregate_asts.count].tag[NAME_MAX_LEN - 1] = '\0';
+    g_aggregate_asts.item[g_aggregate_asts.count].node = node;
+    g_aggregate_asts.count++;
+}
+
+static struct Node *aggregate_ast_find(const char *tag)
+{
+    int i;
+
+    for (i = g_aggregate_asts.count - 1; i >= 0; i--) {
+        if (strcmp(g_aggregate_asts.item[i].tag, tag) == 0) {
+            return g_aggregate_asts.item[i].node;
+        }
+    }
+    return NULL;
+}
+
+static int payload_generated_field_type(const char *tag, const char *field,
+                                        struct Type *type)
+{
+    int i;
+
+    for (i = 0; i < g_payload_enums.count; i++) {
+        struct PayloadEnum *en = &g_payload_enums.en[i];
+        int j;
+
+        for (j = 0; j < en->inst_count; j++) {
+            struct GenericInstance *inst = &en->inst[j];
+            struct Text *payload_tag = text_new();
+            int is_payload;
+
+            text_add(payload_tag, inst->concrete);
+            text_add(payload_tag, "_payload");
+            is_payload = strcmp(tag, payload_tag->text) == 0;
+            if (strcmp(tag, inst->concrete) == 0) {
+                if (strcmp(field, "tag") == 0) {
+                    *type = type_make(TY_INT, 0, NULL);
+                    text_free(payload_tag);
+                    return 1;
+                }
+                if (strcmp(field, "origin_kind") == 0 ||
+                    strcmp(field, "origin_stack_id") == 0) {
+                    *type = type_make(TY_LONG, 0, NULL);
+                    text_free(payload_tag);
+                    return 1;
+                }
+                if (strcmp(field, "payload") == 0 &&
+                    payload_tag->len < NAME_MAX_LEN) {
+                    *type = type_make(TY_STRUCT, 0, payload_tag->text);
+                    text_free(payload_tag);
+                    return 1;
+                }
+            } else if (is_payload) {
+                struct PayloadVariant *variant =
+                    payload_enum_variant_find(en, field);
+
+                if (variant != NULL && variant->has_payload) {
+                    struct Text *payload = replace_param_and_generics(
+                        variant->payload, en->param, inst->arg,
+                        en->name, inst->concrete);
+                    struct Text *decl_text = text_new();
+                    struct DeclInfo decl;
+
+                    payload = remove_percent(strip_attributes(payload));
+                    text_add(decl_text, payload->text);
+                    text_add(decl_text, " value;");
+                    if (parse_decl(decl_text->text, &decl) &&
+                        decl.name[0] != '\0') {
+                        *type = decl.type;
+                        text_free(payload);
+                        text_free(decl_text);
+                        text_free(payload_tag);
+                        return 1;
+                    }
+                    text_free(payload);
+                    text_free(decl_text);
+                }
+            }
+            text_free(payload_tag);
+        }
+    }
+    return 0;
+}
+
+static int payload_generated_constant_type(const char *name,
+                                           struct Type *type)
+{
+    int i;
+
+    for (i = 0; i < g_payload_enums.count; i++) {
+        struct PayloadEnum *en = &g_payload_enums.en[i];
+        int j;
+
+        for (j = 0; j < en->inst_count; j++) {
+            int v;
+
+            for (v = 0; v < en->variant_count; v++) {
+                struct Text *constant = text_new();
+                int match;
+
+                text_add(constant, en->inst[j].concrete);
+                text_add(constant, "_TAG_");
+                text_add(constant, en->variant[v].name);
+                match = strcmp(name, constant->text) == 0;
+                text_free(constant);
+                if (match) {
+                    *type = type_make(TY_INT, 0, NULL);
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static int struct_field_type(const char *tag, const char *field, struct Type *type)
 {
+    struct Node *aggregate = aggregate_ast_find(tag);
     struct StructFinalizer *fin = struct_finalizer_find(tag);
     struct StructFinalizer *clone = struct_clone_find(tag);
     int i;
+
+    if (aggregate != NULL) {
+        struct Node *member;
+
+        for (member = aggregate->body; member != NULL; member = member->next) {
+            if (member->kind == ND_FIELD && member->ty != NULL &&
+                strcmp(member->name, field) == 0) {
+                *type = *member->ty;
+                return 1;
+            }
+        }
+    }
+
+    if (payload_generated_field_type(tag, field, type)) {
+        return 1;
+    }
 
     if (strncmp(tag, "Ref_", 4) == 0) {
         if (strcmp(field, "data") == 0) {
@@ -3900,11 +4636,13 @@ static void begin_function(void)
 
 static void begin_top_block(struct Text *head)
 {
+    const char *head_start = skip_ws(head->text);
     char name[NAME_MAX_LEN];
     char param[NAME_MAX_LEN];
     struct Type ret;
     register_tags_in_text(head->text);
     g_current_generic_kind = 0;
+    g_current_generic_param[0] = '\0';
     g_current_payload_enum = 0;
     g_current_bitflags = 0;
     g_current_bitflags_name[0] = '\0';
@@ -3918,6 +4656,17 @@ static void begin_top_block(struct Text *head)
         g_current_struct_tag[0] = '\0';
         return;
     }
+    if (!g_c_compat && starts_word(head_start, "union")) {
+        fprintf(stderr, "c-: type error: unions are only allowed inside unsafe at %s:%d; use a tagged enum in safe mode\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    if (!g_c_compat && strstr(head->text, "...") != NULL &&
+        !function_signature_is_internal(head->text)) {
+        fprintf(stderr, "c-: type error: variadic functions are only allowed inside unsafe at %s:%d; expose a typed safe wrapper\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
     if (parse_bitflags_head(head->text, name, param)) {
         g_current_bitflags = 1;
         strncpy(g_current_bitflags_name, name, NAME_MAX_LEN - 1);
@@ -3929,13 +4678,19 @@ static void begin_top_block(struct Text *head)
         g_in_function = 0;
     } else if (parse_payload_enum_head(head->text, param, name)) {
         g_current_payload_enum = 1;
+        strncpy(g_current_generic_param, param, NAME_MAX_LEN - 1);
+        g_current_generic_param[NAME_MAX_LEN - 1] = '\0';
         g_top_block_is_function = 0;
         g_in_function = 0;
     } else if (parse_generic_struct_head(head->text, param, name)) {
         g_current_generic_kind = 1;
+        strncpy(g_current_generic_param, param, NAME_MAX_LEN - 1);
+        g_current_generic_param[NAME_MAX_LEN - 1] = '\0';
         g_top_block_is_function = 0;
     } else if (parse_generic_function_head(head->text, param, name)) {
         g_current_generic_kind = 2;
+        strncpy(g_current_generic_param, param, NAME_MAX_LEN - 1);
+        g_current_generic_param[NAME_MAX_LEN - 1] = '\0';
         g_top_block_is_function = 1;
     } else {
         g_top_block_is_function = parse_function_signature(head->text, name, &ret) || !looks_like_aggregate_head(head->text);
@@ -3949,15 +4704,26 @@ static void begin_top_block(struct Text *head)
     } else if (g_current_generic_kind == 1) {
         g_in_function = 0;
     } else if (g_top_block_is_function) {
+        const char *function_head = head->text;
+
+        if (g_current_generic_kind == 2) {
+            const char *generic_head = parse_generic_prefix(head->text, param);
+
+            if (generic_head != NULL) {
+                function_head = generic_head;
+            }
+        }
         begin_function();
-        validate_interrupt_function_head(head->text);
-        g_current_function_interrupt = function_decl_has_interrupt(head->text);
-        g_current_function_naked = function_decl_has_naked(head->text);
-        if (parse_function_signature(head->text, name, &ret)) {
+        validate_interrupt_function_head(function_head);
+        g_current_function_interrupt = function_decl_has_interrupt(function_head);
+        g_current_function_naked = function_decl_has_naked(function_head);
+        if (parse_function_signature(function_head, name, &ret)) {
             struct Text *normalized_head = text_new();
-            text_add(normalized_head, head->text);
-            normalized_head = rewrite_generics(normalized_head);
-            normalized_head = rewrite_safe_reference_decl(normalized_head);
+            text_add(normalized_head, function_head);
+            if (g_current_generic_kind != 2) {
+                normalized_head = rewrite_generics(normalized_head);
+                normalized_head = rewrite_safe_reference_decl(normalized_head);
+            }
             strncpy(g_current_function_name, name, NAME_MAX_LEN - 1);
             g_current_function_name[NAME_MAX_LEN - 1] = '\0';
             if (parse_function_signature(normalized_head->text, name, &ret)) {
@@ -3974,7 +4740,7 @@ static void begin_top_block(struct Text *head)
         }
         g_current_function_stack_guard = !g_current_function_interrupt &&
             !g_current_function_naked &&
-            !function_signature_is_internal(head->text);
+            !function_signature_is_internal(function_head);
     } else if (parse_struct_head(head->text, name)) {
         const char *struct_name_pos = find_decl_name_pos(head->text, name);
         g_in_aggregate_struct = 1;
@@ -4130,11 +4896,42 @@ static int source_has_cminus_include(FILE *fp)
     return found;
 }
 
+static struct Text *consume_pp_line(struct Text *line)
+{
+    struct Node *node = ast_new(ND_DIRECTIVE, line->text);
+    const char *p = skip_ws(node->tok);
+    struct Text *out = text_new();
+
+    if (*p == '#') {
+        char directive[NAME_MAX_LEN];
+
+        p = skip_ws(p + 1);
+        if (is_ident_start((unsigned char)*p)) {
+            const char *end = read_name(p, directive);
+
+            strncpy(node->name, directive, NAME_MAX_LEN - 1);
+            node->name[NAME_MAX_LEN - 1] = '\0';
+            if (strcmp(directive, "define") == 0) {
+                char macro[NAME_MAX_LEN];
+                const char *macro_start = skip_ws(end);
+
+                if (is_ident_start((unsigned char)*macro_start)) {
+                    read_name(macro_start, macro);
+                    strncat(node->name, " ", NAME_MAX_LEN - strlen(node->name) - 1);
+                    strncat(node->name, macro, NAME_MAX_LEN - strlen(node->name) - 1);
+                }
+            }
+        }
+    }
+    g_consumed_directives = ast_append(g_consumed_directives, node);
+    text_free(line);
+    return out;
+}
+
 static struct Text *process_pp_line(struct Text *line)
 {
     char include_path[256];
     FILE *fp;
-    struct Text *out;
     const char *p = skip_ws(line->text);
 
     if (g_c_compat && !g_bare_metal && cminus_include_depth() == 0) {
@@ -4146,62 +4943,44 @@ static struct Text *process_pp_line(struct Text *line)
                 exit(1);
             }
             cminus_push_include(fp, 1);
-            out = text_new();
-            text_free(line);
-            return out;
+            return consume_pp_line(line);
         }
         return line;
     }
     if (strncmp(p, "#define CMINUS_THREAD_LOCAL", 27) == 0 && g_bare_metal) {
         text_add(g_defines, "#define CMINUS_THREAD_LOCAL\n");
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     if (strncmp(p, "#define", 7) == 0) {
         text_add(g_defines, line->text);
         if (line->len == 0 || line->text[line->len - 1] != '\n') {
             text_add_ch(g_defines, '\n');
         }
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     if (is_stdlib_include(line->text)) {
         g_need_stdlib_h = 1;
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     if (is_string_include(line->text)) {
         g_need_string_h = 1;
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     if (is_stdio_include(line->text)) {
         g_need_stdio_h = 1;
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     if (is_execinfo_include(line->text)) {
         g_need_execinfo_h = 1;
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     if (is_pthread_include(line->text)) {
         g_need_pthread_h = 1;
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     if (is_sched_include(line->text)) {
         g_need_sched_h = 1;
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     /*
      * <c-bare.h> is the freestanding runtime. It is inlined by -bare, so an
@@ -4209,9 +4988,7 @@ static struct Text *process_pp_line(struct Text *line)
      * the output as an unresolved system include.
      */
     if (is_cbare_include(line->text)) {
-        out = text_new();
-        text_free(line);
-        return out;
+        return consume_pp_line(line);
     }
     if (!parse_cminus_include(line->text, include_path, sizeof(include_path))) {
         return line;
@@ -4223,9 +5000,7 @@ static struct Text *process_pp_line(struct Text *line)
         exit(1);
     }
     cminus_push_include(fp, 1);
-    out = text_new();
-    text_free(line);
-    return out;
+    return consume_pp_line(line);
 }
 
 static struct Text *process_standalone_semi(struct Text *semi)
@@ -4478,146 +5253,12 @@ static void check_borrow_escape_return(const char *stmt)
 
 static int extract_direct_borrow_owner(const char *expr, char *owner)
 {
-    const char *p = skip_ws(expr);
-    const char *end;
-    const char *root_start;
-    const char *root_end;
-
-    owner[0] = '\0';
-    if (*p == '&') {
-        p = skip_ws(p + 1);
-    }
-    if (!is_ident_start((unsigned char)*p)) {
-        return 0;
-    }
-    root_start = p;
-    end = read_name(p, owner);
-    root_end = end;
-    if ((size_t)(root_end - root_start) >= NAME_MAX_LEN) {
-        owner[0] = '\0';
-        return 0;
-    }
-    memcpy(owner, root_start, (size_t)(root_end - root_start));
-    owner[root_end - root_start] = '\0';
-    end = skip_ws(end);
-    while (*end == '.' || (end[0] == '-' && end[1] == '>')) {
-        if (*end == '.') {
-            end++;
-        } else {
-            end += 2;
-        }
-        end = skip_ws(end);
-        if (!is_ident_start((unsigned char)*end)) {
-            return 0;
-        }
-        {
-            char field[NAME_MAX_LEN];
-            end = read_name(end, field);
-        }
-        end = skip_ws(end);
-    }
-    return *end == '\0' || *end == ';' || *end == ',';
+    return safety_ast_borrow_root(expr, expr + strlen(expr), owner);
 }
 
 static int extract_safe_reference_borrow_owner(const char *expr, char *owner)
 {
-    const char *p = expr;
-
-    owner[0] = '\0';
-    while (*p != '\0') {
-        char name[NAME_MAX_LEN];
-        const char *name_end;
-        const char *open;
-        const char *close;
-        const char *arg_end;
-
-        if (*p == '"' || *p == '\'') {
-            char quote = *p++;
-            while (*p != '\0') {
-                if (*p == '\\' && p[1] != '\0') {
-                    p += 2;
-                    continue;
-                }
-                if (*p++ == quote) {
-                    break;
-                }
-            }
-            continue;
-        }
-        if (!is_ident_start((unsigned char)*p)) {
-            p++;
-            continue;
-        }
-        name_end = read_name(p, name);
-        if ((strcmp(name, "Ref") == 0 || strcmp(name, "Span") == 0 || strcmp(name, "RingBuffer") == 0) &&
-            *skip_ws(name_end) == '<') {
-            char generic_arg[NAME_MAX_LEN];
-            const char *after_generic;
-            const char *dot;
-            char method[NAME_MAX_LEN];
-            const char *method_end;
-
-            if (parse_generic_angle_arg(skip_ws(name_end), generic_arg, &after_generic)) {
-                dot = skip_ws(after_generic);
-                if (*dot == '.') {
-                    const char *method_start = skip_ws(dot + 1);
-                    if (is_ident_start((unsigned char)*method_start)) {
-                        method_end = read_name(method_start, method);
-                        open = skip_ws(method_end);
-                        if (*open == '(' &&
-                            ((strcmp(name, "Ref") == 0 && strcmp(method, "from") == 0) ||
-                             (strcmp(name, "Span") == 0 &&
-                            (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0 || strcmp(method, "map_from") == 0)) ||
-                             (strcmp(name, "RingBuffer") == 0 &&
-                              (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0)))) {
-                            close = matching_paren(open);
-                            if (close == NULL) {
-                                return 0;
-                            }
-                            arg_end = find_top_level_char(open + 1, close, ',');
-                            if (arg_end == NULL) {
-                                arg_end = close;
-                            }
-                            {
-                                char *arg_text = xstrndup(open + 1, (size_t)(arg_end - (open + 1)));
-                                int ok = extract_direct_borrow_owner(arg_text, owner);
-                                free(arg_text);
-                                return ok;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        open = skip_ws(name_end);
-        if (*open == '(' &&
-            (strncmp(name, "Ref_from_", 9) == 0 ||
-             strncmp(name, "Span_from_", 10) == 0 ||
-             strncmp(name, "Span_from_bytes_", 16) == 0 ||
-             strncmp(name, "Span_map_from_", 14) == 0 ||
-             strncmp(name, "RingBuffer_from_", 16) == 0 ||
-             strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
-             strcmp(name, "Bitmap_from") == 0 ||
-             strcmp(name, "Bitmap_from_words") == 0 ||
-             strcmp(name, "Bitmap_from_bytes") == 0)) {
-            close = matching_paren(open);
-            if (close == NULL) {
-                return 0;
-            }
-            arg_end = find_top_level_char(open + 1, close, ',');
-            if (arg_end == NULL) {
-                arg_end = close;
-            }
-            {
-                char *arg = xstrndup(open + 1, (size_t)(arg_end - (open + 1)));
-                int ok = extract_direct_borrow_owner(arg, owner);
-                free(arg);
-                return ok;
-            }
-        }
-        p = name_end;
-    }
-    return 0;
+    return safety_ast_reference_borrow_owner(expr, owner);
 }
 
 static int word_occurs_after_first_token(const char *stmt, const char *word)
@@ -4954,7 +5595,10 @@ static int parse_array_expr_arg(const char *start, const char *end, char *label,
         strncpy(label, name, NAME_MAX_LEN - 1);
         label[NAME_MAX_LEN - 1] = '\0';
     }
-    p = skip_ws(name_end);
+    p = name_end;
+    while (p < end && isspace((unsigned char)*p)) {
+        p++;
+    }
     while (p < end && (*p == '.' || (p[0] == '-' && p[1] == '>'))) {
         const char *field_start = skip_ws(*p == '.' ? p + 1 : p + 2);
         const char *field_end;
@@ -4983,7 +5627,10 @@ static int parse_array_expr_arg(const char *start, const char *end, char *label,
                 strncat(label, field, NAME_MAX_LEN - used - 1);
             }
         }
-        p = skip_ws(field_end);
+        p = field_end;
+        while (p < end && isspace((unsigned char)*p)) {
+            p++;
+        }
     }
     if (p != end || !current.is_array) {
         return 0;
@@ -5109,6 +5756,14 @@ static void check_span_stack_array_call(const char *func_name, const char *args_
     }
 }
 
+static int is_bounded_array_output_call(const char *name)
+{
+    return strncmp(name, "RingBuffer_drain_to_span_", 25) == 0 ||
+        strncmp(name, "List_to_span_", 13) == 0 ||
+        strncmp(name, "Map_keys_to_span_", 17) == 0 ||
+        strncmp(name, "Map_values_to_span_", 19) == 0;
+}
+
 static void check_span_stack_array_bounds(const char *stmt)
 {
     const char *p = stmt;
@@ -5141,6 +5796,38 @@ static void check_span_stack_array_bounds(const char *stmt)
         }
         name_end = read_name(p, name);
         open = skip_ws(name_end);
+        if (*open == '(' && is_bounded_array_output_call(name)) {
+            const char *arg1_end;
+            const char *arg2_end;
+            const char *arg3_end;
+            char array_label[NAME_MAX_LEN];
+            struct Type array_type;
+            long cap;
+
+            close = matching_paren(open);
+            if (close == NULL) {
+                return;
+            }
+            arg1_end = find_top_level_char(open + 1, close, ',');
+            arg2_end = arg1_end == NULL ? NULL : find_top_level_char(arg1_end + 1, close, ',');
+            arg3_end = arg2_end == NULL ? NULL : find_top_level_char(arg2_end + 1, close, ',');
+            if (arg1_end != NULL && arg2_end != NULL && arg3_end == NULL &&
+                parse_array_expr_arg(arg1_end + 1, arg2_end, array_label, &array_type, NULL)) {
+                if (!parse_int_literal_arg(arg2_end + 1, close, &cap)) {
+                    fprintf(stderr, "c-: type error: variable output capacity for fixed array '%s' is not allowed in safe mode at %s:%d; create a Span first\n",
+                            array_label, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                    exit(1);
+                }
+                if (cap < 0 || cap > array_type.array_len) {
+                    fprintf(stderr, "c-: type error: output capacity %ld exceeds array '%s' length %d at %s:%d\n",
+                            cap, array_label, array_type.array_len,
+                            g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                    exit(1);
+                }
+            }
+            p = close + 1;
+            continue;
+        }
         if (*open == '(' &&
             (strncmp(name, "Span_from_", 10) == 0 || strncmp(name, "Span_from_bytes_", 16) == 0 ||
              strncmp(name, "Span_map_from_", 14) == 0 ||
@@ -5490,6 +6177,29 @@ static struct Text *rewrite_inferred_array_from_calls(struct Text *in)
     return out;
 }
 
+static const char *skip_safe_trivia_backward(const char *start, const char *p)
+{
+    while (p > start) {
+        while (p > start && isspace((unsigned char)p[-1])) {
+            p--;
+        }
+        if (p - start >= 2 && p[-2] == '*' && p[-1] == '/') {
+            const char *q = p - 2;
+
+            while (q - start >= 2 && !(q[-2] == '/' && q[-1] == '*')) {
+                q--;
+            }
+            if (q - start < 2) {
+                break;
+            }
+            p = q - 2;
+            continue;
+        }
+        break;
+    }
+    return p;
+}
+
 static int direct_grouping_parens_before(const char *stmt, const char *expr)
 {
     const char *p = expr;
@@ -5499,17 +6209,12 @@ static int direct_grouping_parens_before(const char *stmt, const char *expr)
         const char *open;
         const char *before;
 
-        while (p > stmt && isspace((unsigned char)p[-1])) {
-            p--;
-        }
+        p = skip_safe_trivia_backward(stmt, p);
         if (p == stmt || p[-1] != '(') {
             break;
         }
         open = p - 1;
-        before = open;
-        while (before > stmt && isspace((unsigned char)before[-1])) {
-            before--;
-        }
+        before = skip_safe_trivia_backward(stmt, open);
         if (before > stmt && (is_ident((unsigned char)before[-1]) ||
                               before[-1] == ')' || before[-1] == ']')) {
             const char *word = before;
@@ -5527,17 +6232,3609 @@ static int direct_grouping_parens_before(const char *stmt, const char *expr)
     return count;
 }
 
+struct SafetyExprParser {
+    const char *source;
+    const char *cursor;
+    const char *end;
+    int allow_initializer;
+};
+
+static const char *safety_skip_trivia(struct SafetyExprParser *parser, const char *p)
+{
+    while (p < parser->end) {
+        if (isspace((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        if (p + 1 < parser->end && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < parser->end && !(p[0] == '*' && p[1] == '/')) {
+                p++;
+            }
+            if (p + 1 < parser->end) {
+                p += 2;
+            }
+            continue;
+        }
+        if (p + 1 < parser->end && p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (p < parser->end && *p != '\n') {
+                p++;
+            }
+            continue;
+        }
+        break;
+    }
+    return p;
+}
+
+static struct SafetyExprNode *safety_expr_new(enum SafetyExprKind kind,
+                                               const char *start,
+                                               const char *end)
+{
+    struct SafetyExprNode *node = xmalloc(sizeof(*node));
+    char *text;
+
+    memset(node, 0, sizeof(*node));
+    node->kind = kind;
+    node->start = start;
+    node->end = end;
+    node->type = type_unknown();
+    node->unknown_reason = SAFETY_UNKNOWN_UNCLASSIFIED;
+    if (start != NULL && end != NULL && end > start) {
+        text = xstrndup(start, (size_t)(end - start));
+        node->type = expr_type(text);
+        free(text);
+    }
+    return node;
+}
+
+static void safety_expr_free(struct SafetyExprNode *node)
+{
+    while (node != NULL) {
+        struct SafetyExprNode *next = node->next;
+        safety_expr_free(node->lhs);
+        safety_expr_free(node->rhs);
+        safety_expr_free(node->child);
+        free(node);
+        node = next;
+    }
+}
+
+static int safety_binary_operator(const char *p, const char *end,
+                                  char op[4], int *precedence)
+{
+    static const struct {
+        const char *op;
+        int precedence;
+    } operators[] = {
+        {",", 1},
+        {"<<=", 2}, {">>=", 2},
+        {"=", 2}, {"+=", 2}, {"-=", 2}, {"*=", 2}, {"/=", 2}, {"%=", 2},
+        {"&=", 2}, {"|=", 2}, {"^=", 2},
+        {"?", 2}, {"||", 3}, {"&&", 4}, {"|", 5}, {"^", 6}, {"&", 7},
+        {"==", 8}, {"!=", 8}, {"<", 9}, {">", 9}, {"<=", 9}, {">=", 9},
+        {"<<", 10}, {">>", 10}, {"+", 11}, {"-", 11}, {"*", 12},
+        {"/", 12}, {"%", 12}, {NULL, 0}
+    };
+    int i;
+
+    for (i = 0; operators[i].op != NULL; i++) {
+        size_t len = strlen(operators[i].op);
+        if (p + len <= end && strncmp(p, operators[i].op, len) == 0) {
+            if (len == 1 && ((p[0] == '<' && p + 1 < end && p[1] == '<') ||
+                             (p[0] == '>' && p + 1 < end && p[1] == '>') ||
+                             (p[0] == '&' && p + 1 < end && p[1] == '&') ||
+                             (p[0] == '|' && p + 1 < end && p[1] == '|') ||
+                             (p[0] == '-' && p + 1 < end && p[1] == '>') ||
+                             (p + 1 < end && p[1] == '='))) {
+                continue;
+            }
+            memcpy(op, operators[i].op, len);
+            op[len] = '\0';
+            *precedence = operators[i].precedence;
+            return (int)len;
+        }
+    }
+    return 0;
+}
+
+static struct SafetyExprNode *safety_parse_expression(struct SafetyExprParser *parser,
+                                                       int min_precedence);
+static const char *safety_matching_paren(struct SafetyExprParser *parser,
+                                         const char *open);
+
+static const char *safety_matching_generic_close(struct SafetyExprParser *parser,
+                                                  const char *open)
+{
+    const char *p = open;
+    int depth = 0;
+
+    while (p < parser->end) {
+        if (*p == '<') {
+            depth++;
+        } else if (*p == '>') {
+            depth--;
+            if (depth == 0) {
+                const char *after = safety_skip_trivia(parser, p + 1);
+                return (*after == '.' || *after == '(') ? p : NULL;
+            }
+        } else if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (p < parser->end) {
+                if (*p == '\\' && p + 1 < parser->end) {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static const char *safety_matching_brace(struct SafetyExprParser *parser,
+                                         const char *open)
+{
+    const char *p = open;
+    int depth = 0;
+
+    while (p < parser->end) {
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+            if (depth == 0) return p;
+        } else if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (p < parser->end) {
+                if (*p == '\\' && p + 1 < parser->end) {
+                    p += 2;
+                    continue;
+                }
+                if (*p == quote) break;
+                p++;
+            }
+        } else if (p + 1 < parser->end && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < parser->end && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p + 1 < parser->end) p++;
+        } else if (p + 1 < parser->end && p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (p < parser->end && *p != '\n') p++;
+            continue;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static void safety_statement_result_bounds(const char *start, const char *end,
+                                           const char **result_start,
+                                           const char **result_end)
+{
+    const char *p = start;
+    const char *boundary = start;
+    int paren = 0;
+    int bracket = 0;
+    int brace = 0;
+
+    *result_start = NULL;
+    *result_end = NULL;
+    while (p < end) {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (p < end) {
+                if (*p == '\\' && p + 1 < end) {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) break;
+            }
+            continue;
+        }
+        if (p + 1 < end && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < end && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p + 1 < end) p += 2;
+            continue;
+        }
+        if (p + 1 < end && p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (p < end && *p != '\n') p++;
+            continue;
+        }
+        if (*p == '(') paren++;
+        else if (*p == ')' && paren > 0) paren--;
+        else if (*p == '[') bracket++;
+        else if (*p == ']' && bracket > 0) bracket--;
+        else if (*p == '{') brace++;
+        else if (*p == '}' && brace > 0) {
+            brace--;
+            if (brace == 0 && paren == 0 && bracket == 0) boundary = p + 1;
+        } else if (*p == ';' && paren == 0 && bracket == 0 && brace == 0) {
+            const char *candidate = boundary;
+
+            while (candidate < p && isspace((unsigned char)*candidate)) candidate++;
+            if (candidate < p) {
+                *result_start = candidate;
+                *result_end = p;
+            }
+            boundary = p + 1;
+        }
+        p++;
+    }
+}
+
+static struct SafetyExprNode *safety_mark_statement_result(
+    struct SafetyExprNode *node, const char *start, const char *end)
+{
+    struct SafetyExprNode *found;
+
+    for (; node != NULL; node = node->next) {
+        found = safety_mark_statement_result(node->lhs, start, end);
+        if (found != NULL) return found;
+        found = safety_mark_statement_result(node->rhs, start, end);
+        if (found != NULL) return found;
+        found = safety_mark_statement_result(node->child, start, end);
+        if (found != NULL) return found;
+        if (node->start == start && node->end == end) {
+            node->statement_result = 1;
+            return node;
+        }
+    }
+    return NULL;
+}
+
+static void safety_statement_bind_declarations(struct SafetyExprNode *forest,
+                                               const char *start,
+                                               const char *end)
+{
+    const char *piece = start;
+
+    while (piece < end) {
+        const char *semi = find_top_level_char(piece, end, ';');
+        struct DeclInfo decl;
+        char *text;
+
+        if (semi == NULL) break;
+        text = xstrndup(piece, (size_t)(semi + 1 - piece));
+        if (parse_decl(text, &decl) && decl.is_decl && !decl.is_typedef &&
+            !decl.is_function && decl.name[0] != '\0') {
+            safety_expr_bind_identifier(forest, decl.name, decl.type);
+        }
+        free(text);
+        piece = semi + 1;
+    }
+}
+
+static int safety_builtin_return_type(const char *name, struct Type *type)
+{
+    if (strcmp(name, "cminus_checked_int_add") == 0 ||
+        strcmp(name, "cminus_checked_int_sub") == 0 ||
+        strcmp(name, "cminus_checked_int_mul") == 0 ||
+        strcmp(name, "cminus_checked_int_add_impl") == 0 ||
+        strcmp(name, "cminus_checked_int_sub_impl") == 0 ||
+        strcmp(name, "cminus_checked_int_mul_impl") == 0 ||
+        strcmp(name, "strcmp") == 0 || strcmp(name, "memcmp") == 0 ||
+        strcmp(name, "printf") == 0 || strcmp(name, "fprintf") == 0 ||
+        strcmp(name, "vsnprintf") == 0 ||
+        strcmp(name, "backtrace") == 0 ||
+        strncmp(name, "pthread_", 8) == 0 ||
+        strcmp(name, "sched_yield") == 0 ||
+        strcmp(name, "__atomic_compare_exchange_n") == 0 ||
+        strcmp(name, "__builtin_add_overflow") == 0 ||
+        strcmp(name, "__builtin_sub_overflow") == 0 ||
+        strcmp(name, "__builtin_mul_overflow") == 0) {
+        *type = type_make(TY_INT, 0, NULL);
+        return 1;
+    }
+    if (strcmp(name, "cminus_checked_size_add") == 0 ||
+        strcmp(name, "cminus_checked_size_mul") == 0 ||
+        strcmp(name, "cminus_checked_size_add_impl") == 0 ||
+        strcmp(name, "cminus_checked_size_mul_impl") == 0 ||
+        strcmp(name, "strlen") == 0 || strcmp(name, "cminus_string_len") == 0) {
+        *type = type_make(TY_TYPEDEF, 0, "size_t");
+        return 1;
+    }
+    if (strcmp(name, "cminus_gc_free") == 0 || strcmp(name, "free") == 0 ||
+        strcmp(name, "abort") == 0 || strcmp(name, "cminus_panic") == 0 ||
+        strcmp(name, "backtrace_symbols_fd") == 0 ||
+        strcmp(name, "__atomic_store_n") == 0 ||
+        strcmp(name, "__builtin_va_start") == 0 ||
+        strcmp(name, "__builtin_va_copy") == 0 ||
+        strcmp(name, "__builtin_va_end") == 0) {
+        *type = type_make(TY_VOID, 0, NULL);
+        return 1;
+    }
+    if (strcmp(name, "__atomic_load_n") == 0 ||
+        strcmp(name, "__atomic_exchange_n") == 0 ||
+        strcmp(name, "__atomic_fetch_add") == 0 ||
+        strcmp(name, "__atomic_fetch_sub") == 0 ||
+        strcmp(name, "__atomic_fetch_or") == 0 ||
+        strcmp(name, "__atomic_fetch_and") == 0 ||
+        strcmp(name, "__atomic_fetch_xor") == 0) {
+        *type = type_make(TY_GENERIC, 0, "atomic-value");
+        return 1;
+    }
+    if (strcmp(name, "__cminus_mod_ul") == 0) {
+        *type = type_make(TY_LONG, 0, NULL);
+        return 1;
+    }
+    if (strcmp(name, "fopen") == 0) {
+        *type = type_make(TY_TYPEDEF, 1, "FILE");
+        type->raw_ptr = 1;
+        return 1;
+    }
+    if (strcmp(name, "cminus_gc_calloc") == 0) {
+        *type = type_make(TY_VOID, 1, NULL);
+        type->owned = 1;
+        return 1;
+    }
+    if (strcmp(name, "memcpy") == 0 || strcmp(name, "memset") == 0 ||
+        strcmp(name, "calloc") == 0) {
+        *type = type_make(TY_VOID, 1, NULL);
+        type->raw_ptr = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static void safety_resolve_identifier_node(struct SafetyExprNode *node)
+{
+    struct FunctionParams *fn;
+    struct Type resolved;
+    struct Symbol *symbol;
+
+    if (node == NULL || node->kind != SAFETY_EXPR_IDENTIFIER ||
+        type_is_known(node->type)) return;
+    symbol = symbol_find_or_current_param(node->name);
+    if (symbol != NULL) {
+        node->type = symbol->type;
+        return;
+    }
+    if (bitflags_const_type(node->name, &resolved)) {
+        node->type = resolved;
+        return;
+    }
+    if (payload_generated_constant_type(node->name, &resolved)) {
+        node->type = resolved;
+        return;
+    }
+    if (generic_find(&g_generic_structs, node->name) != NULL) {
+        node->type = type_make(TY_TYPE_CONSTRUCTOR, 0, node->name);
+        return;
+    }
+    fn = function_params_find(node->name);
+    if (fn != NULL) {
+        node->type = type_make(TY_FUNCTION, 0, NULL);
+        node->type.base = &fn->ret;
+    } else if (safety_builtin_return_type(node->name, &resolved)) {
+        node->function_return_type = resolved;
+        node->type = type_make(TY_FUNCTION, 0, NULL);
+        node->type.base = &node->function_return_type;
+    } else if (strcmp(node->name, "__LINE__") == 0 ||
+               strncmp(node->name, "__ATOMIC_", 9) == 0) {
+        node->type = type_make(TY_INT, 0, NULL);
+    } else if (strcmp(node->name, "__FILE__") == 0 ||
+               strcmp(node->name, "__func__") == 0) {
+        node->type = type_make(TY_CHAR, 1, NULL);
+    } else if (strcmp(node->name, "stderr") == 0) {
+        node->type = type_make(TY_TYPEDEF, 1, "FILE");
+        node->type.raw_ptr = 1;
+    } else if (strcmp(node->name, "__CMINUS_GC_MAGIC") == 0 ||
+               strcmp(node->name, "__CMINUS_STACK_NOTE_WINDOW") == 0 ||
+               strcmp(node->name, "CMINUS_MAX_STACK_DEPTH") == 0 ||
+               strcmp(node->name, "CMINUS_MAX_STACK_BYTES") == 0 ||
+               strcmp(node->name, "CMINUS_MAX_ALLOCATION") == 0) {
+        node->type = type_make(TY_LONG, 0, NULL);
+    } else if (strncmp(node->name, "__cminus_return", 15) == 0 &&
+               isdigit((unsigned char)node->name[15]) &&
+               type_is_known(g_current_function_ret)) {
+        node->type = g_current_function_ret;
+    }
+}
+
+static struct SafetyExprNode *safety_parse_primary(struct SafetyExprParser *parser)
+{
+    const char *start;
+    struct SafetyExprNode *node;
+
+    parser->cursor = safety_skip_trivia(parser, parser->cursor);
+    start = parser->cursor;
+    if (start >= parser->end) {
+        return NULL;
+    }
+    if (*start == '{' && parser->allow_initializer) {
+        const char *close_brace = safety_matching_brace(parser, start);
+        struct SafetyExprParser inner;
+        const char *tail;
+
+        if (close_brace == NULL) return NULL;
+        node = safety_expr_new(SAFETY_EXPR_INITIALIZER, start, close_brace + 1);
+        inner.source = start + 1;
+        inner.cursor = start + 1;
+        inner.end = close_brace;
+        inner.allow_initializer = 1;
+        tail = safety_skip_trivia(&inner, inner.cursor);
+        if (tail < close_brace) {
+            inner.cursor = tail;
+            node->child = safety_parse_expression(&inner, 1);
+            tail = safety_skip_trivia(&inner, inner.cursor);
+            if (node->child == NULL || tail != close_brace) {
+                safety_expr_free(node);
+                parser->cursor = close_brace + 1;
+                return NULL;
+            }
+        }
+        parser->cursor = close_brace + 1;
+    } else if (is_ident_start((unsigned char)*start)) {
+        char parsed_name[NAME_MAX_LEN];
+        const char *end = read_name(start, parsed_name);
+        size_t len;
+        if (end > parser->end) {
+            end = parser->end;
+        }
+        parser->cursor = end;
+        node = safety_expr_new(SAFETY_EXPR_IDENTIFIER, start, end);
+        len = (size_t)(end - start);
+        if (len >= NAME_MAX_LEN) {
+            len = NAME_MAX_LEN - 1;
+        }
+        memcpy(node->name, start, len);
+        node->name[len] = '\0';
+        safety_resolve_identifier_node(node);
+    } else if (*start == '(' &&
+               *safety_skip_trivia(parser, start + 1) == '{') {
+        const char *open_brace = safety_skip_trivia(parser, start + 1);
+        const char *close_brace = safety_matching_brace(parser, open_brace);
+        const char *close_paren = close_brace == NULL ? NULL :
+            safety_skip_trivia(parser, close_brace + 1);
+
+        if (close_brace == NULL || close_paren >= parser->end ||
+            *close_paren != ')') {
+            parser->cursor++;
+            return safety_expr_new(SAFETY_EXPR_LITERAL, start, parser->cursor);
+        }
+        node = safety_expr_new(SAFETY_EXPR_STATEMENT, start, close_paren + 1);
+        node->child = safety_parse_forest_range(open_brace + 1, close_brace);
+        safety_statement_bind_declarations(node->child, open_brace + 1,
+                                           close_brace);
+        {
+            const char *result_start;
+            const char *result_end;
+            struct SafetyExprNode *result;
+
+            safety_statement_result_bounds(open_brace + 1, close_brace,
+                                           &result_start, &result_end);
+            result = result_start == NULL ? NULL :
+                safety_mark_statement_result(node->child, result_start, result_end);
+            if (result != NULL) node->type = result->type;
+        }
+        parser->cursor = close_paren + 1;
+    } else if (*start == '(') {
+        parser->cursor = start + 1;
+        node = safety_expr_new(SAFETY_EXPR_GROUP, start, start + 1);
+        node->lhs = safety_parse_expression(parser, 1);
+        parser->cursor = safety_skip_trivia(parser, parser->cursor);
+        if (parser->cursor < parser->end && *parser->cursor == ')') {
+            parser->cursor++;
+        }
+        node->end = parser->cursor;
+        if (node->lhs != NULL) {
+            node->type = node->lhs->type;
+        }
+    } else if (*start == '"' || *start == '\'') {
+        char quote = *start;
+        const char *p = start + 1;
+        while (p < parser->end) {
+            if (*p == '\\' && p + 1 < parser->end) {
+                p += 2;
+                continue;
+            }
+            if (*p++ == quote) {
+                break;
+            }
+        }
+        parser->cursor = p;
+        node = safety_expr_new(SAFETY_EXPR_LITERAL, start, p);
+    } else if (isdigit((unsigned char)*start)) {
+        char *literal;
+        char *literal_end;
+        const char *p = start;
+        while (p < parser->end && (isalnum((unsigned char)*p) || *p == '.' || *p == '_')) {
+            p++;
+        }
+        parser->cursor = p;
+        node = safety_expr_new(SAFETY_EXPR_LITERAL, start, p);
+        literal = xstrndup(start, (size_t)(p - start));
+        node->integer = strtol(literal, &literal_end, 0);
+        node->has_constant_integer = literal_end != literal;
+        free(literal);
+    } else {
+        parser->cursor++;
+        return safety_expr_new(SAFETY_EXPR_LITERAL, start, parser->cursor);
+    }
+
+    for (;;) {
+        const char *postfix = safety_skip_trivia(parser, parser->cursor);
+        if (postfix >= parser->end) {
+            break;
+        }
+        if (*postfix == '<' &&
+            (node->kind == SAFETY_EXPR_IDENTIFIER || node->kind == SAFETY_EXPR_MEMBER)) {
+            const char *close = safety_matching_generic_close(parser, postfix);
+            if (close != NULL) {
+                struct SafetyExprNode *generic = safety_expr_new(SAFETY_EXPR_GENERIC,
+                                                                  node->start, close + 1);
+                const char *arg_start = safety_skip_trivia(parser, postfix + 1);
+                const char *arg_end = close;
+                size_t len;
+                while (arg_end > arg_start && isspace((unsigned char)arg_end[-1])) {
+                    arg_end--;
+                }
+                generic->lhs = node;
+                len = (size_t)(arg_end - arg_start);
+                if (len >= sizeof(generic->generic_arg)) {
+                    len = sizeof(generic->generic_arg) - 1;
+                }
+                memcpy(generic->generic_arg, arg_start, len);
+                generic->generic_arg[len] = '\0';
+                generic->type = node->type;
+                parser->cursor = close + 1;
+                node = generic;
+                continue;
+            }
+        }
+        if (*postfix == '(') {
+            if (node->kind == SAFETY_EXPR_IDENTIFIER &&
+                token_is_control_keyword(node->name)) {
+                break;
+            }
+            if (node->kind == SAFETY_EXPR_IDENTIFIER &&
+                (strcmp(node->name, "__builtin_offsetof") == 0 ||
+                 strcmp(node->name, "offsetof") == 0)) {
+                const char *close = safety_matching_paren(parser, postfix);
+                const char *comma = close == NULL ? NULL :
+                    find_top_level_char(postfix + 1, close, ',');
+
+                if (close != NULL && comma != NULL) {
+                    struct SafetyExprNode *offset =
+                        safety_expr_new(SAFETY_EXPR_OFFSETOF,
+                                        node->start, close + 1);
+                    const char *type_start = safety_skip_trivia(parser, postfix + 1);
+                    const char *type_end = comma;
+                    const char *field_start = safety_skip_trivia(parser, comma + 1);
+                    const char *field_end = close;
+                    size_t len;
+
+                    while (type_end > type_start &&
+                           isspace((unsigned char)type_end[-1])) type_end--;
+                    while (field_end > field_start &&
+                           isspace((unsigned char)field_end[-1])) field_end--;
+                    len = (size_t)(type_end - type_start);
+                    if (len >= sizeof(offset->type_name)) len = sizeof(offset->type_name) - 1;
+                    memcpy(offset->type_name, type_start, len);
+                    offset->type_name[len] = '\0';
+                    len = (size_t)(field_end - field_start);
+                    if (len >= sizeof(offset->name)) len = sizeof(offset->name) - 1;
+                    memcpy(offset->name, field_start, len);
+                    offset->name[len] = '\0';
+                    offset->type = type_make(TY_TYPEDEF, 0, "size_t");
+                    safety_expr_free(node);
+                    parser->cursor = close + 1;
+                    node = offset;
+                    continue;
+                }
+            }
+            struct SafetyExprNode *call = safety_expr_new(SAFETY_EXPR_CALL, node->start, postfix + 1);
+            struct SafetyExprNode **arg = &call->child;
+            parser->cursor = postfix + 1;
+            parser->cursor = safety_skip_trivia(parser, parser->cursor);
+            while (parser->cursor < parser->end && *parser->cursor != ')') {
+                struct SafetyExprNode *value = safety_parse_expression(parser, 2);
+                if (value == NULL) {
+                    parser->cursor++;
+                    continue;
+                }
+                *arg = value;
+                while ((*arg)->next != NULL) {
+                    arg = &(*arg)->next;
+                }
+                arg = &(*arg)->next;
+                parser->cursor = safety_skip_trivia(parser, parser->cursor);
+                if (parser->cursor < parser->end && *parser->cursor == ',') {
+                    parser->cursor++;
+                    continue;
+                }
+                break;
+            }
+            if (parser->cursor < parser->end && *parser->cursor == ')') {
+                parser->cursor++;
+            }
+            call->lhs = node;
+            call->end = parser->cursor;
+            {
+                const struct SafetyExprNode *callee = call->lhs;
+                struct FunctionParams *fn = NULL;
+                while (callee != NULL &&
+                       (callee->kind == SAFETY_EXPR_GROUP || callee->kind == SAFETY_EXPR_GENERIC)) {
+                    callee = callee->lhs;
+                }
+                if (callee != NULL && callee->kind == SAFETY_EXPR_IDENTIFIER) {
+                    fn = function_params_find(callee->name);
+                    if (fn != NULL) {
+                        call->type = fn->ret;
+                    } else if (malloc_func_index(callee->name) >= 0) {
+                        call->type = g_malloc_funcs.ret[malloc_func_index(callee->name)];
+                    }
+                }
+                if (!type_is_known(call->type) && callee != NULL &&
+                    callee->type.kind == TY_FUNCTION && callee->type.base != NULL) {
+                    call->type = *callee->type.base;
+                }
+            }
+            node = call;
+            continue;
+        }
+        if (*postfix == '[') {
+            struct SafetyExprNode *index = safety_expr_new(SAFETY_EXPR_INDEX, node->start, postfix + 1);
+            parser->cursor = postfix + 1;
+            index->lhs = node;
+            index->rhs = safety_parse_expression(parser, 1);
+            parser->cursor = safety_skip_trivia(parser, parser->cursor);
+            if (parser->cursor < parser->end && *parser->cursor == ']') {
+                parser->cursor++;
+            }
+            index->end = parser->cursor;
+            index->type = node->type;
+            index->type.is_array = 0;
+            index->type.array_len = 0;
+            if (index->type.ptr > 0) {
+                index->type.ptr--;
+                if (index->type.ptr == 0) {
+                    index->type.raw_ptr = 0;
+                }
+            }
+            node = index;
+            continue;
+        }
+        if (*postfix == '.' || (postfix + 1 < parser->end && postfix[0] == '-' && postfix[1] == '>')) {
+            const char *field_start = safety_skip_trivia(parser, postfix + (*postfix == '.' ? 1 : 2));
+            const char *field_end;
+            struct SafetyExprNode *member;
+            size_t len;
+            if (field_start >= parser->end || !is_ident_start((unsigned char)*field_start)) {
+                break;
+            }
+            {
+                char parsed_field[NAME_MAX_LEN];
+                field_end = read_name(field_start, parsed_field);
+            }
+            member = safety_expr_new(SAFETY_EXPR_MEMBER, node->start, field_end);
+            member->lhs = node;
+            strcpy(member->op, *postfix == '.' ? "." : "->");
+            len = (size_t)(field_end - field_start);
+            if (len >= NAME_MAX_LEN) {
+                len = NAME_MAX_LEN - 1;
+            }
+            memcpy(member->name, field_start, len);
+            member->name[len] = '\0';
+            if (node->type.kind == TY_STRUCT) {
+                struct Type field_type;
+                if (struct_field_type(node->type.tag, member->name, &field_type)) {
+                    member->type = field_type;
+                }
+            }
+            parser->cursor = field_end;
+            node = member;
+            continue;
+        }
+        if (postfix + 1 < parser->end &&
+            ((postfix[0] == '+' && postfix[1] == '+') ||
+             (postfix[0] == '-' && postfix[1] == '-'))) {
+            struct SafetyExprNode *update =
+                safety_expr_new(SAFETY_EXPR_UPDATE, node->start, postfix + 2);
+
+            update->lhs = node;
+            update->type = node->type;
+            update->postfix = 1;
+            memcpy(update->op, postfix, 2);
+            update->op[2] = '\0';
+            parser->cursor = postfix + 2;
+            node = update;
+            continue;
+        }
+        break;
+    }
+    return node;
+}
+
+static int safety_parse_type_range(const char *start, const char *end,
+                                   struct Type *type,
+                                   char type_name[NAME_MAX_LEN])
+{
+    char *text;
+    const char *base_end;
+    const char *tail;
+    size_t len;
+    int parsed;
+
+    while (start < end && isspace((unsigned char)*start)) start++;
+    while (end > start && isspace((unsigned char)end[-1])) end--;
+    if (start == end) {
+        return 0;
+    }
+    len = (size_t)(end - start);
+    if (len >= NAME_MAX_LEN) {
+        return 0;
+    }
+    memcpy(type_name, start, len);
+    type_name[len] = '\0';
+    text = xstrndup(start, len);
+    parsed = parse_base_type_prefix(text, &base_end, type);
+    if (parsed) {
+        tail = skip_ws(base_end);
+        if (*tail == '<') {
+            int angle = 0;
+
+            do {
+                if (*tail == '<') angle++;
+                else if (*tail == '>') angle--;
+                tail++;
+            } while (*tail != '\0' && angle > 0);
+            if (angle != 0) parsed = 0;
+            tail = skip_ws(tail);
+        }
+        while (*tail == '*' || *tail == '%') {
+            if (*tail == '*') {
+                type->ptr++;
+            } else {
+                type->owned = 1;
+            }
+            tail = skip_ws(tail + 1);
+        }
+        parsed = parsed && *tail == '\0';
+    } else {
+        char alias[NAME_MAX_LEN];
+        const char *alias_end = read_name(text, alias);
+
+        tail = skip_ws(alias_end);
+        parsed = is_ident_start((unsigned char)text[0]) &&
+            strlen(alias) > 2 && strcmp(alias + strlen(alias) - 2, "_t") == 0;
+        while (parsed && *tail == '*') {
+            type->ptr++;
+            tail = skip_ws(tail + 1);
+        }
+        parsed = parsed && *tail == '\0';
+    }
+    free(text);
+    if (!parsed) {
+        type_name[0] = '\0';
+    }
+    return parsed;
+}
+
+static const char *safety_matching_paren(struct SafetyExprParser *parser,
+                                         const char *open)
+{
+    const char *p = open;
+    int depth = 0;
+
+    while (p < parser->end) {
+        if (*p == '(') {
+            depth++;
+        } else if (*p == ')') {
+            depth--;
+            if (depth == 0) return p;
+        } else if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (p < parser->end) {
+                if (*p == '\\' && p + 1 < parser->end) {
+                    p += 2;
+                    continue;
+                }
+                if (*p == quote) break;
+                p++;
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static struct SafetyExprNode *safety_parse_unary(struct SafetyExprParser *parser)
+{
+    const char *start = safety_skip_trivia(parser, parser->cursor);
+    enum SafetyExprKind kind;
+    struct SafetyExprNode *node;
+
+    parser->cursor = start;
+    if (start < parser->end && *start == '(') {
+        const char *close = safety_matching_paren(parser, start);
+        struct Type cast_type = type_unknown();
+        char cast_name[NAME_MAX_LEN];
+
+        if (close != NULL &&
+            safety_parse_type_range(start + 1, close, &cast_type, cast_name)) {
+            parser->cursor = close + 1;
+            node = safety_expr_new(SAFETY_EXPR_CAST, start, parser->cursor);
+            strncpy(node->type_name, cast_name, NAME_MAX_LEN - 1);
+            node->type_name[NAME_MAX_LEN - 1] = '\0';
+            node->lhs = safety_parse_unary(parser);
+            node->end = node->lhs == NULL ? parser->cursor : node->lhs->end;
+            node->type = cast_type;
+            return node;
+        }
+    }
+    if (start < parser->end &&
+        (starts_word(start, "sizeof") || starts_word(start, "_Alignof") ||
+         starts_word(start, "__alignof__"))) {
+        int is_gnu_alignof = starts_word(start, "__alignof__");
+        int is_alignof = is_gnu_alignof || starts_word(start, "_Alignof");
+        const char *after_word = start +
+            (is_gnu_alignof ? strlen("__alignof__") : (is_alignof ? 8 : 6));
+        const char *operand_start = safety_skip_trivia(parser, after_word);
+
+        node = safety_expr_new(is_alignof ? SAFETY_EXPR_ALIGNOF : SAFETY_EXPR_SIZEOF,
+                               start, operand_start);
+        strcpy(node->op, is_alignof ? "_Alignof" : "sizeof");
+        /* The representation width is target-dependent, but the C result type
+           is always the opaque typedef size_t. */
+        node->type = type_make(TY_TYPEDEF, 0, "size_t");
+        if (operand_start < parser->end && *operand_start == '(') {
+            const char *close = safety_matching_paren(parser, operand_start);
+            struct Type queried_type = type_unknown();
+            char queried_name[NAME_MAX_LEN];
+
+            if (close != NULL && safety_parse_type_range(operand_start + 1, close,
+                                                         &queried_type, queried_name)) {
+                strncpy(node->type_name, queried_name, NAME_MAX_LEN - 1);
+                node->type_name[NAME_MAX_LEN - 1] = '\0';
+                parser->cursor = close + 1;
+            } else {
+                parser->cursor = operand_start + 1;
+                node->lhs = safety_parse_expression(parser, 1);
+                parser->cursor = safety_skip_trivia(parser, parser->cursor);
+                if (parser->cursor < parser->end && *parser->cursor == ')') {
+                    parser->cursor++;
+                }
+            }
+        } else {
+            parser->cursor = operand_start;
+            node->lhs = safety_parse_unary(parser);
+        }
+        node->end = parser->cursor;
+        return node;
+    }
+    if (start + 1 < parser->end &&
+        ((start[0] == '+' && start[1] == '+') ||
+         (start[0] == '-' && start[1] == '-'))) {
+        parser->cursor = start + 2;
+        node = safety_expr_new(SAFETY_EXPR_UPDATE, start, parser->cursor);
+        memcpy(node->op, start, 2);
+        node->op[2] = '\0';
+        node->lhs = safety_parse_unary(parser);
+        node->end = node->lhs == NULL ? parser->cursor : node->lhs->end;
+        if (node->lhs != NULL) {
+            node->type = node->lhs->type;
+        }
+        return node;
+    }
+    if (start < parser->end && starts_word(start, "move")) {
+        const char *after = safety_skip_trivia(parser, start + 4);
+        if (after > start + 4) {
+            parser->cursor = after;
+            node = safety_expr_new(SAFETY_EXPR_MOVE, start, after);
+            strcpy(node->op, "move");
+            node->lhs = safety_parse_unary(parser);
+            node->end = node->lhs == NULL ? parser->cursor : node->lhs->end;
+            if (node->lhs != NULL) {
+                node->type = node->lhs->type;
+                node->type.owned = 1;
+            }
+            return node;
+        }
+    }
+    if (start >= parser->end ||
+        (*start != '&' && *start != '*' && *start != '+' && *start != '-' &&
+         *start != '!' && *start != '~')) {
+        return safety_parse_primary(parser);
+    }
+    if (start + 1 < parser->end && start[1] == *start) {
+        return safety_parse_primary(parser);
+    }
+    kind = *start == '&' ? SAFETY_EXPR_UNARY_ADDRESS :
+        (*start == '*' ? SAFETY_EXPR_UNARY_DEREF : SAFETY_EXPR_UNARY);
+    parser->cursor++;
+    node = safety_expr_new(kind, start, parser->cursor);
+    node->op[0] = *start;
+    node->op[1] = '\0';
+    node->lhs = safety_parse_unary(parser);
+    node->end = node->lhs == NULL ? parser->cursor : node->lhs->end;
+    if (node->lhs != NULL) {
+        node->type = node->lhs->type;
+        if (kind == SAFETY_EXPR_UNARY_ADDRESS) {
+            node->type.ptr++;
+            node->type.owned = 0;
+        } else if (kind == SAFETY_EXPR_UNARY_DEREF && node->type.ptr > 0) {
+            node->type.ptr--;
+            node->type.owned = 0;
+            if (node->type.ptr == 0) {
+                node->type.raw_ptr = 0;
+            }
+        }
+    }
+    return node;
+}
+
+static struct SafetyExprNode *safety_parse_expression(struct SafetyExprParser *parser,
+                                                       int min_precedence)
+{
+    struct SafetyExprNode *lhs = safety_parse_unary(parser);
+
+    if (lhs != NULL && lhs->kind == SAFETY_EXPR_IDENTIFIER &&
+        token_is_control_keyword(lhs->name)) {
+        return lhs;
+    }
+
+    while (lhs != NULL) {
+        const char *operator_start = safety_skip_trivia(parser, parser->cursor);
+        char op[4];
+        int precedence;
+        int op_len = safety_binary_operator(operator_start, parser->end, op, &precedence);
+        struct SafetyExprNode *rhs;
+        struct SafetyExprNode *binary;
+        if (op_len == 0 || precedence < min_precedence) {
+            break;
+        }
+        parser->cursor = operator_start + op_len;
+        if (strcmp(op, "?") == 0) {
+            struct SafetyExprNode *then_value = safety_parse_expression(parser, 1);
+            struct SafetyExprNode *else_value;
+            parser->cursor = safety_skip_trivia(parser, parser->cursor);
+            if (then_value == NULL || parser->cursor >= parser->end || *parser->cursor != ':') {
+                safety_expr_free(then_value);
+                parser->cursor = operator_start;
+                break;
+            }
+            parser->cursor++;
+            else_value = safety_parse_expression(parser, precedence);
+            if (else_value == NULL) {
+                safety_expr_free(then_value);
+                parser->cursor = operator_start;
+                break;
+            }
+            binary = safety_expr_new(SAFETY_EXPR_CONDITIONAL, lhs->start, else_value->end);
+            strcpy(binary->op, "?:");
+            binary->lhs = lhs;
+            binary->rhs = then_value;
+            binary->child = else_value;
+            binary->type = type_is_known(then_value->type) ? then_value->type : else_value->type;
+            lhs = binary;
+            continue;
+        }
+        rhs = safety_parse_expression(parser, precedence + (precedence == 1 ? 0 : 1));
+        if (rhs == NULL) {
+            parser->cursor = operator_start;
+            break;
+        }
+        binary = safety_expr_new(SAFETY_EXPR_BINARY, lhs->start, rhs->end);
+        strcpy(binary->op, op);
+        binary->lhs = lhs;
+        binary->rhs = rhs;
+        if (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 ||
+            strcmp(op, "<") == 0 || strcmp(op, ">") == 0 ||
+            strcmp(op, "<=") == 0 || strcmp(op, ">=") == 0 ||
+            strcmp(op, "&&") == 0 || strcmp(op, "||") == 0) {
+            binary->type = type_make(TY_INT, 0, NULL);
+        } else if (type_is_known(lhs->type)) {
+            binary->type = lhs->type;
+        } else {
+            binary->type = rhs->type;
+        }
+        lhs = binary;
+    }
+    return lhs;
+}
+
+static void safety_classify_unknown_types(struct SafetyExprNode *node)
+{
+    for (; node != NULL; node = node->next) {
+        safety_classify_unknown_types(node->lhs);
+        safety_classify_unknown_types(node->rhs);
+        safety_classify_unknown_types(node->child);
+        if (type_is_known(node->type)) {
+            node->unknown_reason = SAFETY_UNKNOWN_NONE;
+            continue;
+        }
+        switch (node->kind) {
+        case SAFETY_EXPR_IDENTIFIER:
+            node->unknown_reason = strcmp(node->name, "NULL") == 0 ?
+                SAFETY_UNKNOWN_CONTEXTUAL_LITERAL :
+                SAFETY_UNKNOWN_UNRESOLVED_SYMBOL;
+            break;
+        case SAFETY_EXPR_LITERAL:
+            node->unknown_reason = SAFETY_UNKNOWN_CONTEXTUAL_LITERAL;
+            break;
+        case SAFETY_EXPR_CALL:
+        case SAFETY_EXPR_UNSAFE_CALL:
+            node->unknown_reason = SAFETY_UNKNOWN_UNRESOLVED_CALL_RETURN;
+            break;
+        case SAFETY_EXPR_SIZEOF:
+        case SAFETY_EXPR_ALIGNOF:
+        case SAFETY_EXPR_OFFSETOF:
+            node->unknown_reason = SAFETY_UNKNOWN_TARGET_SIZE;
+            break;
+        case SAFETY_EXPR_MEMBER:
+            node->unknown_reason = SAFETY_UNKNOWN_MEMBER_TYPE;
+            break;
+        case SAFETY_EXPR_GENERIC:
+            node->unknown_reason = SAFETY_UNKNOWN_SYMBOLIC_GENERIC;
+            break;
+        case SAFETY_EXPR_STATEMENT:
+            node->unknown_reason = SAFETY_UNKNOWN_STATEMENT_RESULT;
+            break;
+        case SAFETY_EXPR_INITIALIZER:
+            node->unknown_reason = SAFETY_UNKNOWN_CONTEXTUAL_INITIALIZER;
+            break;
+        default:
+            node->unknown_reason = SAFETY_UNKNOWN_OPERAND_TYPE;
+            break;
+        }
+    }
+}
+
+static int safety_forest_syntax_only(const struct SafetyExprNode *node)
+{
+    if (node == NULL) return 0;
+    if (node->kind == SAFETY_EXPR_IDENTIFIER &&
+        (token_is_control_keyword(node->name) ||
+         strcmp(node->name, "struct") == 0 ||
+         strcmp(node->name, "union") == 0 ||
+         strcmp(node->name, "enum") == 0)) {
+        return 1;
+    }
+    return node->kind == SAFETY_EXPR_LITERAL &&
+        !type_is_known(node->type) && node->end == node->start + 1 &&
+        strchr("{};,", *node->start) != NULL;
+}
+
+static struct SafetyExprNode *safety_parse_forest_range(const char *start,
+                                                        const char *end)
+{
+    struct SafetyExprParser parser;
+    struct SafetyExprNode *head = NULL;
+    struct SafetyExprNode **tail = &head;
+
+    parser.source = start;
+    parser.cursor = start;
+    parser.end = end;
+    parser.allow_initializer = 0;
+    while (parser.cursor < parser.end) {
+        const char *before;
+        struct SafetyExprNode *node;
+        parser.cursor = safety_skip_trivia(&parser, parser.cursor);
+        if (parser.cursor >= parser.end) {
+            break;
+        }
+        before = parser.cursor;
+
+        /* A GNU statement expression contains declarations as well as value
+           expressions.  Preserve the initializer expression in the typed
+           forest, but do not misclassify its type spelling and declarator as
+           unresolved value symbols. */
+        {
+            const char *semi = find_top_level_char(before, parser.end, ';');
+            struct DeclInfo decl;
+            char *text;
+
+            if (semi != NULL) {
+                text = xstrndup(before, (size_t)(semi + 1 - before));
+                if (parse_decl(text, &decl) && decl.is_decl &&
+                    !decl.is_function && decl.name[0] != '\0' &&
+                    (decl.has_init ||
+                     memchr(before, '(', (size_t)(semi - before)) == NULL)) {
+                    if (decl.has_init && decl.init != NULL) {
+                        size_t init_offset = (size_t)(decl.init - text);
+                        node = safety_parse_range(before + init_offset, semi);
+                        if (node == NULL) {
+                            node = safety_parse_forest_range(before + init_offset,
+                                                             semi);
+                        }
+                        if (node != NULL) {
+                            *tail = node;
+                            while ((*tail)->next != NULL) {
+                                tail = &(*tail)->next;
+                            }
+                            tail = &(*tail)->next;
+                        }
+                    }
+                    parser.cursor = semi + 1;
+                    free(text);
+                    continue;
+                }
+                free(text);
+            }
+        }
+        node = safety_parse_expression(&parser, 1);
+        if (safety_forest_syntax_only(node)) {
+            safety_expr_free(node);
+            node = NULL;
+        }
+        if (node != NULL) {
+            *tail = node;
+            while ((*tail)->next != NULL) {
+                tail = &(*tail)->next;
+            }
+            tail = &(*tail)->next;
+        }
+        if (parser.cursor <= before) {
+            parser.cursor = before + 1;
+        }
+    }
+    safety_classify_unknown_types(head);
+    return head;
+}
+
+static struct SafetyExprNode *safety_parse_forest(const char *stmt)
+{
+    return safety_parse_forest_range(stmt, stmt + strlen(stmt));
+}
+
+static struct SafetyExprNode *safety_parse_range(const char *start, const char *end)
+{
+    struct SafetyExprParser parser;
+    struct SafetyExprNode *node;
+    const char *tail;
+
+    while (end > start && (isspace((unsigned char)end[-1]) || end[-1] == ';')) {
+        end--;
+    }
+    parser.source = start;
+    parser.cursor = start;
+    parser.end = end;
+    parser.allow_initializer = 1;
+    node = safety_parse_expression(&parser, 1);
+    tail = safety_skip_trivia(&parser, parser.cursor);
+    if (node == NULL || tail != end) {
+        safety_expr_free(node);
+        return NULL;
+    }
+    safety_classify_unknown_types(node);
+    return node;
+}
+
+static int safety_expr_is_assignment(const struct SafetyExprNode *expr)
+{
+    const struct SafetyExprNode *root = expr;
+
+    while (root != NULL && root->kind == SAFETY_EXPR_GROUP) {
+        root = root->lhs;
+    }
+    return root != NULL &&
+        (root->kind == SAFETY_EXPR_UPDATE ||
+         (root->kind == SAFETY_EXPR_BINARY &&
+          (strcmp(root->op, "=") == 0 || strcmp(root->op, "+=") == 0 ||
+           strcmp(root->op, "-=") == 0 || strcmp(root->op, "*=") == 0 ||
+           strcmp(root->op, "/=") == 0 || strcmp(root->op, "%=") == 0 ||
+           strcmp(root->op, "&=") == 0 || strcmp(root->op, "|=") == 0 ||
+           strcmp(root->op, "^=") == 0 || strcmp(root->op, "<<=") == 0 ||
+           strcmp(root->op, ">>=") == 0)));
+}
+
+static void ast_resolve_generated_return(struct SafetyExprNode *expr)
+{
+    if (expr != NULL && expr->kind == SAFETY_EXPR_IDENTIFIER &&
+        strncmp(expr->name, "__cminus_return", 15) == 0 &&
+        isdigit((unsigned char)expr->name[15]) &&
+        type_is_known(g_current_function_ret)) {
+        expr->type = g_current_function_ret;
+        expr->unknown_reason = SAFETY_UNKNOWN_NONE;
+    }
+}
+
+static const char *ast_skip_leading_gnu_attributes(const char *text)
+{
+    const char *p = skip_ws(text);
+
+    while (starts_word(p, "__attribute__")) {
+        const char *open = skip_ws(p + strlen("__attribute__"));
+        const char *close;
+
+        if (*open != '(' || (close = matching_paren(open)) == NULL) break;
+        p = skip_ws(close + 1);
+    }
+    return p;
+}
+
+static struct Node *ast_typed_statement(enum NodeKind fallback, const char *text)
+{
+    struct Node *node = ast_new(fallback, text);
+    struct DeclInfo decl;
+    const char *typed_text = ast_skip_leading_gnu_attributes(node->tok);
+    const char *p = typed_text;
+    const char *end = node->tok + strlen(node->tok);
+
+    if (starts_word(p, "goto")) {
+        const char *target = skip_ws(p + 4);
+        char name[NAME_MAX_LEN];
+        const char *tail;
+
+        if (is_ident_start((unsigned char)*target)) {
+            tail = read_name(target, name);
+            tail = skip_ws(tail);
+            if (*tail == ';') {
+                tail = skip_ws(tail + 1);
+            }
+            if (*tail == '\0') {
+                node->kind = ND_GOTO;
+                strncpy(node->name, name, NAME_MAX_LEN - 1);
+                node->name[NAME_MAX_LEN - 1] = '\0';
+                return node;
+            }
+        }
+    }
+    if (starts_word(p, "break")) {
+        const char *tail = skip_ws(p + 5);
+
+        if (*tail == ';') tail = skip_ws(tail + 1);
+        if (*tail == '\0') {
+            node->kind = ND_BREAK;
+            return node;
+        }
+    }
+    if (starts_word(p, "continue")) {
+        const char *tail = skip_ws(p + 8);
+
+        if (*tail == ';') tail = skip_ws(tail + 1);
+        if (*tail == '\0') {
+            node->kind = ND_CONTINUE;
+            return node;
+        }
+    }
+    if (starts_word(p, "while")) {
+        const char *open = strchr(p, '(');
+        const char *close = open == NULL ? NULL : matching_paren(open);
+        const char *tail = close == NULL ? p : skip_ws(close + 1);
+
+        if (*tail == ';') tail = skip_ws(tail + 1);
+        if (open != NULL && close != NULL && *tail == '\0') {
+            node->kind = ND_WHILE;
+            node->expr = safety_parse_range(open + 1, close);
+            if (node->expr != NULL) node->ty = type_copy(node->expr->type);
+            return node;
+        }
+    }
+    if (starts_word(p, "_Static_assert") || starts_word(p, "static_assert")) {
+        const char *open = strchr(p, '(');
+        const char *close = open == NULL ? NULL : matching_paren(open);
+        const char *comma = close == NULL ? NULL :
+            find_top_level_char(open + 1, close, ',');
+
+        node->kind = ND_STATIC_ASSERT;
+        if (open != NULL && close != NULL && comma != NULL) {
+            node->expr = safety_parse_range(open + 1, comma);
+            if (node->expr != NULL) node->ty = type_copy(node->expr->type);
+        }
+        return node;
+    }
+
+    if (fallback == ND_DECL) {
+        struct Type ret;
+        char function_name[NAME_MAX_LEN];
+
+        if (parse_function_signature(typed_text, function_name, &ret)) {
+            struct Symbol *symbol = symbol_find(function_name);
+
+            node->kind = ND_FUNCDECL;
+            node->ty = type_copy(ret);
+            node->return_type = ast_return_type(ret);
+            node->var = symbol == NULL ? NULL : symbol->var;
+            strncpy(node->name, function_name, NAME_MAX_LEN - 1);
+            node->name[NAME_MAX_LEN - 1] = '\0';
+            node->params = ast_function_parameters(function_name);
+            return node;
+        }
+    }
+
+    if (parse_decl(typed_text, &decl) && decl.is_decl && decl.name[0] != '\0') {
+        struct Symbol *symbol;
+
+        node->kind = decl.is_typedef ? ND_TYPEDEF :
+            (decl.is_function ? ND_FUNCDECL : ND_DECL);
+        node->ty = type_copy(decl.type);
+        symbol = symbol_find(decl.name);
+        if (!decl.is_function && symbol != NULL &&
+            symbol->type.kind == decl.type.kind &&
+            symbol->type.ptr == decl.type.ptr &&
+            symbol->type.is_array == decl.type.is_array &&
+            (!decl.type.is_array ||
+             symbol->type.array_len == decl.type.array_len) &&
+            strcmp(symbol->type.tag, decl.type.tag) == 0) {
+            node->ty = type_copy(symbol->type);
+        }
+        if (!decl.is_function) {
+            node->type_node = ast_type_node(*node->ty);
+        }
+        node->var = symbol == NULL ? NULL : symbol->var;
+        strncpy(node->name, decl.name, NAME_MAX_LEN - 1);
+        node->name[NAME_MAX_LEN - 1] = '\0';
+        if (decl.is_function) {
+            struct Type ret;
+            char function_name[NAME_MAX_LEN];
+
+            if (parse_function_signature(typed_text, function_name, &ret)) {
+                node->ty = type_copy(ret);
+                node->return_type = ast_return_type(ret);
+                strncpy(node->name, function_name, NAME_MAX_LEN - 1);
+                node->name[NAME_MAX_LEN - 1] = '\0';
+                node->params = ast_function_parameters(function_name);
+            }
+        }
+        if (decl.has_init && decl.init != NULL) {
+            node->expr = safety_parse_range(decl.init, end);
+            if (node->expr != NULL &&
+                node->expr->kind == SAFETY_EXPR_INITIALIZER) {
+                node->expr->type = decl.type;
+            }
+        }
+        ast_attach_semantics(node);
+        return node;
+    }
+    if (starts_word(p, "return")) {
+        const char *value = skip_ws(p + 6);
+
+        node->kind = ND_RETURN;
+        if (*value != ';' && *value != '\0') {
+            node->expr = safety_parse_range(value, end);
+            if (node->expr != NULL) {
+                ast_resolve_generated_return(node->expr);
+                node->ty = type_copy(node->expr->type);
+            }
+        }
+        ast_attach_semantics(node);
+        return node;
+    }
+    if (fallback == ND_RETURN) {
+        const char *scan = p;
+        const char *last_return = NULL;
+
+        while ((scan = strstr(scan, "return")) != NULL) {
+            if ((scan == node->tok || !is_ident((unsigned char)scan[-1])) &&
+                !is_ident((unsigned char)scan[6])) {
+                last_return = scan;
+            }
+            scan += 6;
+        }
+        if (last_return != NULL) {
+            const char *value = skip_ws(last_return + 6);
+
+            node->kind = ND_RETURN;
+            if (last_return > node->tok) {
+                char *cleanup = xstrndup(node->tok,
+                                         (size_t)(last_return - node->tok));
+
+                node->lhs = ast_new(ND_CLEANUP, cleanup);
+                free(cleanup);
+            }
+            if (*value != ';' && *value != '\0') {
+                node->expr = safety_parse_range(value, end);
+                if (node->expr != NULL) {
+                    ast_resolve_generated_return(node->expr);
+                    node->ty = type_copy(node->expr->type);
+                }
+            }
+            ast_attach_semantics(node);
+            return node;
+        }
+    }
+    node->expr = safety_parse_range(p, end);
+    if (node->expr != NULL) {
+        node->kind = safety_expr_is_assignment(node->expr) ? ND_ASSIGN : ND_EXPR_STMT;
+        node->ty = type_copy(node->expr->type);
+    }
+    ast_attach_semantics(node);
+    return node;
+}
+
+static struct Node *ast_typed_output(enum NodeKind fallback, const char *text)
+{
+    const char *p;
+    const char *segment;
+    int paren = 0;
+    int bracket = 0;
+    int brace = 0;
+    int count = 0;
+    struct Node *parent;
+    struct Node *body = NULL;
+
+    if (fallback == ND_RETURN) {
+        return ast_typed_statement(fallback, text);
+    }
+    p = text;
+    while (*p != '\0') {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p[0] != '\0' && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p[0] != '\0') p += 2;
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (*p != '\0' && *p != '\n') p++;
+            continue;
+        }
+        if (*p == '(') paren++;
+        else if (*p == ')' && paren > 0) paren--;
+        else if (*p == '[') bracket++;
+        else if (*p == ']' && bracket > 0) bracket--;
+        else if (*p == '{') brace++;
+        else if (*p == '}' && brace > 0) brace--;
+        else if (*p == ';' && paren == 0 && bracket == 0 && brace == 0) count++;
+        p++;
+    }
+    if (count <= 1) {
+        return ast_typed_statement(fallback, text);
+    }
+    parent = ast_new(ND_EXPANSION, text);
+    segment = text;
+    p = text;
+    paren = bracket = brace = 0;
+    while (*p != '\0') {
+        const char *end = NULL;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p != '\0') {
+                if (*p == '\\' && p[1] != '\0') {
+                    p += 2;
+                    continue;
+                }
+                if (*p++ == quote) break;
+            }
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p[0] != '\0' && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p[0] != '\0') p += 2;
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (*p != '\0' && *p != '\n') p++;
+            continue;
+        }
+        if (*p == '(') paren++;
+        else if (*p == ')' && paren > 0) paren--;
+        else if (*p == '[') bracket++;
+        else if (*p == ']' && bracket > 0) bracket--;
+        else if (*p == '{') brace++;
+        else if (*p == '}' && brace > 0) brace--;
+        else if (*p == ';' && paren == 0 && bracket == 0 && brace == 0) end = p + 1;
+        p++;
+        if (end != NULL) {
+            char *piece = xstrndup(segment, (size_t)(end - segment));
+            struct Node *child = ast_typed_statement(body == NULL ? fallback : ND_EXPR_STMT,
+                                                     piece);
+
+            body = ast_append(body, child);
+            free(piece);
+            segment = end;
+        }
+    }
+    if (*skip_ws(segment) != '\0') {
+        struct Node *cleanup = ast_new(ND_CLEANUP, segment);
+
+        body = ast_append(body, cleanup);
+    }
+    parent->body = body;
+    if (body != NULL && body->ty != NULL) {
+        parent->ty = type_copy(*body->ty);
+    }
+    return parent;
+}
+
+static void ast_emit_statement(struct Text *out, const struct Node *node)
+{
+    const char *start;
+    const char *end;
+
+    if (node == NULL || node->tok == NULL) {
+        return;
+    }
+    start = node->tok;
+    end = start + strlen(start);
+    if (node->expr == NULL || node->expr->start < start || node->expr->end > end ||
+        node->expr->start > node->expr->end) {
+        text_add(out, start);
+        return;
+    }
+    text_add_n(out, start, (size_t)(node->expr->start - start));
+    text_add_n(out, node->expr->start, (size_t)(node->expr->end - node->expr->start));
+    text_add(out, node->expr->end);
+}
+
+static struct Text *finalize_typed_statement(struct Text *in, enum NodeKind fallback)
+{
+    struct Node *node;
+    struct Text *out;
+
+    if (in == NULL || in->len == 0) {
+        return in;
+    }
+    node = ast_typed_output(fallback, in->text);
+    validate_safe_typed_ast(node);
+    pending_semantics_clear();
+    out = text_new();
+    out->tail_return = in->tail_return;
+    out->ast = node;
+    ast_emit_statement(out, node);
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *ast_normalize_function_head(const char *head)
+{
+    struct Text *normalized = text_new();
+    const char *p = head;
+
+    while (*p != '\0') {
+        if (starts_word(p, "__attribute__")) {
+            const char *open = skip_ws(p + strlen("__attribute__"));
+            const char *close = *open == '(' ? matching_paren(open) : NULL;
+
+            if (close != NULL) {
+                p = close + 1;
+                continue;
+            }
+        }
+        text_add_ch(normalized, *p++);
+    }
+    return normalized;
+}
+
+static struct Node *ast_function(const char *head, struct Node *body)
+{
+    struct Node *node = ast_new(ND_FUNCDEF, head);
+    struct Text *normalized = ast_normalize_function_head(head);
+    struct Type ret;
+    char name[NAME_MAX_LEN];
+
+    node->body = body;
+    if (parse_function_signature(normalized->text, name, &ret)) {
+        struct Symbol *symbol = symbol_find(name);
+
+        node->ty = type_copy(ret);
+        node->return_type = ast_return_type(ret);
+        node->var = symbol == NULL ? NULL : symbol->var;
+        strncpy(node->name, name, NAME_MAX_LEN - 1);
+        node->name[NAME_MAX_LEN - 1] = '\0';
+        node->params = ast_function_parameters(name);
+    }
+    text_free(normalized);
+    return node;
+}
+
+static struct Node *ast_function_parameters(const char *name)
+{
+    struct FunctionParams *fn = function_params_find(name);
+    struct Node *params = NULL;
+    int i;
+
+    if (fn == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < fn->count; i++) {
+        struct Node *param = ast_new(ND_PARAM, NULL);
+
+        strncpy(param->name, fn->param[i].name, NAME_MAX_LEN - 1);
+        param->name[NAME_MAX_LEN - 1] = '\0';
+        param->ty = type_copy(fn->param[i].type);
+        param->type_node = ast_type_node(fn->param[i].type);
+        if (fn->param[i].borrowed) {
+            param->ownership = ast_new(ND_OWNERSHIP, NULL);
+            strcpy(param->ownership->name, "borrowed");
+            param->lifetime = ast_new(ND_LIFETIME, NULL);
+            strcpy(param->lifetime->type_name, "caller");
+            param->lifetime->caller_owner = 1;
+        } else if (fn->param[i].type.owned) {
+            param->ownership = ast_new(ND_OWNERSHIP, NULL);
+            strcpy(param->ownership->name, "owned");
+        }
+        if (fn->param[i].def[0] != '\0') {
+            param->expr = safety_parse_range(
+                fn->param[i].def,
+                fn->param[i].def + strlen(fn->param[i].def));
+        }
+        params = ast_append(params, param);
+    }
+    return params;
+}
+
+static struct Node *ast_return_type(struct Type type)
+{
+    struct Node *node = ast_new(ND_RETURN_TYPE, NULL);
+
+    node->ty = type_copy(type);
+    node->type_args = ast_type_arguments(type.applied_args);
+    if (type.is_array) {
+        node->dimensions = ast_new(ND_ARRAY_DIMENSION, NULL);
+        node->dimensions->array_len = type.array_len;
+    }
+    return node;
+}
+
+static struct Node *ast_type_node(struct Type type)
+{
+    struct Node *node = ast_new(ND_TYPE, NULL);
+
+    node->ty = type_copy(type);
+    node->type_args = ast_type_arguments(type.applied_args);
+    if (type.is_array) {
+        node->dimensions = ast_new(ND_ARRAY_DIMENSION, NULL);
+        node->dimensions->array_len = type.array_len;
+    }
+    return node;
+}
+
+static void ast_attach_semantics(struct Node *node)
+{
+    int matches = 0;
+    int owned = node->ty != NULL && node->ty->owned;
+
+    if (g_pending_semantics.active) {
+        if (node->kind == ND_DECL && node->name[0] != '\0' &&
+            strcmp(node->name, g_pending_semantics.target) == 0) {
+            matches = 1;
+        } else if (node->kind == ND_ASSIGN && g_pending_semantics.is_assignment) {
+            matches = 1;
+        } else if (node->kind == ND_RETURN && g_pending_semantics.is_return) {
+            matches = 1;
+        }
+    }
+    if (matches && g_pending_semantics.borrowed) {
+        node->ownership = ast_new(ND_OWNERSHIP, NULL);
+        strcpy(node->ownership->name, "borrowed");
+    } else if (owned || (matches && g_pending_semantics.owned)) {
+        node->ownership = ast_new(ND_OWNERSHIP, NULL);
+        strcpy(node->ownership->name, "owned");
+    }
+    if (matches && g_pending_semantics.owner[0] != '\0') {
+        node->lifetime = ast_new(ND_LIFETIME, NULL);
+        strcpy(node->lifetime->type_name, g_pending_semantics.owner);
+        node->lifetime->stack_owner = g_pending_semantics.stack_owner;
+        node->lifetime->dead = g_pending_semantics.dead;
+        node->lifetime->runtime_checked = g_pending_semantics.stack_owner;
+    }
+    if (matches && g_pending_semantics.move_source[0] != '\0') {
+        node->move_transfer = ast_new(ND_MOVE_TRANSFER, NULL);
+        strcpy(node->move_transfer->type_name,
+               g_pending_semantics.move_source);
+    }
+}
+
+static struct Node *ast_type_arguments(const char *arguments)
+{
+    struct Node *head = NULL;
+    const char *start;
+    const char *p;
+    int angle = 0;
+    int paren = 0;
+    int bracket = 0;
+
+    if (arguments == NULL || *skip_ws(arguments) == '\0') {
+        return NULL;
+    }
+    start = arguments;
+    for (p = arguments;; p++) {
+        int at_end = *p == '\0';
+        int separator = *p == ',' && angle == 0 && paren == 0 && bracket == 0;
+
+        if (at_end || separator) {
+            const char *piece_start = start;
+            const char *piece_end = p;
+            char spelling[DEFAULT_EXPR_MAX];
+            struct Type argument_type = type_unknown();
+            const char *base_end;
+            struct Node *node;
+            size_t len;
+
+            while (piece_start < piece_end && isspace((unsigned char)*piece_start)) {
+                piece_start++;
+            }
+            while (piece_end > piece_start &&
+                   isspace((unsigned char)piece_end[-1])) {
+                piece_end--;
+            }
+            len = (size_t)(piece_end - piece_start);
+            if (len >= sizeof(spelling)) {
+                die("generic type argument is too long");
+            }
+            memcpy(spelling, piece_start, len);
+            spelling[len] = '\0';
+            if (len > 0) {
+                if (parse_base_type_prefix(spelling, &base_end, &argument_type)) {
+                    const char *tail;
+
+                    for (tail = base_end; *tail != '\0'; tail++) {
+                        if (*tail == '*') argument_type.ptr++;
+                        else if (*tail == '%') argument_type.owned = 1;
+                    }
+                } else {
+                    argument_type = type_make(TY_GENERIC, 0, spelling);
+                }
+                node = ast_new(ND_TYPE_ARGUMENT, NULL);
+                node->ty = type_copy(argument_type);
+                strncpy(node->type_name, spelling, NAME_MAX_LEN - 1);
+                node->type_name[NAME_MAX_LEN - 1] = '\0';
+                node->type_args = ast_type_arguments(argument_type.applied_args);
+                head = ast_append(head, node);
+            }
+            if (at_end) {
+                break;
+            }
+            start = p + 1;
+            continue;
+        }
+        if (*p == '<') angle++;
+        else if (*p == '>' && angle > 0) angle--;
+        else if (*p == '(') paren++;
+        else if (*p == ')' && paren > 0) paren--;
+        else if (*p == '[') bracket++;
+        else if (*p == ']' && bracket > 0) bracket--;
+    }
+    return head;
+}
+
+static struct Node *ast_type_parameters(const char *parameters)
+{
+    struct Node *head = NULL;
+    const char *p = parameters;
+
+    while (p != NULL && *p != '\0') {
+        const char *start;
+        const char *end;
+        char name[NAME_MAX_LEN];
+        size_t len;
+        struct Node *node;
+
+        while (*p == ',' || isspace((unsigned char)*p)) {
+            p++;
+        }
+        start = p;
+        while (*p != '\0' && *p != ',') {
+            p++;
+        }
+        end = p;
+        while (end > start && isspace((unsigned char)end[-1])) {
+            end--;
+        }
+        len = (size_t)(end - start);
+        if (len == 0) {
+            continue;
+        }
+        if (len >= sizeof(name)) {
+            die("generic type parameter name is too long");
+        }
+        memcpy(name, start, len);
+        name[len] = '\0';
+        node = ast_new(ND_TYPE_PARAM, NULL);
+        strncpy(node->name, name, NAME_MAX_LEN - 1);
+        node->name[NAME_MAX_LEN - 1] = '\0';
+        node->ty = type_copy(type_make(TY_GENERIC, 0, name));
+        head = ast_append(head, node);
+    }
+    return head;
+}
+
+static struct Node *ast_function_declaration(const char *head)
+{
+    struct Node *node = ast_new(ND_FUNCDECL, head);
+    struct Type ret;
+    char name[NAME_MAX_LEN];
+
+    if (parse_function_signature(head, name, &ret)) {
+        struct Symbol *symbol = symbol_find(name);
+
+        node->ty = type_copy(ret);
+        node->return_type = ast_return_type(ret);
+        node->var = symbol == NULL ? NULL : symbol->var;
+        strncpy(node->name, name, NAME_MAX_LEN - 1);
+        node->name[NAME_MAX_LEN - 1] = '\0';
+        node->params = ast_function_parameters(name);
+    }
+    return node;
+}
+
+static enum NodeKind ast_control_kind(const char *head)
+{
+    const char *p = skip_ws(head);
+
+    if (starts_word(p, "else")) {
+        p = skip_ws(p + 4);
+        if (!starts_word(p, "if")) {
+            return ND_IF;
+        }
+    }
+    if (starts_word(p, "if")) return ND_IF;
+    if (starts_word(p, "while")) return ND_WHILE;
+    if (starts_word(p, "for")) return ND_FOR;
+    if (starts_word(p, "switch")) return ND_SWITCH;
+    if (starts_word(p, "do")) return ND_DO;
+    return ND_RAW;
+}
+
+static void safety_expr_bind_identifier(struct SafetyExprNode *expr,
+                                        const char *name,
+                                        struct Type type)
+{
+    for (; expr != NULL; expr = expr->next) {
+        safety_expr_bind_identifier(expr->lhs, name, type);
+        safety_expr_bind_identifier(expr->rhs, name, type);
+        safety_expr_bind_identifier(expr->child, name, type);
+        if (expr->kind == SAFETY_EXPR_IDENTIFIER &&
+            strcmp(expr->name, name) == 0 && !type_is_known(expr->type)) {
+            expr->type = type;
+        }
+        if (expr->kind == SAFETY_EXPR_UPDATE && expr->lhs != NULL &&
+            type_is_known(expr->lhs->type)) {
+            expr->type = expr->lhs->type;
+        }
+    }
+}
+
+static struct Node *ast_control(const char *head, const char *open_tok,
+                                const char *body_text, const char *close_tok,
+                                struct Node *body)
+{
+    struct Node *node = ast_new(ast_control_kind(head), head);
+    const char *p = skip_ws(node->tok);
+    const char *open;
+    const char *close;
+
+    node->open_tok = xstrdup(open_tok);
+    node->body_tok = xstrdup(body_text);
+    node->close_tok = xstrdup(close_tok);
+    node->body = body;
+    if (starts_word(p, "else")) {
+        p = skip_ws(p + 4);
+    }
+    open = strchr(p, '(');
+    close = open == NULL ? NULL : matching_paren(open);
+    if (open == NULL || close == NULL) {
+        return node;
+    }
+    if (starts_word(p, "for")) {
+        const char *first = find_top_level_char(open + 1, close, ';');
+        const char *second = first == NULL ? NULL : find_top_level_char(first + 1, close, ';');
+
+        if (first != NULL && second != NULL) {
+            char *init = xstrndup(open + 1, (size_t)(first - open - 1));
+
+            if (*skip_ws(init) != '\0') {
+                node->lhs = ast_typed_statement(ND_EXPR_STMT, init);
+            }
+            free(init);
+            if (*skip_ws(first + 1) != ';') {
+                node->expr = safety_parse_range(first + 1, second);
+            }
+            if (*skip_ws(second + 1) != ')') {
+                node->inc_expr = safety_parse_range(second + 1, close);
+            }
+            if (node->lhs != NULL && node->lhs->kind == ND_DECL &&
+                node->lhs->ty != NULL && node->lhs->name[0] != '\0') {
+                safety_expr_bind_identifier(node->expr, node->lhs->name,
+                                            *node->lhs->ty);
+                safety_expr_bind_identifier(node->inc_expr, node->lhs->name,
+                                            *node->lhs->ty);
+            }
+        }
+    } else {
+        node->expr = safety_parse_range(open + 1, close);
+    }
+    if (node->expr != NULL) {
+        node->ty = type_copy(node->expr->type);
+    }
+    return node;
+}
+
+static int safe_typed_ast_validation_enabled(void)
+{
+    return g_unsafe_depth == 0 && !g_c_compat &&
+        g_current_generic_kind == 0 && !g_current_payload_enum;
+}
+
+static void fail_incomplete_safe_ast(const char *what)
+{
+    fprintf(stderr,
+            "c-: type error: safe-mode typed AST cannot represent %s at %s:%d; "
+            "wrap intentional C in unsafe or inline c\n",
+            what, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+    exit(1);
+}
+
+static int return_has_value(const char *text)
+{
+    const char *p = skip_ws(text == NULL ? "" : text);
+    const char *value;
+
+    if (!starts_word(p, "return")) {
+        const char *last = NULL;
+        const char *scan = p;
+
+        while ((scan = strstr(scan, "return")) != NULL) {
+            if ((scan == p || !is_ident((unsigned char)scan[-1])) &&
+                !is_ident((unsigned char)scan[6])) {
+                last = scan;
+            }
+            scan += 6;
+        }
+        if (last == NULL) return 0;
+        p = last;
+    }
+    value = skip_ws(p + 6);
+    return *value != ';' && *value != '\0';
+}
+
+static void validate_safe_expression_unknowns(const struct SafetyExprNode *expr)
+{
+    for (; expr != NULL; expr = expr->next) {
+        if (!type_is_known(expr->type) &&
+            (expr->unknown_reason == SAFETY_UNKNOWN_NONE ||
+             expr->unknown_reason == SAFETY_UNKNOWN_UNCLASSIFIED)) {
+            fail_incomplete_safe_ast("an expression with an unclassified unknown type");
+        }
+        validate_safe_expression_unknowns(expr->lhs);
+        validate_safe_expression_unknowns(expr->rhs);
+        validate_safe_expression_unknowns(expr->child);
+    }
+}
+
+static void validate_safe_typed_ast(const struct Node *node)
+{
+    if (!safe_typed_ast_validation_enabled()) return;
+    for (; node != NULL; node = node->next) {
+        validate_safe_expression_unknowns(node->expr);
+        validate_safe_expression_unknowns(node->inc_expr);
+        if ((node->kind == ND_EXPR_STMT || node->kind == ND_ASSIGN) &&
+            node->expr == NULL) {
+            fail_incomplete_safe_ast("an expression statement");
+        }
+        if (node->kind == ND_DECL) {
+            struct DeclInfo decl;
+
+            if (parse_decl(ast_skip_leading_gnu_attributes(node->tok), &decl) &&
+                decl.is_decl &&
+                decl.has_init && node->expr == NULL) {
+                fail_incomplete_safe_ast("a declaration initializer");
+            }
+        }
+        if (node->kind == ND_RETURN && node->expr == NULL &&
+            return_has_value(node->tok)) {
+            fail_incomplete_safe_ast("a return expression");
+        }
+        if (node->kind == ND_CASE && node->expr == NULL) {
+            fail_incomplete_safe_ast("a case expression");
+        }
+        if (node->kind == ND_STATIC_ASSERT && node->expr == NULL) {
+            fail_incomplete_safe_ast("a static assertion condition");
+        }
+        if (node->kind == ND_WHILE && node->expr == NULL) {
+            fail_incomplete_safe_ast("a while condition");
+        }
+        if (node->kind == ND_EXPANSION) {
+            validate_safe_typed_ast(node->body);
+        }
+    }
+}
+
+static int for_has_condition(const char *text)
+{
+    const char *open = strchr(text == NULL ? "" : text, '(');
+    const char *close = open == NULL ? NULL : matching_paren(open);
+    const char *first;
+    const char *second;
+
+    if (open == NULL || close == NULL) return 1;
+    first = find_top_level_char(open + 1, close, ';');
+    second = first == NULL ? NULL : find_top_level_char(first + 1, close, ';');
+    if (first == NULL || second == NULL) return 1;
+    return skip_ws(first + 1) != second;
+}
+
+static void validate_safe_control_ast(const struct Node *node)
+{
+    const char *p;
+
+    if (!safe_typed_ast_validation_enabled() || node == NULL) return;
+    p = skip_ws(node->tok == NULL ? "" : node->tok);
+    if (node->kind == ND_IF && node->expr == NULL) {
+        if (starts_word(p, "else") &&
+            !starts_word(skip_ws(p + 4), "if")) {
+            return;
+        }
+        fail_incomplete_safe_ast("an if condition");
+    }
+    if ((node->kind == ND_WHILE || node->kind == ND_SWITCH) &&
+        node->expr == NULL) {
+        fail_incomplete_safe_ast(node->kind == ND_WHILE ?
+                                 "a while condition" : "a switch expression");
+    }
+    if (node->kind == ND_FOR) {
+        if (node->lhs != NULL) validate_safe_typed_ast(node->lhs);
+        if (for_has_condition(node->tok) && node->expr == NULL) {
+            fail_incomplete_safe_ast("a for condition");
+        }
+        if (node->inc_expr == NULL) {
+            const char *open = strchr(node->tok == NULL ? "" : node->tok, '(');
+            const char *close = open == NULL ? NULL : matching_paren(open);
+            const char *first = (open == NULL || close == NULL) ? NULL :
+                find_top_level_char(open + 1, close, ';');
+            const char *second = first == NULL ? NULL :
+                find_top_level_char(first + 1, close, ';');
+
+            if (second != NULL && skip_ws(second + 1) != close) {
+                fail_incomplete_safe_ast("a for increment expression");
+            }
+        }
+    }
+}
+
+static void ast_emit_node(struct Text *out, const struct Node *node)
+{
+    for (; node != NULL; node = node->next) {
+        if (node->open_tok != NULL && node->body_tok != NULL &&
+            node->close_tok != NULL) {
+            if (node->tok != NULL) {
+                text_add(out, node->tok);
+            }
+            text_add(out, node->open_tok);
+            text_add(out, node->body_tok);
+            text_add(out, node->close_tok);
+        } else {
+            ast_emit_statement(out, node);
+        }
+    }
+}
+
+static struct Text *finalize_typed_label(struct Text *in, enum NodeKind kind)
+{
+    struct Node *node;
+    struct Text *out;
+    const char *p;
+
+    if (in == NULL) {
+        return NULL;
+    }
+    node = ast_new(kind, in->text);
+    p = skip_ws(node->tok);
+    if (kind == ND_LABEL && is_ident_start((unsigned char)*p)) {
+        const char *end;
+        char name[NAME_MAX_LEN];
+
+        end = read_name(p, name);
+        (void)end;
+        strncpy(node->name, name, NAME_MAX_LEN - 1);
+        node->name[NAME_MAX_LEN - 1] = '\0';
+    } else if (kind == ND_CASE && starts_word(p, "case")) {
+        const char *value = skip_ws(p + 4);
+        const char *colon = strrchr(value, ':');
+
+        if (colon != NULL) {
+            node->expr = safety_parse_range(value, colon);
+            if (node->expr != NULL) {
+                node->ty = type_copy(node->expr->type);
+            }
+        }
+    }
+    validate_safe_typed_ast(node);
+    out = text_new();
+    out->tail_return = in->tail_return;
+    out->ast = node;
+    ast_emit_node(out, node);
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static struct Text *finalize_typed_block(struct Text *lb, struct Text *body,
+                                         struct Text *rb)
+{
+    struct Node *node = ast_block(body->ast);
+    struct Text *out = text_new();
+
+    node->open_tok = xstrdup(lb->text);
+    node->body_tok = xstrdup(body->text);
+    node->close_tok = xstrdup(rb->text);
+    out->ast = node;
+    ast_emit_node(out, node);
+    body->ast = NULL;
+    text_free(lb);
+    text_free(body);
+    text_free(rb);
+    return out;
+}
+
+static struct Text *finalize_typed_raw(struct Text *in, enum NodeKind kind)
+{
+    struct Node *node;
+    struct Text *out;
+    const char *p;
+
+    if (in == NULL || in->len == 0) {
+        return in;
+    }
+    p = skip_ws(in->text);
+    if (kind == ND_PP && starts_word(p, "typedef") && strstr(p, "(*") != NULL) {
+        struct DeclInfo decl;
+
+        if (parse_decl(p, &decl) && decl.is_typedef && decl.name[0] != '\0') {
+            typedef_alias_add(decl.name, decl.type);
+            return finalize_typed_statement(in, ND_DECL);
+        }
+    }
+    node = ast_new(kind, in->text);
+    out = text_new();
+    out->tail_return = in->tail_return;
+    out->ast = node;
+    ast_emit_node(out, node);
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
+static const char *skip_enum_trivia(const char *p, const char *end)
+{
+    for (;;) {
+        while (p < end && isspace((unsigned char)*p)) p++;
+        if (p + 1 < end && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < end && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p + 1 < end) p += 2;
+            continue;
+        }
+        if (p + 1 < end && p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (p < end && *p != '\n') p++;
+            continue;
+        }
+        return p;
+    }
+}
+
+static int ast_constant_integer(const struct SafetyExprNode *expr, long *value)
+{
+    long lhs;
+    long rhs;
+
+    if (expr == NULL) return 0;
+    if (expr->kind == SAFETY_EXPR_LITERAL && expr->has_constant_integer) {
+        *value = expr->integer;
+        return 1;
+    }
+    if (expr->kind == SAFETY_EXPR_GROUP) {
+        return ast_constant_integer(expr->lhs, value);
+    }
+    if (expr->kind == SAFETY_EXPR_CAST) {
+        return ast_constant_integer(expr->lhs, value);
+    }
+    if (expr->kind == SAFETY_EXPR_UNARY &&
+        ast_constant_integer(expr->lhs, &lhs)) {
+        if (strcmp(expr->op, "+") == 0) *value = lhs;
+        else if (strcmp(expr->op, "-") == 0) *value = (long)(0UL - (unsigned long)lhs);
+        else if (strcmp(expr->op, "!") == 0) *value = !lhs;
+        else if (strcmp(expr->op, "~") == 0) *value = ~lhs;
+        else return 0;
+        return 1;
+    }
+    if (expr->kind == SAFETY_EXPR_CONDITIONAL) {
+        if (!ast_constant_integer(expr->lhs, &lhs)) return 0;
+        return ast_constant_integer(lhs ? expr->rhs : expr->child, value);
+    }
+    if (expr->kind != SAFETY_EXPR_BINARY ||
+        !ast_constant_integer(expr->lhs, &lhs) ||
+        !ast_constant_integer(expr->rhs, &rhs)) return 0;
+    if (strcmp(expr->op, "+") == 0) *value = (long)((unsigned long)lhs + (unsigned long)rhs);
+    else if (strcmp(expr->op, "-") == 0) *value = (long)((unsigned long)lhs - (unsigned long)rhs);
+    else if (strcmp(expr->op, "*") == 0) *value = (long)((unsigned long)lhs * (unsigned long)rhs);
+    else if (strcmp(expr->op, "/") == 0 && rhs != 0 && !(lhs == LONG_MIN && rhs == -1)) *value = lhs / rhs;
+    else if (strcmp(expr->op, "%") == 0 && rhs != 0 && !(lhs == LONG_MIN && rhs == -1)) *value = lhs % rhs;
+    else if (strcmp(expr->op, "<<") == 0 && rhs >= 0 && rhs < (long)(sizeof(long) * 8)) *value = (long)((unsigned long)lhs << rhs);
+    else if (strcmp(expr->op, ">>") == 0 && rhs >= 0 && rhs < (long)(sizeof(long) * 8)) *value = lhs >> rhs;
+    else if (strcmp(expr->op, "&") == 0) *value = lhs & rhs;
+    else if (strcmp(expr->op, "|") == 0) *value = lhs | rhs;
+    else if (strcmp(expr->op, "^") == 0) *value = lhs ^ rhs;
+    else if (strcmp(expr->op, "==") == 0) *value = lhs == rhs;
+    else if (strcmp(expr->op, "!=") == 0) *value = lhs != rhs;
+    else if (strcmp(expr->op, "<") == 0) *value = lhs < rhs;
+    else if (strcmp(expr->op, ">") == 0) *value = lhs > rhs;
+    else if (strcmp(expr->op, "<=") == 0) *value = lhs <= rhs;
+    else if (strcmp(expr->op, ">=") == 0) *value = lhs >= rhs;
+    else if (strcmp(expr->op, "&&") == 0) *value = lhs && rhs;
+    else if (strcmp(expr->op, "||") == 0) *value = lhs || rhs;
+    else return 0;
+    return 1;
+}
+
+static struct Node *ast_enum_members(const char *body, struct Type enum_type)
+{
+    struct Node *members = NULL;
+    const char *p = body;
+    const char *end = body + strlen(body);
+    long next_value = 0;
+    int next_known = 1;
+
+    while (p < end) {
+        const char *piece_end = find_top_level_char(p, end, ',');
+        const char *name_end;
+        const char *value;
+        struct Node *member;
+        char name[NAME_MAX_LEN];
+
+        if (piece_end == NULL) piece_end = end;
+        p = skip_enum_trivia(p, piece_end);
+        if (p >= piece_end || !is_ident_start((unsigned char)*p)) {
+            p = piece_end < end ? piece_end + 1 : end;
+            continue;
+        }
+        name_end = read_name(p, name);
+        member = ast_new(ND_ENUM_MEMBER, NULL);
+        strncpy(member->name, name, NAME_MAX_LEN - 1);
+        member->name[NAME_MAX_LEN - 1] = '\0';
+        member->ty = type_copy(enum_type);
+        symbol_add_to(&g_globals, name, enum_type);
+        value = skip_enum_trivia(name_end, piece_end);
+        if (value < piece_end && *value == '=') {
+            const char *value_start = skip_enum_trivia(value + 1, piece_end);
+            const char *value_end = piece_end;
+
+            while (value_end > value_start &&
+                   isspace((unsigned char)value_end[-1])) value_end--;
+            member->expr = safety_parse_range(value_start, value_end);
+            if (ast_constant_integer(member->expr, &member->enum_value)) {
+                member->has_enum_value = 1;
+                next_value = member->enum_value + 1;
+                next_known = 1;
+            } else {
+                next_known = 0;
+            }
+        } else if (next_known) {
+            member->enum_value = next_value++;
+            member->has_enum_value = 1;
+        }
+        members = ast_append(members, member);
+        p = piece_end < end ? piece_end + 1 : end;
+    }
+    return members;
+}
+
+static struct Node *ast_aggregate(const char *head, const char *open_tok,
+                                  const char *body_text, const char *close_tok,
+                                  struct Node *body)
+{
+    const char *p = head;
+    enum NodeKind kind = ND_RAW;
+    enum TypeKind type_kind = TY_UNKNOWN;
+    char tag[NAME_MAX_LEN];
+    struct Node *node;
+
+    tag[0] = '\0';
+    while (strchr(head, '(') == NULL && *p != '\0') {
+        char word[NAME_MAX_LEN];
+        const char *end;
+
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        end = read_name(p, word);
+        if (strcmp(word, "struct") == 0 || strcmp(word, "union") == 0 ||
+            strcmp(word, "enum") == 0) {
+            const char *name_start = skip_ws(end);
+
+            kind = strcmp(word, "struct") == 0 ? ND_STRUCTDEF :
+                (strcmp(word, "union") == 0 ? ND_UNIONDEF : ND_ENUMDEF);
+            type_kind = strcmp(word, "struct") == 0 ? TY_STRUCT :
+                (strcmp(word, "union") == 0 ? TY_UNION : TY_ENUM);
+            if (is_ident_start((unsigned char)*name_start)) {
+                read_name(name_start, tag);
+            }
+            break;
+        }
+        p = end;
+    }
+    node = ast_new(kind, head);
+    node->open_tok = xstrdup(open_tok);
+    node->body_tok = xstrdup(body_text);
+    node->close_tok = xstrdup(close_tok);
+    node->body = body;
+    if (kind == ND_ENUMDEF) {
+        node->body = ast_enum_members(body_text,
+                                      type_make(TY_ENUM, 0, tag));
+    }
+    if (kind == ND_STRUCTDEF || kind == ND_UNIONDEF) {
+        struct Node *member;
+        struct StructFinalizer *registered =
+            tag[0] == '\0' ? NULL : struct_clone_find(tag);
+
+        for (member = body; member != NULL; member = member->next) {
+            if (member->kind == ND_DECL) {
+                member->kind = ND_FIELD;
+            }
+            if (member->kind == ND_FIELD && registered != NULL) {
+                int i;
+
+                for (i = 0; i < registered->count; i++) {
+                    if (strcmp(registered->fields[i].name, member->name) == 0) {
+                        member->ty = type_copy(registered->fields[i].type);
+                        member->type_node = ast_type_node(registered->fields[i].type);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (tag[0] != '\0') {
+        strncpy(node->name, tag, NAME_MAX_LEN - 1);
+        node->name[NAME_MAX_LEN - 1] = '\0';
+        node->ty = type_copy(type_make(type_kind, 0, tag));
+        if (kind == ND_STRUCTDEF || kind == ND_UNIONDEF) {
+            aggregate_ast_add(tag, node);
+        }
+    }
+    return node;
+}
+
+static const char *ast_kind_name(enum NodeKind kind)
+{
+    switch (kind) {
+    case ND_BLOCK: return "block";
+    case ND_EXPR_STMT: return "expression";
+    case ND_RETURN: return "return";
+    case ND_DECL: return "declaration";
+    case ND_ASSIGN: return "assignment";
+    case ND_FUNCDEF: return "function";
+    case ND_FUNCDECL: return "function-declaration";
+    case ND_PARAM: return "parameter";
+    case ND_RETURN_TYPE: return "return-type";
+    case ND_TYPEDEF: return "typedef";
+    case ND_TYPE_PARAM: return "type-parameter";
+    case ND_TYPE: return "type";
+    case ND_TYPE_ARGUMENT: return "type-argument";
+    case ND_FIELD: return "field";
+    case ND_ARRAY_DIMENSION: return "array-dimension";
+    case ND_ENUM_MEMBER: return "enum-member";
+    case ND_OWNERSHIP: return "ownership";
+    case ND_LIFETIME: return "lifetime";
+    case ND_MOVE_TRANSFER: return "move-transfer";
+    case ND_IF: return "if";
+    case ND_WHILE: return "while";
+    case ND_FOR: return "for";
+    case ND_SWITCH: return "switch";
+    case ND_DO: return "do";
+    case ND_GOTO: return "goto";
+    case ND_BREAK: return "break";
+    case ND_CONTINUE: return "continue";
+    case ND_STATIC_ASSERT: return "static-assert";
+    case ND_LABEL: return "label";
+    case ND_CASE: return "case";
+    case ND_DEFAULT: return "default";
+    case ND_STRUCTDEF: return "struct";
+    case ND_UNIONDEF: return "union";
+    case ND_ENUMDEF: return "enum";
+    case ND_PP: return "preprocessor";
+    case ND_CLEANUP: return "cleanup";
+    case ND_EXPANSION: return "expansion";
+    case ND_DIRECTIVE: return "directive";
+    case ND_GENERIC_STRUCT: return "generic-struct";
+    case ND_GENERIC_PROTO: return "generic-prototype";
+    case ND_GENERIC_FUNCTION: return "generic-function";
+    case ND_GENERIC_STRUCT_TEMPLATE: return "generic-struct-template";
+    case ND_GENERIC_FUNCTION_TEMPLATE: return "generic-function-template";
+    case ND_PAYLOAD_ENUM_TEMPLATE: return "payload-enum-template";
+    case ND_PAYLOAD_VARIANT: return "payload-variant";
+    case ND_BITFLAGSDEF: return "bitflags";
+    case ND_BITFLAG_MEMBER: return "bitflag-member";
+    case ND_UNSAFE: return "unsafe";
+    case ND_INLINE_C: return "inline-c";
+    case ND_RUNTIME_PRELUDE: return "runtime-prelude";
+    case ND_PAYLOAD_HELPERS: return "payload-helpers";
+    case ND_DEFAULT_MACRO: return "default-macro";
+    case ND_TRANSLATION_UNIT: return "translation-unit";
+    case ND_SOURCE_PREFIX: return "source-prefix";
+    case ND_SOURCE_BODY: return "source-body";
+    case ND_S_STRING: return "s-string";
+    case ND_RAW: return "raw";
+    default: return "node";
+    }
+}
+
+static const char *safety_expr_kind_name(enum SafetyExprKind kind)
+{
+    switch (kind) {
+    case SAFETY_EXPR_IDENTIFIER: return "identifier";
+    case SAFETY_EXPR_LITERAL: return "literal";
+    case SAFETY_EXPR_GROUP: return "group";
+    case SAFETY_EXPR_GENERIC: return "generic";
+    case SAFETY_EXPR_MOVE: return "move";
+    case SAFETY_EXPR_UNARY: return "unary";
+    case SAFETY_EXPR_UNARY_ADDRESS: return "address";
+    case SAFETY_EXPR_UNARY_DEREF: return "dereference";
+    case SAFETY_EXPR_CAST: return "cast";
+    case SAFETY_EXPR_SIZEOF: return "sizeof";
+    case SAFETY_EXPR_ALIGNOF: return "alignof";
+    case SAFETY_EXPR_STATEMENT: return "statement-expression";
+    case SAFETY_EXPR_INITIALIZER: return "initializer-list";
+    case SAFETY_EXPR_OFFSETOF: return "offsetof";
+    case SAFETY_EXPR_CALL: return "call";
+    case SAFETY_EXPR_INDEX: return "index";
+    case SAFETY_EXPR_MEMBER: return "member";
+    case SAFETY_EXPR_BINARY: return "binary";
+    case SAFETY_EXPR_UPDATE: return "update";
+    case SAFETY_EXPR_CONDITIONAL: return "conditional";
+    case SAFETY_EXPR_FIXED_INDEX: return "fixed-index";
+    case SAFETY_EXPR_RAW_DECAY: return "raw-decay";
+    case SAFETY_EXPR_UNSAFE_CALL: return "unsafe-call";
+    }
+    return "unknown";
+}
+
+static const char *safety_unknown_reason_name(enum SafetyUnknownReason reason)
+{
+    switch (reason) {
+    case SAFETY_UNKNOWN_UNRESOLVED_SYMBOL: return "unresolved-symbol";
+    case SAFETY_UNKNOWN_UNRESOLVED_CALL_RETURN: return "unresolved-call-return";
+    case SAFETY_UNKNOWN_TARGET_SIZE: return "target-dependent-size";
+    case SAFETY_UNKNOWN_CONTEXTUAL_LITERAL: return "contextual-literal";
+    case SAFETY_UNKNOWN_MEMBER_TYPE: return "unresolved-member-type";
+    case SAFETY_UNKNOWN_SYMBOLIC_GENERIC: return "symbolic-generic";
+    case SAFETY_UNKNOWN_STATEMENT_RESULT: return "unresolved-statement-result";
+    case SAFETY_UNKNOWN_CONTEXTUAL_INITIALIZER: return "contextual-initializer";
+    case SAFETY_UNKNOWN_OPERAND_TYPE: return "unknown-operand-type";
+    case SAFETY_UNKNOWN_NONE: return "none";
+    case SAFETY_UNKNOWN_UNCLASSIFIED: return "unclassified";
+    }
+    return "unclassified";
+}
+
+static int safety_resolve_atomic_call(struct SafetyExprNode *call,
+                                      struct SafetyExprNode *callee)
+{
+    struct Type result;
+
+    if (call == NULL || callee == NULL ||
+        callee->kind != SAFETY_EXPR_IDENTIFIER || call->child == NULL ||
+        (strcmp(callee->name, "__atomic_load_n") != 0 &&
+         strcmp(callee->name, "__atomic_exchange_n") != 0 &&
+         strcmp(callee->name, "__atomic_fetch_add") != 0 &&
+         strcmp(callee->name, "__atomic_fetch_sub") != 0 &&
+         strcmp(callee->name, "__atomic_fetch_or") != 0 &&
+         strcmp(callee->name, "__atomic_fetch_and") != 0 &&
+         strcmp(callee->name, "__atomic_fetch_xor") != 0)) {
+        return 0;
+    }
+    result = call->child->type;
+    if (!type_is_known(result) || result.ptr <= 0) return 0;
+    result.ptr--;
+    result.owned = 0;
+    if (result.ptr == 0) result.raw_ptr = 0;
+    call->type = result;
+    callee->function_return_type = result;
+    callee->type = type_make(TY_FUNCTION, 0, NULL);
+    callee->type.base = &callee->function_return_type;
+    return 1;
+}
+
+static int safety_contextualize_null(struct SafetyExprNode *expr,
+                                     struct Type context)
+{
+    if (expr == NULL || !type_is_known(context)) return 0;
+    if (expr->kind == SAFETY_EXPR_IDENTIFIER &&
+        strcmp(expr->name, "NULL") == 0 && !type_is_known(expr->type)) {
+        context.owned = 0;
+        expr->type = context;
+        expr->unknown_reason = SAFETY_UNKNOWN_NONE;
+        return 1;
+    }
+    if ((expr->kind == SAFETY_EXPR_GROUP ||
+         expr->kind == SAFETY_EXPR_MOVE) && expr->lhs != NULL &&
+        safety_contextualize_null(expr->lhs, context)) {
+        expr->type = expr->lhs->type;
+        expr->unknown_reason = SAFETY_UNKNOWN_NONE;
+        return 1;
+    }
+    return 0;
+}
+
+static void safety_contextualize_call_nulls(struct SafetyExprNode *call,
+                                            struct SafetyExprNode *callee)
+{
+    struct FunctionParams *fn = NULL;
+    struct SafetyExprNode *arg;
+    int index = 0;
+
+    if (callee != NULL && callee->kind == SAFETY_EXPR_IDENTIFIER) {
+        fn = function_params_find(callee->name);
+    }
+    for (arg = call->child; arg != NULL; arg = arg->next, index++) {
+        struct Type expected = type_unknown();
+
+        if (fn != NULL && index < fn->count) {
+            expected = fn->param[index].type;
+        } else if (callee != NULL &&
+                   callee->kind == SAFETY_EXPR_IDENTIFIER && index == 1 &&
+                   strcmp(callee->name, "pthread_create") == 0) {
+            expected = type_make(TY_TYPEDEF, 1, "pthread_attr_t");
+            expected.raw_ptr = 1;
+        } else if (callee != NULL &&
+                   callee->kind == SAFETY_EXPR_IDENTIFIER && index == 1 &&
+                   strcmp(callee->name, "pthread_join") == 0) {
+            expected = type_make(TY_VOID, 2, NULL);
+            expected.raw_ptr = 1;
+        } else if (callee != NULL &&
+                   callee->kind == SAFETY_EXPR_IDENTIFIER && index == 1 &&
+                   strcmp(callee->name, "pthread_mutex_init") == 0) {
+            expected = type_make(TY_TYPEDEF, 1, "pthread_mutexattr_t");
+            expected.raw_ptr = 1;
+        } else if (callee != NULL &&
+                   callee->kind == SAFETY_EXPR_IDENTIFIER && index == 1 &&
+                   strcmp(callee->name, "pthread_cond_init") == 0) {
+            expected = type_make(TY_TYPEDEF, 1, "pthread_condattr_t");
+            expected.raw_ptr = 1;
+        } else if (callee != NULL &&
+                   callee->kind == SAFETY_EXPR_IDENTIFIER && index == 0 &&
+                   (strcmp(callee->name, "vsnprintf") == 0 ||
+                    strcmp(callee->name, "memcpy") == 0 ||
+                    strcmp(callee->name, "memset") == 0 ||
+                    strcmp(callee->name, "free") == 0 ||
+                    strcmp(callee->name, "cminus_gc_free") == 0)) {
+            expected = type_make(TY_VOID, 1, NULL);
+            expected.raw_ptr = 1;
+        }
+        safety_contextualize_null(arg, expected);
+    }
+}
+
+static int safety_resolve_generic_method_member(struct SafetyExprNode *member)
+{
+    struct SafetyExprNode *generic;
+    struct SafetyExprNode *base;
+    struct FunctionParams *fn;
+    struct Text *function_name;
+
+    if (member == NULL || member->kind != SAFETY_EXPR_MEMBER ||
+        member->lhs == NULL || member->lhs->kind != SAFETY_EXPR_GENERIC) {
+        return 0;
+    }
+    generic = member->lhs;
+    base = generic->lhs;
+    if (base == NULL || base->kind != SAFETY_EXPR_IDENTIFIER) return 0;
+    function_name = text_new();
+    text_add(function_name, base->name);
+    text_add_ch(function_name, '_');
+    text_add(function_name, member->name);
+    fn = function_params_find(function_name->text);
+    text_free(function_name);
+    if (fn == NULL) return 0;
+    member->function_return_type = fn->ret;
+    member->type = type_make(TY_FUNCTION, 0, NULL);
+    member->type.base = &member->function_return_type;
+    return 1;
+}
+
+static int safety_find_statement_result_type(struct SafetyExprNode *expr,
+                                             struct Type *type)
+{
+    for (; expr != NULL; expr = expr->next) {
+        if (expr->statement_result && type_is_known(expr->type)) {
+            *type = expr->type;
+            return 1;
+        }
+        if (safety_find_statement_result_type(expr->lhs, type) ||
+            safety_find_statement_result_type(expr->rhs, type) ||
+            safety_find_statement_result_type(expr->child, type)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void safety_final_resolve_expression(struct SafetyExprNode *expr)
+{
+    struct SafetyExprNode *head = expr;
+
+    for (; expr != NULL; expr = expr->next) {
+        struct SafetyExprNode *callee;
+
+        safety_final_resolve_expression(expr->lhs);
+        safety_final_resolve_expression(expr->rhs);
+        safety_final_resolve_expression(expr->child);
+        if (expr->kind == SAFETY_EXPR_IDENTIFIER) {
+            safety_resolve_identifier_node(expr);
+        } else if (expr->kind == SAFETY_EXPR_GENERIC && expr->lhs != NULL &&
+                   expr->lhs->type.kind == TY_TYPE_CONSTRUCTOR) {
+            expr->type = expr->lhs->type;
+        } else if (expr->kind == SAFETY_EXPR_CALL) {
+            callee = expr->lhs;
+            while (callee != NULL &&
+                   (callee->kind == SAFETY_EXPR_GROUP ||
+                    callee->kind == SAFETY_EXPR_GENERIC)) {
+                callee = callee->lhs;
+            }
+            safety_contextualize_call_nulls(expr, callee);
+            if (safety_resolve_atomic_call(expr, callee)) {
+                /* The GCC atomic value builtins return the pointee type of
+                   their first argument. */
+            } else if (callee != NULL && callee->type.kind == TY_FUNCTION &&
+                callee->type.base != NULL) {
+                expr->type = *callee->type.base;
+            }
+        } else if (expr->kind == SAFETY_EXPR_MEMBER &&
+                   safety_resolve_generic_method_member(expr)) {
+            /* Symbolic Type<T>.method calls use the generic function
+               template signature until a concrete instance is available. */
+        } else if (expr->kind == SAFETY_EXPR_MEMBER && expr->lhs != NULL &&
+                   expr->lhs->type.kind == TY_STRUCT) {
+            struct Type field_type;
+
+            if (struct_field_type(expr->lhs->type.tag, expr->name, &field_type)) {
+                expr->type = field_type;
+            }
+        } else if ((expr->kind == SAFETY_EXPR_INDEX ||
+                    expr->kind == SAFETY_EXPR_FIXED_INDEX) && expr->lhs != NULL &&
+                   type_is_known(expr->lhs->type)) {
+            expr->type = expr->lhs->type;
+            expr->type.is_array = 0;
+            expr->type.array_len = 0;
+            if (expr->type.ptr > 0) expr->type.ptr--;
+            if (expr->type.ptr == 0) expr->type.raw_ptr = 0;
+        } else if (expr->kind == SAFETY_EXPR_GROUP && expr->lhs != NULL) {
+            expr->type = expr->lhs->type;
+        } else if (expr->kind == SAFETY_EXPR_STATEMENT) {
+            struct Type result;
+
+            if (safety_find_statement_result_type(expr->child, &result)) {
+                expr->type = result;
+            }
+        } else if ((expr->kind == SAFETY_EXPR_UPDATE ||
+                    expr->kind == SAFETY_EXPR_UNARY) && expr->lhs != NULL) {
+            expr->type = expr->lhs->type;
+        } else if (expr->kind == SAFETY_EXPR_UNARY_ADDRESS && expr->lhs != NULL) {
+            expr->type = expr->lhs->type;
+            expr->type.ptr++;
+            expr->type.owned = 0;
+        } else if (expr->kind == SAFETY_EXPR_UNARY_DEREF && expr->lhs != NULL &&
+                   expr->lhs->type.ptr > 0) {
+            expr->type = expr->lhs->type;
+            expr->type.ptr--;
+            expr->type.owned = 0;
+            if (expr->type.ptr == 0) expr->type.raw_ptr = 0;
+        } else if (expr->kind == SAFETY_EXPR_BINARY) {
+            if (expr->lhs != NULL && expr->rhs != NULL) {
+                safety_contextualize_null(expr->lhs, expr->rhs->type);
+                safety_contextualize_null(expr->rhs, expr->lhs->type);
+            }
+            if (strcmp(expr->op, "==") == 0 || strcmp(expr->op, "!=") == 0 ||
+                strcmp(expr->op, "<") == 0 || strcmp(expr->op, ">") == 0 ||
+                strcmp(expr->op, "<=") == 0 || strcmp(expr->op, ">=") == 0 ||
+                strcmp(expr->op, "&&") == 0 || strcmp(expr->op, "||") == 0) {
+                expr->type = type_make(TY_INT, 0, NULL);
+            } else if (expr->lhs != NULL && type_is_known(expr->lhs->type)) {
+                expr->type = expr->lhs->type;
+            } else if (expr->rhs != NULL && type_is_known(expr->rhs->type)) {
+                expr->type = expr->rhs->type;
+            }
+        } else if (expr->kind == SAFETY_EXPR_CONDITIONAL && expr->rhs != NULL &&
+                   expr->child != NULL) {
+            safety_contextualize_null(expr->rhs, expr->child->type);
+            safety_contextualize_null(expr->child, expr->rhs->type);
+            expr->type = type_is_known(expr->rhs->type) ?
+                expr->rhs->type : expr->child->type;
+        }
+    }
+    safety_classify_unknown_types(head);
+}
+
+static void ast_final_add_local(const char *name, struct Type type)
+{
+    struct Symbol *symbol;
+
+    if (name == NULL || name[0] == '\0') return;
+    symbol = symbol_find_in(&g_locals, name);
+    if (symbol != NULL) {
+        symbol->type = type;
+        return;
+    }
+    if (g_locals.count >= MAX_SYMBOLS) die("too many final AST local symbols");
+    symbol = &g_locals.sym[g_locals.count++];
+    memset(symbol, 0, sizeof(*symbol));
+    strncpy(symbol->name, name, NAME_MAX_LEN - 1);
+    symbol->name[NAME_MAX_LEN - 1] = '\0';
+    symbol->type = type;
+}
+
+static void ast_final_add_for_head_locals(const char *head)
+{
+    const char *p = head;
+
+    while (p != NULL && *p != '\0') {
+        if (starts_word(p, "for")) {
+            const char *open = skip_ws(p + 3);
+            const char *close = *open == '(' ? matching_paren(open) : NULL;
+            const char *semi = close == NULL ? NULL :
+                find_top_level_char(open + 1, close, ';');
+
+            if (semi != NULL) {
+                char *initializer = xstrndup(open + 1,
+                                             (size_t)(semi - open - 1));
+                struct DeclInfo decl;
+
+                if (parse_decl(initializer, &decl) && decl.is_decl &&
+                    decl.name[0] != '\0') {
+                    ast_final_add_local(decl.name, decl.type);
+                }
+                free(initializer);
+            }
+            p = close == NULL ? p + 3 : close + 1;
+            continue;
+        }
+        p++;
+    }
+}
+
+static void ast_final_resolve_function(struct Node *function)
+{
+    struct Symbols saved_locals = g_locals;
+    struct Type saved_return = g_current_function_ret;
+    char saved_name[NAME_MAX_LEN];
+    struct Node *param;
+    int saved_in_function = g_in_function;
+
+    strncpy(saved_name, g_current_function_name, NAME_MAX_LEN - 1);
+    saved_name[NAME_MAX_LEN - 1] = '\0';
+    g_locals.count = 0;
+    g_in_function = 1;
+    strncpy(g_current_function_name, function->name, NAME_MAX_LEN - 1);
+    g_current_function_name[NAME_MAX_LEN - 1] = '\0';
+    g_current_function_ret = function->ty == NULL ? type_unknown() : *function->ty;
+    for (param = function->params; param != NULL; param = param->next) {
+        if (param->ty != NULL) ast_final_add_local(param->name, *param->ty);
+    }
+    ast_final_resolve_nodes(function->body);
+    g_locals = saved_locals;
+    g_in_function = saved_in_function;
+    g_current_function_ret = saved_return;
+    strncpy(g_current_function_name, saved_name, NAME_MAX_LEN - 1);
+    g_current_function_name[NAME_MAX_LEN - 1] = '\0';
+}
+
+static void ast_final_register_functions(struct Node *node)
+{
+    for (; node != NULL; node = node->next) {
+        if (node->kind == ND_FUNCDEF && node->name[0] != '\0' &&
+            function_params_find(node->name) == NULL) {
+            struct Text *normalized = ast_normalize_function_head(node->tok);
+
+            register_function_params(normalized->text);
+            text_free(normalized);
+            node->params = ast_function_parameters(node->name);
+        }
+        ast_final_register_functions(node->lhs);
+        ast_final_register_functions(node->body);
+    }
+}
+
+static void ast_final_register_macro_constants(struct Node *node)
+{
+    for (; node != NULL; node = node->next) {
+        if ((node->kind == ND_DIRECTIVE || node->kind == ND_PP) &&
+            node->tok != NULL) {
+            const char *p = skip_ws(node->tok);
+
+            if (*p == '#') p = skip_ws(p + 1);
+            if (starts_word(p, "define")) {
+                const char *name_start = skip_ws(p + 6);
+
+                if (is_ident_start((unsigned char)*name_start)) {
+                    char name[NAME_MAX_LEN];
+                    const char *name_end = read_name(name_start, name);
+
+                    /* A '(' immediately after the name denotes a function-like
+                       macro, not a typed constant value. */
+                    if (*name_end != '(') {
+                        const char *value = skip_ws(name_end);
+                        const char *end = node->tok + strlen(node->tok);
+                        struct SafetyExprNode *expr =
+                            safety_parse_range(value, end);
+
+                        if (expr != NULL && type_is_known(expr->type)) {
+                            symbol_add(name, expr->type);
+                        }
+                        safety_expr_free(expr);
+                    }
+                }
+            }
+        }
+        ast_final_register_macro_constants(node->lhs);
+        ast_final_register_macro_constants(node->body);
+    }
+}
+
+static void safety_contextualize_default_symbols(struct SafetyExprNode *expr,
+                                                 struct Type expected)
+{
+    for (; expr != NULL; expr = expr->next) {
+        if (expr->kind == SAFETY_EXPR_IDENTIFIER &&
+            !type_is_known(expr->type)) {
+            expr->type = expected;
+            expr->unknown_reason = SAFETY_UNKNOWN_NONE;
+        }
+        safety_contextualize_default_symbols(expr->lhs, expected);
+        safety_contextualize_default_symbols(expr->rhs, expected);
+        safety_contextualize_default_symbols(expr->child, expected);
+    }
+}
+
+static void ast_final_resolve_nodes(struct Node *node)
+{
+    for (; node != NULL; node = node->next) {
+        if (node->kind == ND_FUNCDEF ||
+            node->kind == ND_GENERIC_FUNCTION_TEMPLATE) {
+            ast_final_resolve_function(node);
+            continue;
+        }
+        if (node->kind == ND_FOR && node->lhs != NULL) {
+            ast_final_resolve_nodes(node->lhs);
+        }
+        if (node->kind == ND_FOR && node->tok != NULL) {
+            ast_final_add_for_head_locals(node->tok);
+        }
+        if (node->kind == ND_FUNCDECL) {
+            struct Node *param;
+
+            for (param = node->params; param != NULL; param = param->next) {
+                safety_final_resolve_expression(param->expr);
+                if (param->expr != NULL && param->ty != NULL) {
+                    safety_contextualize_default_symbols(param->expr,
+                                                         *param->ty);
+                    safety_final_resolve_expression(param->expr);
+                }
+            }
+        }
+        safety_final_resolve_expression(node->expr);
+        safety_final_resolve_expression(node->inc_expr);
+        if (node->expr != NULL && node->kind == ND_DECL && node->ty != NULL) {
+            safety_contextualize_null(node->expr, *node->ty);
+        } else if (node->expr != NULL && node->kind == ND_RETURN &&
+                   type_is_known(g_current_function_ret)) {
+            safety_contextualize_null(node->expr, g_current_function_ret);
+        }
+        if (g_in_function && node->kind == ND_DECL && node->ty != NULL) {
+            ast_final_add_local(node->name, *node->ty);
+        }
+        ast_final_resolve_nodes(node->body);
+    }
+}
+
+static void dump_typed_expression(FILE *out,
+                                  const struct SafetyExprNode *expr,
+                                  int depth,
+                                  const char *role)
+{
+    for (; expr != NULL; expr = expr->next) {
+        const char *lhs_role = "lhs";
+        const char *rhs_role = "rhs";
+        const char *child_role = "child";
+        int i;
+
+        if (expr->kind == SAFETY_EXPR_CALL) {
+            lhs_role = "callee";
+            child_role = "argument";
+        } else if (expr->kind == SAFETY_EXPR_INDEX ||
+                   expr->kind == SAFETY_EXPR_FIXED_INDEX) {
+            lhs_role = "receiver";
+            rhs_role = "index";
+        } else if (expr->kind == SAFETY_EXPR_MEMBER) {
+            lhs_role = "receiver";
+        } else if (expr->kind == SAFETY_EXPR_GROUP) {
+            lhs_role = "inner";
+        } else if (expr->kind == SAFETY_EXPR_UPDATE) {
+            lhs_role = "operand";
+        } else if (expr->kind == SAFETY_EXPR_UNARY ||
+                   expr->kind == SAFETY_EXPR_UNARY_ADDRESS ||
+                   expr->kind == SAFETY_EXPR_UNARY_DEREF ||
+                   expr->kind == SAFETY_EXPR_CAST ||
+                   expr->kind == SAFETY_EXPR_SIZEOF ||
+                   expr->kind == SAFETY_EXPR_ALIGNOF) {
+            lhs_role = "operand";
+        } else if (expr->kind == SAFETY_EXPR_STATEMENT) {
+            child_role = "body-expression";
+        } else if (expr->kind == SAFETY_EXPR_CONDITIONAL) {
+            lhs_role = "condition";
+            rhs_role = "then";
+            child_role = "else";
+        }
+        for (i = 0; i < depth; i++) {
+            fputs("  ", out);
+        }
+        fprintf(out, "%s %s", role, safety_expr_kind_name(expr->kind));
+        if (expr->name[0] != '\0') {
+            fprintf(out, " name=%s", expr->name);
+        }
+        if (expr->generic_arg[0] != '\0') {
+            fprintf(out, " generic=%s", expr->generic_arg);
+        }
+        if (expr->type_name[0] != '\0') {
+            fprintf(out, " target=\"%s\"", expr->type_name);
+        }
+        if (expr->op[0] != '\0') {
+            fprintf(out, " op=%s", expr->op);
+        }
+        if (expr->kind == SAFETY_EXPR_UPDATE) {
+            fprintf(out, " form=%s", expr->postfix ? "postfix" : "prefix");
+        }
+        if (expr->statement_result) {
+            fputs(" result=yes", out);
+        }
+        if (expr->has_constant_integer) {
+            fprintf(out, " value=%ld", expr->integer);
+        }
+        if (type_is_known(expr->type)) {
+            char type_text[NAME_MAX_LEN * 2];
+
+            type_to_string(expr->type, type_text, sizeof(type_text));
+            fprintf(out, " type=%s", type_text);
+        } else {
+            fprintf(out, " type=unknown reason=%s",
+                    safety_unknown_reason_name(expr->unknown_reason));
+        }
+        fputc('\n', out);
+        if (expr->lhs != NULL) {
+            dump_typed_expression(out, expr->lhs, depth + 1, lhs_role);
+        }
+        if (expr->rhs != NULL) {
+            dump_typed_expression(out, expr->rhs, depth + 1, rhs_role);
+        }
+        if (expr->child != NULL) {
+            dump_typed_expression(out, expr->child, depth + 1, child_role);
+        }
+    }
+}
+
+static void dump_typed_ast(FILE *out, const struct Node *node, int depth)
+{
+    for (; node != NULL; node = node->next) {
+        int i;
+
+        for (i = 0; i < depth; i++) {
+            fputs("  ", out);
+        }
+        fputs(ast_kind_name(node->kind), out);
+        if (node->name[0] != '\0') {
+            fprintf(out, " %s", node->name);
+        }
+        if (node->kind == ND_PAYLOAD_VARIANT && node->type_name[0] != '\0') {
+            fprintf(out, " type=%s", node->type_name);
+        }
+        if (node->kind == ND_PAYLOAD_ENUM_TEMPLATE && node->type_name[0] != '\0') {
+            fprintf(out, " parameter=%s", node->type_name);
+        }
+        if (node->kind == ND_BITFLAGSDEF && node->type_name[0] != '\0') {
+            fprintf(out, " base=%s", node->type_name);
+        }
+        if (node->kind == ND_LIFETIME) {
+            fprintf(out, " owner=%s storage=%s state=%s",
+                    node->type_name,
+                    node->caller_owner ? "caller" :
+                        (node->stack_owner ? "stack" : "owned"),
+                    node->dead ? "dead" : "live");
+            if (node->runtime_checked) {
+                fputs(" runtime-check=yes", out);
+            }
+        }
+        if (node->kind == ND_MOVE_TRANSFER) {
+            fprintf(out, " source=%s", node->type_name);
+        }
+        if (node->kind == ND_ARRAY_DIMENSION) {
+            if (node->array_len > 0) {
+                fprintf(out, " length=%d", node->array_len);
+            } else {
+                fputs(" length=unknown", out);
+            }
+        }
+        if (node->kind == ND_ENUM_MEMBER && node->has_enum_value) {
+            fprintf(out, " value=%ld", node->enum_value);
+        }
+        if ((node->kind == ND_PARAM || node->kind == ND_RETURN_TYPE ||
+             node->kind == ND_TYPEDEF ||
+             node->kind == ND_TYPE_PARAM || node->kind == ND_TYPE ||
+             node->kind == ND_TYPE_ARGUMENT || node->kind == ND_ENUM_MEMBER) &&
+            node->ty != NULL) {
+            char type_text[NAME_MAX_LEN * 2];
+
+            type_to_string(*node->ty, type_text, sizeof(type_text));
+            fprintf(out, " type=%s", type_text);
+            if (node->kind == ND_TYPE_ARGUMENT && node->type_name[0] != '\0' &&
+                strcmp(node->type_name, type_text) != 0) {
+                fprintf(out, " source=\"%s\"", node->type_name);
+            }
+            if (node->ty->applied_name[0] != '\0') {
+                fprintf(out, " application=%s", node->ty->applied_name);
+            }
+        }
+        if (node->kind == ND_PARAM && node->expr != NULL) {
+            fprintf(out, " default=%s", safety_expr_kind_name(node->expr->kind));
+        } else if (node->expr != NULL) {
+            fprintf(out, " expression=%s", safety_expr_kind_name(node->expr->kind));
+        }
+        if (node->lhs != NULL && node->kind == ND_FOR) {
+            fprintf(out, " initializer=%s", ast_kind_name(node->lhs->kind));
+        }
+        if (node->inc_expr != NULL) {
+            fprintf(out, " increment=%s", safety_expr_kind_name(node->inc_expr->kind));
+        }
+        fputc('\n', out);
+        if (node->type_node != NULL) {
+            dump_typed_ast(out, node->type_node, depth + 1);
+        }
+        if (node->type_args != NULL) {
+            dump_typed_ast(out, node->type_args, depth + 1);
+        }
+        if (node->dimensions != NULL) {
+            dump_typed_ast(out, node->dimensions, depth + 1);
+        }
+        if (node->ownership != NULL) {
+            dump_typed_ast(out, node->ownership, depth + 1);
+        }
+        if (node->lifetime != NULL) {
+            dump_typed_ast(out, node->lifetime, depth + 1);
+        }
+        if (node->move_transfer != NULL) {
+            dump_typed_ast(out, node->move_transfer, depth + 1);
+        }
+        if (node->expr != NULL) {
+            dump_typed_expression(out, node->expr, depth + 1, "expr");
+        }
+        if (node->inc_expr != NULL) {
+            dump_typed_expression(out, node->inc_expr, depth + 1, "increment-expr");
+        }
+        if (node->type_params != NULL) {
+            dump_typed_ast(out, node->type_params, depth + 1);
+        }
+        if (node->return_type != NULL) {
+            dump_typed_ast(out, node->return_type, depth + 1);
+        }
+        if (node->params != NULL) {
+            dump_typed_ast(out, node->params, depth + 1);
+        }
+        if (node->body != NULL) {
+            dump_typed_ast(out, node->body, depth + 1);
+        }
+        if (node->kind == ND_RETURN && node->lhs != NULL) {
+            dump_typed_ast(out, node->lhs, depth + 1);
+        }
+    }
+}
+
+static void emit_generated_text(FILE *out, enum NodeKind kind,
+                                const char *name, struct Text *text)
+{
+    emit_generated_text_ast(out, kind, name, text, NULL);
+}
+
+static void emit_generated_text_ast(FILE *out, enum NodeKind kind,
+                                    const char *name, struct Text *text,
+                                    struct Node *body)
+{
+    struct Node *node;
+
+    if (text == NULL || text->len == 0) {
+        text_free(text);
+        return;
+    }
+    node = ast_new(kind, text->text);
+    if (name != NULL) {
+        strncpy(node->name, name, NAME_MAX_LEN - 1);
+        node->name[NAME_MAX_LEN - 1] = '\0';
+    }
+    node->body = body;
+    g_generated_artifacts = ast_append(g_generated_artifacts, node);
+    fputs(node->tok, out);
+    text_free(text);
+}
+
+static void emit_ast_output(FILE *out, const struct Node *node)
+{
+    struct Text *rendered = text_new();
+
+    ast_emit_node(rendered, node);
+    fputs(rendered->text, out);
+    text_free(rendered);
+}
+
+static struct Text *read_generated_stream(FILE *stream)
+{
+    struct Text *text = text_new();
+    char buffer[4096];
+    size_t count;
+
+    if (fflush(stream) != 0 || fseek(stream, 0, SEEK_SET) != 0) {
+        die("cannot rewind generated output stream");
+    }
+    while ((count = fread(buffer, 1, sizeof(buffer), stream)) > 0) {
+        text_add_n(text, buffer, count);
+    }
+    if (ferror(stream)) {
+        die("cannot read generated output stream");
+    }
+    return text;
+}
+
+static const struct SafetyExprNode *safety_strip_groups(const struct SafetyExprNode *node)
+{
+    while (node != NULL && node->kind == SAFETY_EXPR_GROUP) {
+        node = node->lhs;
+    }
+    return node;
+}
+
+static int safety_ast_plain_identifier(const char *start, const char *end, char *name)
+{
+    struct SafetyExprNode *tree = safety_parse_range(start, end);
+    const struct SafetyExprNode *node = safety_strip_groups(tree);
+    int result = node != NULL && node->kind == SAFETY_EXPR_IDENTIFIER;
+
+    name[0] = '\0';
+    if (result) {
+        strncpy(name, node->name, NAME_MAX_LEN - 1);
+        name[NAME_MAX_LEN - 1] = '\0';
+    }
+    safety_expr_free(tree);
+    return result;
+}
+
+static int safety_ast_move_identifier(const char *start, const char *end, char *name)
+{
+    char *text = xstrndup(start, (size_t)(end - start));
+    struct SafetyExprNode *tree = safety_parse_forest(text);
+    const struct SafetyExprNode *found = NULL;
+    const struct SafetyExprNode *stack[256];
+    int count = 0;
+    int result = 0;
+
+    name[0] = '\0';
+    if (tree != NULL) {
+        stack[count++] = tree;
+    }
+    while (count > 0 && found == NULL) {
+        const struct SafetyExprNode *node = stack[--count];
+        for (; node != NULL && found == NULL; node = node->next) {
+            const struct SafetyExprNode *value;
+            if (node->kind == SAFETY_EXPR_MOVE) {
+                value = safety_strip_groups(node->lhs);
+                if (value != NULL && value->kind == SAFETY_EXPR_IDENTIFIER) {
+                    found = value;
+                    break;
+                }
+            }
+            if (count + 3 < (int)(sizeof(stack) / sizeof(stack[0]))) {
+                if (node->lhs != NULL) stack[count++] = node->lhs;
+                if (node->rhs != NULL) stack[count++] = node->rhs;
+                if (node->child != NULL) stack[count++] = node->child;
+            }
+        }
+    }
+    if (found != NULL) {
+        strncpy(name, found->name, NAME_MAX_LEN - 1);
+        name[NAME_MAX_LEN - 1] = '\0';
+        result = 1;
+    }
+    safety_expr_free(tree);
+    free(text);
+    return result;
+}
+
+static int safety_ast_borrow_root(const char *start, const char *end, char *owner)
+{
+    struct SafetyExprNode *tree = safety_parse_range(start, end);
+    const struct SafetyExprNode *node = safety_strip_groups(tree);
+    int result = 0;
+
+    owner[0] = '\0';
+    if (node != NULL && node->kind == SAFETY_EXPR_UNARY_ADDRESS) {
+        node = safety_strip_groups(node->lhs);
+    }
+    while (node != NULL && node->kind == SAFETY_EXPR_MEMBER) {
+        node = safety_strip_groups(node->lhs);
+    }
+    if (node != NULL && node->kind == SAFETY_EXPR_IDENTIFIER) {
+        strncpy(owner, node->name, NAME_MAX_LEN - 1);
+        owner[NAME_MAX_LEN - 1] = '\0';
+        result = 1;
+    }
+    safety_expr_free(tree);
+    return result;
+}
+
+static struct Type safety_ast_expr_type(const char *expr)
+{
+    struct SafetyExprNode *tree = safety_parse_range(expr, expr + strlen(expr));
+    const struct SafetyExprNode *root = safety_strip_groups(tree);
+    struct Type type;
+
+    if (root != NULL && type_is_known(root->type)) {
+        type = root->type;
+        safety_expr_free(tree);
+        return type;
+    }
+    safety_expr_free(tree);
+    return expr_type(expr);
+}
+
+static const struct SafetyExprNode *safety_unwrap_group(const struct SafetyExprNode *node)
+{
+    while (node != NULL && node->kind == SAFETY_EXPR_GROUP) {
+        node = node->lhs;
+    }
+    while (node != NULL && node->kind == SAFETY_EXPR_BINARY && strcmp(node->op, ",") == 0) {
+        node = safety_unwrap_group(node->rhs);
+    }
+    return node;
+}
+
+static int safety_callee_name(const struct SafetyExprNode *call, char name[NAME_MAX_LEN])
+{
+    const struct SafetyExprNode *callee;
+    if (call == NULL || call->kind != SAFETY_EXPR_CALL) {
+        return 0;
+    }
+    callee = safety_unwrap_group(call->lhs);
+    while (callee != NULL && callee->kind == SAFETY_EXPR_GENERIC) {
+        callee = safety_unwrap_group(callee->lhs);
+    }
+    if (callee == NULL || callee->kind != SAFETY_EXPR_IDENTIFIER) {
+        return 0;
+    }
+    strncpy(name, callee->name, NAME_MAX_LEN - 1);
+    name[NAME_MAX_LEN - 1] = '\0';
+    return 1;
+}
+
+typedef void (*SafetyExprVisitor)(const struct SafetyExprNode *node,
+                                  const struct SafetyExprNode *parent,
+                                  void *context);
+
+static void safety_expr_walk(const struct SafetyExprNode *node,
+                             const struct SafetyExprNode *parent,
+                             SafetyExprVisitor visitor,
+                             void *context)
+{
+    for (; node != NULL; node = node->next) {
+        visitor(node, parent, context);
+        safety_expr_walk(node->lhs, node, visitor, context);
+        safety_expr_walk(node->rhs, node, visitor, context);
+        safety_expr_walk(node->child, node, visitor, context);
+    }
+}
+
+static int safety_call_method_parts(const struct SafetyExprNode *call,
+                                    char receiver[NAME_MAX_LEN],
+                                    char method[NAME_MAX_LEN],
+                                    char generic_arg[NAME_MAX_LEN])
+{
+    const struct SafetyExprNode *callee;
+    const struct SafetyExprNode *base;
+
+    receiver[0] = '\0';
+    method[0] = '\0';
+    generic_arg[0] = '\0';
+    if (call == NULL || call->kind != SAFETY_EXPR_CALL) {
+        return 0;
+    }
+    callee = safety_unwrap_group(call->lhs);
+    if (callee == NULL || callee->kind != SAFETY_EXPR_MEMBER) {
+        return 0;
+    }
+    strncpy(method, callee->name, NAME_MAX_LEN - 1);
+    method[NAME_MAX_LEN - 1] = '\0';
+    base = safety_unwrap_group(callee->lhs);
+    if (base != NULL && base->kind == SAFETY_EXPR_GENERIC) {
+        strncpy(generic_arg, base->generic_arg, NAME_MAX_LEN - 1);
+        generic_arg[NAME_MAX_LEN - 1] = '\0';
+        base = safety_unwrap_group(base->lhs);
+    }
+    if (base == NULL || base->kind != SAFETY_EXPR_IDENTIFIER) {
+        return 0;
+    }
+    strncpy(receiver, base->name, NAME_MAX_LEN - 1);
+    receiver[NAME_MAX_LEN - 1] = '\0';
+    return 1;
+}
+
+static int safety_node_borrow_root(const struct SafetyExprNode *node,
+                                   char owner[NAME_MAX_LEN])
+{
+    node = safety_strip_groups(node);
+    if (node != NULL && node->kind == SAFETY_EXPR_UNARY_ADDRESS) {
+        node = safety_strip_groups(node->lhs);
+    }
+    while (node != NULL && node->kind == SAFETY_EXPR_MEMBER) {
+        node = safety_strip_groups(node->lhs);
+    }
+    if (node == NULL || node->kind != SAFETY_EXPR_IDENTIFIER) {
+        return 0;
+    }
+    strncpy(owner, node->name, NAME_MAX_LEN - 1);
+    owner[NAME_MAX_LEN - 1] = '\0';
+    return 1;
+}
+
+struct SafetyReferenceBorrowContext {
+    char owner[NAME_MAX_LEN];
+    int found;
+};
+
+static void find_reference_borrow_node(const struct SafetyExprNode *node,
+                                       const struct SafetyExprNode *parent,
+                                       void *opaque)
+{
+    struct SafetyReferenceBorrowContext *context = opaque;
+    char call_name[NAME_MAX_LEN];
+    char receiver[NAME_MAX_LEN];
+    char method[NAME_MAX_LEN];
+    char generic_arg[NAME_MAX_LEN];
+    int constructor = 0;
+    (void)parent;
+
+    if (context->found || node->kind != SAFETY_EXPR_CALL || node->child == NULL) {
+        return;
+    }
+    if (safety_callee_name(node, call_name)) {
+        constructor = strncmp(call_name, "Ref_from_", 9) == 0 ||
+            strncmp(call_name, "Span_from_", 10) == 0 ||
+            strncmp(call_name, "Span_from_bytes_", 16) == 0 ||
+            strncmp(call_name, "Span_map_from_", 14) == 0 ||
+            strncmp(call_name, "RingBuffer_from_", 16) == 0 ||
+            strncmp(call_name, "RingBuffer_from_bytes_", 22) == 0 ||
+            strcmp(call_name, "Bitmap_from") == 0 ||
+            strcmp(call_name, "Bitmap_from_words") == 0 ||
+            strcmp(call_name, "Bitmap_from_bytes") == 0;
+    } else if (safety_call_method_parts(node, receiver, method, generic_arg)) {
+        constructor = (strcmp(receiver, "Ref") == 0 && strcmp(method, "from") == 0) ||
+            (strcmp(receiver, "Span") == 0 &&
+             (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0 ||
+              strcmp(method, "map_from") == 0)) ||
+            (strcmp(receiver, "RingBuffer") == 0 &&
+             (strcmp(method, "from") == 0 || strcmp(method, "from_bytes") == 0));
+    }
+    if (constructor && safety_node_borrow_root(node->child, context->owner)) {
+        context->found = 1;
+    }
+}
+
+static int safety_ast_reference_borrow_owner(const char *expr, char *owner)
+{
+    struct SafetyExprNode *forest = safety_parse_forest(expr);
+    struct SafetyReferenceBorrowContext context;
+
+    memset(&context, 0, sizeof(context));
+    safety_expr_walk(forest, NULL, find_reference_borrow_node, &context);
+    owner[0] = '\0';
+    if (context.found) {
+        strncpy(owner, context.owner, NAME_MAX_LEN - 1);
+        owner[NAME_MAX_LEN - 1] = '\0';
+    }
+    safety_expr_free(forest);
+    return context.found;
+}
+
+static int is_checked_array_constructor(const char *name)
+{
+    return strncmp(name, "Span_from_", 10) == 0 ||
+        strncmp(name, "Span_from_bytes_", 16) == 0 ||
+        strncmp(name, "Span_map_from_", 14) == 0 ||
+        strncmp(name, "FixedVec_from_", 14) == 0 ||
+        strncmp(name, "FixedVec_from_bytes_", 20) == 0 ||
+        strncmp(name, "RingBuffer_from_", 16) == 0 ||
+        strncmp(name, "RingBuffer_from_bytes_", 22) == 0 ||
+        strcmp(name, "Bitmap_from") == 0 ||
+        strcmp(name, "Bitmap_from_words") == 0 ||
+        strcmp(name, "Bitmap_from_bytes") == 0;
+}
+
+static int fixed_array_use_is_checked_context(const char *stmt, const char *expr)
+{
+    const char *before = skip_safe_trivia_backward(stmt, expr);
+    const char *name_end;
+    const char *name_start;
+    char name[NAME_MAX_LEN];
+
+    if (before == stmt || before[-1] != '(') {
+        const char *call = stmt;
+
+        while (*call != '\0') {
+            if (is_ident_start((unsigned char)*call)) {
+                char call_name[NAME_MAX_LEN];
+                const char *name_end = read_name(call, call_name);
+
+                if (is_bounded_array_output_call(call_name)) {
+                    const char *open = skip_ws(name_end);
+                    const char *close = *open == '(' ? matching_paren(open) : NULL;
+                    const char *arg1_end = close == NULL ? NULL : find_top_level_char(open + 1, close, ',');
+                    const char *arg2_start = arg1_end == NULL ? NULL : skip_ws(arg1_end + 1);
+
+                    if (arg2_start == expr) {
+                        return 1;
+                    }
+                }
+                call = name_end;
+            } else {
+                call++;
+            }
+        }
+        return 0;
+    }
+    before = skip_safe_trivia_backward(stmt, before - 1);
+    name_end = before;
+    while (before > stmt && is_ident((unsigned char)before[-1])) {
+        before--;
+    }
+    name_start = before;
+    if (name_start == name_end || (size_t)(name_end - name_start) >= sizeof(name)) {
+        return 0;
+    }
+    memcpy(name, name_start, (size_t)(name_end - name_start));
+    name[name_end - name_start] = '\0';
+    return strcmp(name, "sizeof") == 0 || strcmp(name, "_Alignof") == 0 ||
+        strcmp(name, "__alignof__") == 0 ||
+        strcmp(name, "addr_of") == 0 ||
+        strcmp(name, "cminus_stack_note_caller_range") == 0 ||
+        is_checked_array_constructor(name);
+}
+
+static void validate_fixed_array_index_node(struct SafetyExprNode *node)
+{
+    if (!node->has_constant_integer) {
+        fprintf(stderr, "c-: type error: variable index into fixed array '%s' is not allowed in safe mode at %s:%d; create a Span with Span<T>.from(%s) and index the Span\n",
+                node->name, g_input_path == NULL ? "<unknown>" : g_input_path,
+                yylineno, node->name);
+        exit(1);
+    }
+    if (node->integer < 0 || node->integer >= node->type.array_len) {
+        fprintf(stderr, "c-: type error: array index %ld is out of range for '%s' length %d at %s:%d\n",
+                node->integer, node->name, node->type.array_len,
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+}
+
+struct SafetyArrayValidationContext {
+    const char *stmt;
+    struct DeclInfo decl;
+    int is_array_decl;
+    const char *initializer;
+};
+
+static void validate_safe_array_ast_node(const struct SafetyExprNode *node,
+                                         const struct SafetyExprNode *parent,
+                                         void *opaque)
+{
+    struct SafetyArrayValidationContext *context = opaque;
+    const struct SafetyExprNode *receiver;
+    struct Type array_type;
+    struct SafetyExprNode checked;
+    char array_label[NAME_MAX_LEN];
+    long index = 0;
+
+    if (node->kind != SAFETY_EXPR_INDEX || node->lhs == NULL || node->rhs == NULL) {
+        return;
+    }
+    receiver = safety_unwrap_group(node->lhs);
+    if (context->is_array_decl &&
+        (context->initializer == NULL || node->start < context->initializer) &&
+        node->lhs->kind == SAFETY_EXPR_IDENTIFIER &&
+        strcmp(node->lhs->name, context->decl.name) == 0) {
+        return;
+    }
+    {
+        const struct SafetyExprNode *syntactic_receiver = node->lhs;
+        const struct SafetyExprNode *comma_value;
+        while (syntactic_receiver != NULL && syntactic_receiver->kind == SAFETY_EXPR_GROUP) {
+            syntactic_receiver = syntactic_receiver->lhs;
+        }
+        if (syntactic_receiver != NULL && syntactic_receiver->kind == SAFETY_EXPR_BINARY &&
+            strcmp(syntactic_receiver->op, ",") == 0) {
+            comma_value = safety_unwrap_group(syntactic_receiver->rhs);
+            if (comma_value != NULL && comma_value->type.is_array) {
+                size_t label_len = (size_t)(comma_value->end - comma_value->start);
+                if (label_len >= sizeof(array_label)) {
+                    label_len = sizeof(array_label) - 1;
+                }
+                memcpy(array_label, comma_value->start, label_len);
+                array_label[label_len] = '\0';
+                fprintf(stderr, "c-: type error: fixed array '%s' cannot decay to a raw pointer in safe mode at %s:%d; create a Span with Span<T>.from(%s)\n",
+                        array_label, g_input_path == NULL ? "<unknown>" : g_input_path,
+                        yylineno, array_label);
+                exit(1);
+            }
+        }
+    }
+    if (receiver == NULL) {
+        return;
+    }
+    array_type = receiver->type;
+    if (!array_type.is_array || array_type.array_len <= 0) {
+        if (!parse_array_expr_arg(receiver->start, receiver->end,
+                                  array_label, &array_type, NULL)) {
+            return;
+        }
+    } else {
+        size_t label_len = (size_t)(receiver->end - receiver->start);
+        if (label_len >= sizeof(array_label)) {
+            label_len = sizeof(array_label) - 1;
+        }
+        memcpy(array_label, receiver->start, label_len);
+        array_label[label_len] = '\0';
+    }
+    if (parent != NULL && parent->kind == SAFETY_EXPR_UNARY_ADDRESS &&
+        parent->lhs == node) {
+        fprintf(stderr, "c-: type error: taking the raw address of fixed array '%s' element is only allowed inside unsafe at %s:%d; use Span or Ref on a standalone value\n",
+                array_label, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    memset(&checked, 0, sizeof(checked));
+    checked.kind = SAFETY_EXPR_FIXED_INDEX;
+    checked.type = array_type;
+    strncpy(checked.name, array_label, NAME_MAX_LEN - 1);
+    checked.name[NAME_MAX_LEN - 1] = '\0';
+    checked.has_constant_integer = parse_int_literal_arg(node->rhs->start,
+                                                          node->rhs->end,
+                                                          &index);
+    checked.integer = index;
+    validate_fixed_array_index_node(&checked);
+}
+
 static void check_safe_array_index_access(const char *stmt)
 {
     const char *p = stmt;
     struct DeclInfo decl;
+    int is_array_decl;
+    struct SafetyExprNode *forest;
+    struct SafetyArrayValidationContext context;
 
     if (g_unsafe_depth > 0) {
         return;
     }
-    if (parse_decl(stmt, &decl) && decl.is_decl && decl.is_array) {
-        return;
-    }
+    memset(&decl, 0, sizeof(decl));
+    is_array_decl = parse_decl(stmt, &decl) && decl.is_decl && decl.is_array;
+    memset(&context, 0, sizeof(context));
+    context.stmt = stmt;
+    context.decl = decl;
+    context.is_array_decl = is_array_decl;
+    context.initializer = strchr(stmt, '=');
+    forest = safety_parse_forest(stmt);
+    safety_expr_walk(forest, NULL, validate_safe_array_ast_node, &context);
+    safety_expr_free(forest);
     while (*p != '\0') {
         char name[NAME_MAX_LEN];
         const char *name_end;
@@ -5547,7 +9844,6 @@ static void check_safe_array_index_access(const char *stmt)
         const char *close;
         struct Type array_type;
         char array_label[NAME_MAX_LEN];
-        long index;
         int grouping_parens;
 
         if (*p == '"' || *p == '\'') {
@@ -5568,6 +9864,10 @@ static void check_safe_array_index_access(const char *stmt)
             continue;
         }
         name_end = read_name(p, name);
+        if (is_array_decl && strcmp(name, decl.name) == 0) {
+            p = name_end;
+            continue;
+        }
         scan = name_end;
         while (1) {
             const char *dot = skip_ws(scan);
@@ -5585,13 +9885,19 @@ static void check_safe_array_index_access(const char *stmt)
             break;
         }
         array_end = scan;
-        open = skip_ws(scan);
+        open = skip_safe_deref_trivia(scan);
         grouping_parens = direct_grouping_parens_before(stmt, p);
         while (grouping_parens > 0 && *open == ')') {
-            open = skip_ws(open + 1);
+            open = skip_safe_deref_trivia(open + 1);
             grouping_parens--;
         }
         if (*open != '[') {
+            if (parse_array_expr_arg(p, array_end, array_label, &array_type, NULL) &&
+                !fixed_array_use_is_checked_context(stmt, p)) {
+                fprintf(stderr, "c-: type error: fixed array '%s' cannot decay to a raw pointer in safe mode at %s:%d; create a Span with Span<T>.from(%s)\n",
+                        array_label, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno, array_label);
+                exit(1);
+            }
             p = name_end;
             continue;
         }
@@ -5613,18 +9919,6 @@ static void check_safe_array_index_access(const char *stmt)
         if (*close != ']') {
             return;
         }
-        if (parse_array_expr_arg(p, array_end, array_label, &array_type, NULL)) {
-            if (!parse_int_literal_arg(open + 1, close, &index)) {
-                fprintf(stderr, "c-: type error: variable index into fixed array '%s' is not allowed in safe mode at %s:%d; create a Span with Span<T>.from(%s) and index the Span\n",
-                        array_label, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno, array_label);
-                exit(1);
-            }
-            if (index < 0 || index >= array_type.array_len) {
-                fprintf(stderr, "c-: type error: array index %ld is out of range for '%s' length %d at %s:%d\n",
-                        index, array_label, array_type.array_len, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
-                exit(1);
-            }
-        }
         p = close + 1;
     }
 }
@@ -5638,54 +9932,41 @@ static int is_raw_heap_builtin(const char *name)
         strcmp(name, "strdup") == 0;
 }
 
+static void validate_safe_heap_call_node(const struct SafetyExprNode *node,
+                                         const struct SafetyExprNode *parent,
+                                         void *context)
+{
+    char name[NAME_MAX_LEN];
+    int func_index;
+    (void)parent;
+    (void)context;
+
+    if (!safety_callee_name(node, name)) {
+        return;
+    }
+    if (is_raw_heap_builtin(name)) {
+        fprintf(stderr, "c-: type error: raw heap function '%s' is only allowed inside unsafe; use managed new/clone/s\"\" in safe mode at %s:%d\n",
+                name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    func_index = malloc_func_index(name);
+    if (func_index >= 0 && g_malloc_funcs.is_alloc_attr[func_index]) {
+        fprintf(stderr, "c-: type error: alloc-attributed function '%s' is only allowed inside unsafe; use managed new/clone/s\"\" in safe mode at %s:%d\n",
+                name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+}
+
 static void check_safe_heap_calls(const char *stmt)
 {
-    const char *p = stmt;
+    struct SafetyExprNode *forest;
 
     if (g_unsafe_depth > 0) {
         return;
     }
-    while (*p != '\0') {
-        char name[NAME_MAX_LEN];
-        const char *name_end;
-        const char *open;
-
-        if (*p == '"' || *p == '\'') {
-            char quote = *p++;
-            while (*p != '\0') {
-                if (*p == '\\' && p[1] != '\0') {
-                    p += 2;
-                    continue;
-                }
-                if (*p++ == quote) {
-                    break;
-                }
-            }
-            continue;
-        }
-        if (!is_ident_start((unsigned char)*p)) {
-            p++;
-            continue;
-        }
-        name_end = read_name(p, name);
-        open = skip_ws(name_end);
-        if (*open == '(' && !token_is_control_keyword(name)) {
-            int func_index;
-
-            if (is_raw_heap_builtin(name)) {
-                fprintf(stderr, "c-: type error: raw heap function '%s' is only allowed inside unsafe; use managed new/clone/s\"\" in safe mode at %s:%d\n",
-                        name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
-                exit(1);
-            }
-            func_index = malloc_func_index(name);
-            if (func_index >= 0 && g_malloc_funcs.is_alloc_attr[func_index]) {
-                fprintf(stderr, "c-: type error: alloc-attributed function '%s' is only allowed inside unsafe; use managed new/clone/s\"\" in safe mode at %s:%d\n",
-                        name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
-                exit(1);
-            }
-        }
-        p = name_end;
-    }
+    forest = safety_parse_forest(stmt);
+    safety_expr_walk(forest, NULL, validate_safe_heap_call_node, NULL);
+    safety_expr_free(forest);
 }
 
 static int interrupt_params_are_void_or_empty(const char *s)
@@ -6017,56 +10298,45 @@ static int is_safe_banned_register_function(const char *name)
            strncmp(name, "Volatile_from_addr_", 19) == 0;
 }
 
+static void validate_safe_c_call_node(const struct SafetyExprNode *node,
+                                      const struct SafetyExprNode *parent,
+                                      void *context)
+{
+    char name[NAME_MAX_LEN];
+    (void)parent;
+    (void)context;
+
+    if (node->kind == SAFETY_EXPR_IDENTIFIER &&
+        (strcmp(node->name, "__asm__") == 0 || strcmp(node->name, "asm") == 0)) {
+        fprintf(stderr, "c-: type error: inline assembly can only be used inside unsafe at %s:%d\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    if (!safety_callee_name(node, name)) {
+        return;
+    }
+    if (is_safe_banned_c_function(name)) {
+        fprintf(stderr, "c-: type error: C function '%s' can only be called inside unsafe; use a C- safe wrapper such as string methods or xfopen at %s:%d\n",
+                name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+    if (is_safe_banned_register_function(name)) {
+        fprintf(stderr, "c-: type error: from_addr can only be called inside unsafe at %s:%d; wrap raw address creation in unsafe and expose a safe Register or Volatile value\n",
+                g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+        exit(1);
+    }
+}
+
 static void check_safe_c_function_calls(const char *stmt)
 {
-    const char *p = stmt;
+    struct SafetyExprNode *forest;
 
     if (g_unsafe_depth > 0) {
         return;
     }
-    while (*p != '\0') {
-        char name[NAME_MAX_LEN];
-        const char *name_end;
-        const char *open;
-
-        if (*p == '"' || *p == '\'') {
-            char quote = *p++;
-            while (*p != '\0') {
-                if (*p == '\\' && p[1] != '\0') {
-                    p += 2;
-                    continue;
-                }
-                if (*p++ == quote) {
-                    break;
-                }
-            }
-            continue;
-        }
-        if (!is_ident_start((unsigned char)*p)) {
-            p++;
-            continue;
-        }
-        name_end = read_name(p, name);
-        if (strcmp(name, "__asm__") == 0 || strcmp(name, "asm") == 0) {
-            fprintf(stderr, "c-: type error: inline assembly can only be used inside unsafe at %s:%d\n",
-                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
-            exit(1);
-        }
-        open = skip_ws(name_end);
-        if (*open == '(') {
-            if (is_safe_banned_c_function(name)) {
-                fprintf(stderr, "c-: type error: C function '%s' can only be called inside unsafe; use a C- safe wrapper such as string methods or xfopen at %s:%d\n",
-                        name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
-                exit(1);
-            }
-            if (is_safe_banned_register_function(name)) {
-                fprintf(stderr, "c-: type error: from_addr can only be called inside unsafe at %s:%d; wrap raw address creation in unsafe and expose a safe Register or Volatile value\n",
-                        g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
-                exit(1);
-            }
-        }
-        p = name_end;
-    }
+    forest = safety_parse_forest(stmt);
+    safety_expr_walk(forest, NULL, validate_safe_c_call_node, NULL);
+    safety_expr_free(forest);
 }
 
 static int expr_starts_with_address_of(const char *expr)
@@ -6086,47 +10356,33 @@ static int expr_is_managed_constructor(const char *expr)
         text_has_s_string(p);
 }
 
-static int expr_contains_raw_pointer_symbol(const char *start, const char *end)
+struct SafetyRawPointerContext {
+    int found;
+};
+
+static void find_raw_pointer_symbol_node(const struct SafetyExprNode *node,
+                                         const struct SafetyExprNode *parent,
+                                         void *opaque)
 {
-    const char *p = start;
+    struct SafetyRawPointerContext *context = opaque;
+    struct Symbol *sym;
+    (void)parent;
 
-    while (p < end && *p != '\0') {
-        char name[NAME_MAX_LEN];
-        const char *name_end;
-        struct Symbol *sym;
-
-        if (*p == '"' || *p == '\'') {
-            char quote = *p++;
-            while (p < end && *p != '\0') {
-                if (*p == '\\' && p + 1 < end) {
-                    p += 2;
-                    continue;
-                }
-                if (*p++ == quote) {
-                    break;
-                }
-            }
-            continue;
-        }
-        if (!is_ident_start((unsigned char)*p)) {
-            p++;
-            continue;
-        }
-        name_end = read_name(p, name);
-        sym = symbol_find_or_current_param(name);
-        if (sym != NULL && sym->type.raw_ptr) {
-            return 1;
-        }
-        p = name_end;
+    if (context->found || node->kind != SAFETY_EXPR_IDENTIFIER) {
+        return;
     }
-    return 0;
+    sym = symbol_find_or_current_param(node->name);
+    if (sym != NULL && sym->type.raw_ptr) {
+        context->found = 1;
+    }
 }
 
 static int expr_is_raw_pointer_input(const char *start, const char *end)
 {
-    char *expr;
-    struct Type type;
-    int raw = 0;
+    struct SafetyExprNode *tree;
+    const struct SafetyExprNode *root;
+    struct SafetyRawPointerContext context;
+    int raw;
 
     while (start < end && isspace((unsigned char)*start)) {
         start++;
@@ -6137,18 +10393,22 @@ static int expr_is_raw_pointer_input(const char *start, const char *end)
     if (start >= end || expr_starts_with_address_of(start) || expr_is_managed_constructor(start)) {
         return 0;
     }
-    expr = xstrndup(start, (size_t)(end - start));
-    type = expr_type(expr);
-    free(expr);
-    if (type.raw_ptr) {
-        raw = 1;
+    tree = safety_parse_range(start, end);
+    if (tree == NULL) {
+        return 0;
     }
-    if (!raw && expr_contains_raw_pointer_symbol(start, end)) {
-        raw = 1;
+    root = safety_strip_groups(tree);
+    if (root != NULL && root->kind == SAFETY_EXPR_UNARY_ADDRESS) {
+        safety_expr_free(tree);
+        return 0;
     }
-    if (type.array_len > 0) {
+    memset(&context, 0, sizeof(context));
+    safety_expr_walk(tree, NULL, find_raw_pointer_symbol_node, &context);
+    raw = (root != NULL && root->type.raw_ptr) || context.found;
+    if (root != NULL && root->type.is_array) {
         raw = 0;
     }
+    safety_expr_free(tree);
     return raw;
 }
 
@@ -6445,30 +10705,78 @@ static int decl_has_borrow(const char *s)
     return result;
 }
 
+static void pending_semantics_clear(void)
+{
+    memset(&g_pending_semantics, 0, sizeof(g_pending_semantics));
+}
+
+static void pending_semantics_capture_statement(const char *statement)
+{
+    struct DeclInfo decl;
+    int eq;
+    char owner[NAME_MAX_LEN];
+    char move_source[NAME_MAX_LEN];
+
+    pending_semantics_clear();
+    owner[0] = '\0';
+    move_source[0] = '\0';
+    eq = find_assignment(statement);
+    if (parse_decl(statement, &decl) && decl.is_decl &&
+        decl.name[0] != '\0' && !decl.is_function) {
+        g_pending_semantics.active = 1;
+        g_pending_semantics.owned = decl.type.owned;
+        g_pending_semantics.borrowed = decl_has_borrow(statement);
+        strcpy(g_pending_semantics.target, decl.name);
+        if (decl.has_init && decl.init != NULL) {
+            if (extract_move_name(decl.init, move_source)) {
+                strcpy(g_pending_semantics.move_source, move_source);
+                g_pending_semantics.owned = 1;
+            }
+            if ((g_pending_semantics.borrowed &&
+                 extract_direct_borrow_owner(decl.init, owner)) ||
+                extract_safe_reference_borrow_owner(decl.init, owner)) {
+                strcpy(g_pending_semantics.owner, owner);
+                g_pending_semantics.borrowed = 1;
+                g_pending_semantics.stack_owner = owner_is_local_stack(owner);
+            }
+        }
+        return;
+    }
+    if (eq >= 0 && extract_move_name(statement + eq + 1, move_source)) {
+        char target[NAME_MAX_LEN];
+
+        target[0] = '\0';
+        if (extract_lhs_name(statement, eq, target)) {
+            g_pending_semantics.active = 1;
+            g_pending_semantics.is_assignment = 1;
+            g_pending_semantics.owned = 1;
+            strcpy(g_pending_semantics.target, target);
+            strcpy(g_pending_semantics.move_source, move_source);
+        }
+    }
+}
+
+static void pending_semantics_capture_return(const char *statement)
+{
+    char move_source[NAME_MAX_LEN];
+
+    pending_semantics_clear();
+    if (extract_move_name(statement, move_source)) {
+        g_pending_semantics.active = 1;
+        g_pending_semantics.is_return = 1;
+        g_pending_semantics.owned = 1;
+        strcpy(g_pending_semantics.move_source, move_source);
+    }
+}
+
 static int extract_move_name(const char *s, char *name)
 {
-    const char *p = s;
-    name[0] = '\0';
-    while ((p = strstr(p, "move")) != NULL) {
-        if ((p == s || !is_ident((unsigned char)p[-1])) && !is_ident((unsigned char)p[4])) {
-            const char *q = skip_ws(p + 4);
-            const char *end;
-            if (!is_ident_start((unsigned char)*q)) {
-                p += 4;
-                continue;
-            }
-            end = read_name(q, name);
-            if ((size_t)(end - q) >= NAME_MAX_LEN) {
-                name[0] = '\0';
-                return 0;
-            }
-            memcpy(name, q, (size_t)(end - q));
-            name[end - q] = '\0';
-            return 1;
-        }
-        p += 4;
-    }
-    return 0;
+    return safety_ast_move_identifier(s, s + strlen(s), name);
+}
+
+static int extract_plain_name_expr(const char *s, char *name)
+{
+    return safety_ast_plain_identifier(s, s + strlen(s), name);
 }
 
 static void remove_moved_locals(const char *s)
@@ -6545,7 +10853,15 @@ static const char *find_top_level_char(const char *start, const char *end, char 
     int brace = 0;
 
     while (p < end) {
-        if (*p == '"') {
+        if (p + 1 < end && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < end && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p + 1 < end) p++;
+        } else if (p + 1 < end && p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (p < end && *p != '\n') p++;
+            continue;
+        } else if (*p == '"') {
             p++;
             while (p < end) {
                 if (*p == '\\' && p + 1 < end) {
@@ -6582,6 +10898,64 @@ static const char *find_top_level_char(const char *start, const char *end, char 
         } else if (*p == '}' && brace > 0) {
             brace--;
         } else if (*p == ch && paren == 0 && bracket == 0 && brace == 0) {
+            return p;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static const char *find_parameter_comma(const char *start, const char *end)
+{
+    const char *p = start;
+    int paren = 0;
+    int bracket = 0;
+    int brace = 0;
+    int angle = 0;
+    int in_default = 0;
+
+    while (p < end) {
+        if (p + 1 < end && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < end && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p + 1 < end) p++;
+        } else if (p + 1 < end && p[0] == '/' && p[1] == '/') {
+            p += 2;
+            while (p < end && *p != '\n') p++;
+            continue;
+        } else if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (p < end) {
+                if (*p == '\\' && p + 1 < end) {
+                    p += 2;
+                    continue;
+                }
+                if (*p == quote) break;
+                p++;
+            }
+        } else if (*p == '(') {
+            paren++;
+        } else if (*p == ')' && paren > 0) {
+            paren--;
+        } else if (*p == '[') {
+            bracket++;
+        } else if (*p == ']' && bracket > 0) {
+            bracket--;
+        } else if (*p == '{') {
+            brace++;
+        } else if (*p == '}' && brace > 0) {
+            brace--;
+        } else if (!in_default && *p == '<' && paren == 0 &&
+                   bracket == 0 && brace == 0) {
+            angle++;
+        } else if (!in_default && *p == '>' && angle > 0 && paren == 0 &&
+                   bracket == 0 && brace == 0) {
+            angle--;
+        } else if (*p == '=' && paren == 0 && bracket == 0 && brace == 0 &&
+                   angle == 0) {
+            in_default = 1;
+        } else if (*p == ',' && paren == 0 && bracket == 0 && brace == 0 &&
+                   angle == 0) {
             return p;
         }
         p++;
@@ -6633,6 +11007,14 @@ static struct FunctionParams *function_params_get(const char *name)
     return fn;
 }
 
+static void register_generated_function_return(const char *name,
+                                               struct Type ret)
+{
+    struct FunctionParams *fn = function_params_get(name);
+
+    fn->ret = ret;
+}
+
 static void register_function_params(const char *s)
 {
     char name[NAME_MAX_LEN];
@@ -6660,7 +11042,7 @@ static void register_function_params(const char *s)
     fn->ret = ret;
     p = open + 1;
     while (p < close) {
-        const char *arg_end = find_top_level_char(p, close, ',');
+        const char *arg_end = find_parameter_comma(p, close);
         const char *eq;
         const char *param_end;
         char param_name[NAME_MAX_LEN];
@@ -6695,11 +11077,22 @@ static void register_function_params(const char *s)
                 strncpy(fn->param[fn->count].name, param_name, NAME_MAX_LEN - 1);
                 fn->param[fn->count].name[NAME_MAX_LEN - 1] = '\0';
                 fn->param[fn->count].type = type_unknown();
+                fn->param[fn->count].borrowed = 0;
                 if (parse_decl(param_decl, &decl) && decl.name[0] != '\0') {
                     if (decl_has_borrow(param_decl)) {
                         decl.type.owned = 0;
                     }
+                    fn->param[fn->count].borrowed =
+                        decl_has_borrow(param_decl) || text_has_word(param_decl, "ref");
                     fn->param[fn->count].type = decl.type;
+                    if (g_unsafe_depth == 0 &&
+                        type_is_runtime_resource_value(decl.type)) {
+                        fprintf(stderr,
+                                "c-: type error: runtime resource parameter '%s' must use ref or mut ref in safe mode\n",
+                                param_name);
+                        free(param_decl);
+                        exit(1);
+                    }
                 }
                 if (def_len >= DEFAULT_EXPR_MAX) {
                     def_len = DEFAULT_EXPR_MAX - 1;
@@ -6738,7 +11131,7 @@ static void register_function_param_symbols(const char *s)
     }
     p = open + 1;
     while (p < close) {
-        const char *arg_end = find_top_level_char(p, close, ',');
+        const char *arg_end = find_parameter_comma(p, close);
         const char *param_end;
         const char *eq;
         struct DeclInfo decl;
@@ -6900,10 +11293,42 @@ static void register_unsafe_function_heads(const char *body)
     }
 }
 
+static void register_unsafe_function_decls(const char *body)
+{
+    const char *segment = body;
+    const char *p = body;
+    int brace_depth = 0;
+
+    while (*p != '\0') {
+        if (*p == '{') {
+            brace_depth++;
+        } else if (*p == '}' && brace_depth > 0) {
+            brace_depth--;
+            if (brace_depth == 0) {
+                segment = p + 1;
+            }
+        } else if (*p == ';' && brace_depth == 0) {
+            char *decl = xstrndup(segment, (size_t)(p + 1 - segment));
+            char name[NAME_MAX_LEN];
+            struct Type ret;
+
+            if (parse_function_signature(decl, name, &ret)) {
+                register_function_params(decl);
+                register_owned_function_signature(decl);
+                register_malloc_attribute_function(decl);
+            }
+            free(decl);
+            segment = p + 1;
+        }
+        p++;
+    }
+}
+
 static void register_unsafe_metadata(const char *body)
 {
     register_unsafe_struct_fields(body);
     register_unsafe_function_heads(body);
+    register_unsafe_function_decls(body);
 }
 
 static struct Text *strip_default_parameters(struct Text *in)
@@ -6924,7 +11349,7 @@ static struct Text *strip_default_parameters(struct Text *in)
     text_add_n(out, in->text, (size_t)(open + 1 - in->text));
     p = open + 1;
     while (p < close) {
-        const char *param_end = find_top_level_char(p, close, ',');
+        const char *param_end = find_parameter_comma(p, close);
         const char *eq;
 
         if (param_end == NULL) {
@@ -6980,7 +11405,7 @@ static void emit_macro_param_list(FILE *out, struct FunctionParams *fn, int coun
     }
 }
 
-static void emit_generic_default_macro(FILE *out, const char *func_name, struct FunctionParams *fn)
+static void emit_generic_default_macro_direct(FILE *out, const char *func_name, struct FunctionParams *fn)
 {
     int i;
     int n;
@@ -7020,11 +11445,49 @@ static void emit_generic_default_macro(FILE *out, const char *func_name, struct 
     fputs(")(__VA_ARGS__)\n", out);
 }
 
-static void emit_generic_default_undef(FILE *out, const char *func_name, struct FunctionParams *fn)
+static void emit_generic_default_undef_direct(FILE *out, const char *func_name, struct FunctionParams *fn)
 {
     if (function_params_trailing_default_start(fn) >= 0) {
         fprintf(out, "#undef %s\n", func_name);
     }
+}
+
+static void emit_generic_default_macro(FILE *out, const char *func_name,
+                                       struct FunctionParams *fn)
+{
+    FILE *stream;
+    struct Text *generated;
+
+    if (function_params_trailing_default_start(fn) < 0) {
+        return;
+    }
+    stream = tmpfile();
+    if (stream == NULL) {
+        die("cannot create default macro output stream");
+    }
+    emit_generic_default_macro_direct(stream, func_name, fn);
+    generated = read_generated_stream(stream);
+    fclose(stream);
+    emit_generated_text(out, ND_DEFAULT_MACRO, func_name, generated);
+}
+
+static void emit_generic_default_undef(FILE *out, const char *func_name,
+                                       struct FunctionParams *fn)
+{
+    FILE *stream;
+    struct Text *generated;
+
+    if (function_params_trailing_default_start(fn) < 0) {
+        return;
+    }
+    stream = tmpfile();
+    if (stream == NULL) {
+        die("cannot create default undef output stream");
+    }
+    emit_generic_default_undef_direct(stream, func_name, fn);
+    generated = read_generated_stream(stream);
+    fclose(stream);
+    emit_generated_text(out, ND_DEFAULT_MACRO, func_name, generated);
 }
 
 static int range_contains_text(const char *start, const char *end, const char *needle)
@@ -7592,49 +12055,49 @@ static int find_assignment(const char *s)
     return -1;
 }
 
+struct SafetyOwnedCallContext {
+    const struct SafetyExprNode *call;
+    char name[NAME_MAX_LEN];
+    int registered_only;
+};
+
+static void find_owned_call_node(const struct SafetyExprNode *node,
+                                 const struct SafetyExprNode *parent,
+                                 void *opaque)
+{
+    struct SafetyOwnedCallContext *context = opaque;
+    char name[NAME_MAX_LEN];
+    int index;
+    (void)parent;
+
+    if (node->kind != SAFETY_EXPR_CALL || !safety_callee_name(node, name)) {
+        return;
+    }
+    index = malloc_func_index(name);
+    if (index < 0 && (context->registered_only || !function_name_looks_owned(name))) {
+        return;
+    }
+    if (context->call == NULL || node->start < context->call->start) {
+        context->call = node;
+        strncpy(context->name, name, NAME_MAX_LEN - 1);
+        context->name[NAME_MAX_LEN - 1] = '\0';
+    }
+}
+
 static int rhs_has_malloc_call(const char *rhs, char *func_name)
 {
-    size_t i;
-    int f;
-    for (i = 0; rhs[i] != '\0'; i++) {
-        if (!is_ident_start((unsigned char)rhs[i])) {
-            continue;
-        }
-        for (f = 0; f < g_malloc_funcs.count; f++) {
-            size_t n = strlen(g_malloc_funcs.name[f]);
-            size_t j;
-            if (strncmp(rhs + i, g_malloc_funcs.name[f], n) != 0) {
-                continue;
-            }
-            if ((i > 0 && is_ident((unsigned char)rhs[i - 1])) || is_ident((unsigned char)rhs[i + n])) {
-                continue;
-            }
-            j = i + n;
-            while (isspace((unsigned char)rhs[j])) {
-                j++;
-            }
-            if (rhs[j] == '(') {
-                strcpy(func_name, g_malloc_funcs.name[f]);
-                return 1;
-            }
-        }
-        {
-            char name[NAME_MAX_LEN];
-            const char *end = read_name(rhs + i, name);
-            const char *q = end;
-            if ((size_t)(end - (rhs + i)) < NAME_MAX_LEN && function_name_looks_owned(name)) {
-                while (isspace((unsigned char)*q)) {
-                    q++;
-                }
-                if (*q == '(') {
-                    strcpy(func_name, name);
-                    return 1;
-                }
-            }
-        }
-    }
+    struct SafetyExprNode *forest = safety_parse_forest(rhs);
+    struct SafetyOwnedCallContext context;
+
+    memset(&context, 0, sizeof(context));
+    safety_expr_walk(forest, NULL, find_owned_call_node, &context);
     func_name[0] = '\0';
-    return 0;
+    if (context.call != NULL) {
+        strncpy(func_name, context.name, NAME_MAX_LEN - 1);
+        func_name[NAME_MAX_LEN - 1] = '\0';
+    }
+    safety_expr_free(forest);
+    return context.call != NULL;
 }
 
 static const char *scan_call_end(const char *open)
@@ -7689,48 +12152,29 @@ static const char *scan_call_end(const char *open)
 static int find_owned_return_call(const char *s, const char **call_start, const char **call_end,
                                   struct Type *type)
 {
-    size_t i;
-    int f;
+    struct SafetyExprNode *forest = safety_parse_forest(s);
+    struct SafetyOwnedCallContext context;
+    int index;
 
-    for (i = 0; s[i] != '\0'; i++) {
-        if (!is_ident_start((unsigned char)s[i])) {
-            continue;
-        }
-        for (f = 0; f < g_malloc_funcs.count; f++) {
-            size_t n = strlen(g_malloc_funcs.name[f]);
-            const char *q;
-            const char *end;
-
-            if (strncmp(s + i, g_malloc_funcs.name[f], n) != 0) {
-                continue;
-            }
-            if ((i > 0 && is_ident((unsigned char)s[i - 1])) || is_ident((unsigned char)s[i + n])) {
-                continue;
-            }
-            q = s + i + n;
-            while (isspace((unsigned char)*q)) {
-                q++;
-            }
-            if (*q != '(') {
-                continue;
-            }
-            end = scan_call_end(q);
-            if (end == NULL) {
-                continue;
-            }
-            if (call_start != NULL) {
-                *call_start = s + i;
-            }
-            if (call_end != NULL) {
-                *call_end = end;
-            }
-            if (type != NULL) {
-                *type = g_malloc_funcs.ret[f];
-            }
-            return 1;
-        }
+    memset(&context, 0, sizeof(context));
+    context.registered_only = 1;
+    safety_expr_walk(forest, NULL, find_owned_call_node, &context);
+    if (context.call == NULL) {
+        safety_expr_free(forest);
+        return 0;
     }
-    return 0;
+    if (call_start != NULL) {
+        *call_start = context.call->start;
+    }
+    if (call_end != NULL) {
+        *call_end = context.call->end;
+    }
+    index = malloc_func_index(context.name);
+    if (type != NULL && index >= 0) {
+        *type = g_malloc_funcs.ret[index];
+    }
+    safety_expr_free(forest);
+    return 1;
 }
 
 static int rhs_is_single_owned_return_call(const char *rhs)
@@ -8172,7 +12616,7 @@ static int parse_clone_expr(const char *rhs, const char **clone_start, const cha
         return 0;
     }
     tmp = xstrndup(src, (size_t)(end - src));
-    source_type = expr_type(tmp);
+    source_type = safety_ast_expr_type(tmp);
     free(tmp);
     if (source_type.kind == TY_UNKNOWN) {
         return 0;
@@ -8332,7 +12776,7 @@ static void append_object_initializer_assignments(struct Text *out, const char *
             exit(1);
         }
         value = xstrndup(value_start, (size_t)(value_end - value_start));
-        value_type = expr_type(value);
+        value_type = safety_ast_expr_type(value);
         check_assignment_type(field, field_type, value_type);
         text_add(out, tmp);
         text_add(out, "->");
@@ -9462,38 +13906,171 @@ found_method:
     return 1;
 }
 
-static struct Text *rewrite_method_calls(struct Text *in)
+static int safety_ast_has_generic_start(const struct SafetyExprNode *node,
+                                        const char *start)
 {
-    const char *p = in->text;
-    struct Text *out = text_new();
-    int changed = 0;
+    for (; node != NULL; node = node->next) {
+        if (node->kind == SAFETY_EXPR_GENERIC && node->start == start) {
+            return 1;
+        }
+        if (safety_ast_has_generic_start(node->lhs, start) ||
+            safety_ast_has_generic_start(node->rhs, start) ||
+            safety_ast_has_generic_start(node->child, start)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+struct SafetyLoweringSite {
+    const char *start;
+    const char *end;
+    char *replacement;
+};
+
+struct SafetyLoweringPlan {
+    struct SafetyLoweringSite site[MAX_SAFETY_LOWERINGS];
+    int count;
+};
+
+static int try_rewrite_method_node(const struct SafetyExprNode *node,
+                                   const char **end,
+                                   struct Text *replacement)
+{
+    const struct SafetyExprNode *callee;
+
+    if (node == NULL || node->kind != SAFETY_EXPR_CALL) {
+        return 0;
+    }
+    callee = safety_unwrap_group(node->lhs);
+    if (callee == NULL || callee->kind != SAFETY_EXPR_MEMBER) {
+        return 0;
+    }
+    return try_rewrite_string_method(node->start, end, replacement) ||
+        try_rewrite_critical_static_method(node->start, end, replacement) ||
+        try_rewrite_bitmap_static_method(node->start, end, replacement) ||
+        try_rewrite_thread_static_method(node->start, end, replacement) ||
+        try_rewrite_string_expr_method(node->start, end, replacement) ||
+        try_rewrite_string_symbol_method(node->start, end, replacement) ||
+        try_rewrite_struct_method(node->start, end, replacement);
+}
+
+static void collect_method_lowering_sites(const struct SafetyExprNode *node,
+                                          struct SafetyLoweringPlan *plan)
+{
+    for (; node != NULL; node = node->next) {
+        if (node->kind == SAFETY_EXPR_CALL) {
+            struct Text *replacement = text_new();
+            const char *end = NULL;
+
+            if (try_rewrite_method_node(node, &end, replacement) &&
+                end != NULL && end > node->start) {
+                if (plan->count >= MAX_SAFETY_LOWERINGS) {
+                    text_free(replacement);
+                    die("too many AST lowering sites in one expression");
+                }
+                struct SafetyLoweringSite *site = &plan->site[plan->count++];
+                site->start = node->start;
+                site->end = end;
+                site->replacement = xstrdup(replacement->text);
+            }
+            text_free(replacement);
+        }
+        collect_method_lowering_sites(node->lhs, plan);
+        collect_method_lowering_sites(node->rhs, plan);
+        collect_method_lowering_sites(node->child, plan);
+    }
+}
+
+static void collect_s_string_method_sites(const char *source,
+                                          struct SafetyLoweringPlan *plan)
+{
+    const char *p = source;
 
     while (*p != '\0') {
-        const char *end = NULL;
-        struct Text *replacement = text_new();
-
-        if (try_rewrite_string_method(p, &end, replacement) ||
-            try_rewrite_critical_static_method(p, &end, replacement) ||
-            try_rewrite_bitmap_static_method(p, &end, replacement) ||
-            try_rewrite_thread_static_method(p, &end, replacement) ||
-            try_rewrite_string_expr_method(p, &end, replacement) ||
-            try_rewrite_string_symbol_method(p, &end, replacement) ||
-            try_rewrite_struct_method(p, &end, replacement)) {
-            text_add(out, replacement->text);
-            p = end;
-            changed = 1;
+        if (p[0] == 's' && p[1] == '"') {
+            struct Text *replacement = text_new();
+            const char *end = NULL;
+            if (try_rewrite_string_method(p, &end, replacement) && end != NULL) {
+                if (plan->count >= MAX_SAFETY_LOWERINGS) {
+                    text_free(replacement);
+                    die("too many AST lowering sites in one expression");
+                }
+                struct SafetyLoweringSite *site = &plan->site[plan->count++];
+                site->start = p;
+                site->end = end;
+                site->replacement = xstrdup(replacement->text);
+                p = end;
+                text_free(replacement);
+                continue;
+            }
             text_free(replacement);
-            continue;
         }
-        text_free(replacement);
-        text_add_ch(out, *p);
         p++;
     }
+}
+
+static void sort_lowering_sites(struct SafetyLoweringPlan *plan)
+{
+    int i;
+    int j;
+
+    for (i = 1; i < plan->count; i++) {
+        struct SafetyLoweringSite value = plan->site[i];
+        j = i;
+        while (j > 0 &&
+               (plan->site[j - 1].start > value.start ||
+                (plan->site[j - 1].start == value.start &&
+                 plan->site[j - 1].end < value.end))) {
+            plan->site[j] = plan->site[j - 1];
+            j--;
+        }
+        plan->site[j] = value;
+    }
+}
+
+static void free_lowering_plan(struct SafetyLoweringPlan *plan)
+{
+    int i;
+    for (i = 0; i < plan->count; i++) {
+        free(plan->site[i].replacement);
+    }
+    plan->count = 0;
+}
+
+static struct Text *rewrite_method_calls(struct Text *in)
+{
+    const char *cursor = in->text;
+    struct Text *out = text_new();
+    struct SafetyExprNode *forest = safety_parse_forest(in->text);
+    struct SafetyLoweringPlan plan;
+    int i;
+    int changed = 0;
+
+    memset(&plan, 0, sizeof(plan));
+    collect_method_lowering_sites(forest, &plan);
+    collect_s_string_method_sites(in->text, &plan);
+    sort_lowering_sites(&plan);
+    for (i = 0; i < plan.count; i++) {
+        struct SafetyLoweringSite *site = &plan.site[i];
+        if (site->start < cursor || site->end <= site->start) {
+            continue;
+        }
+        text_add_n(out, cursor, (size_t)(site->start - cursor));
+        text_add(out, site->replacement);
+        cursor = site->end;
+        changed = 1;
+    }
+    text_add(out, cursor);
 
     if (!changed) {
+        free_lowering_plan(&plan);
+        safety_expr_free(forest);
         text_free(out);
         return in;
     }
+    free_lowering_plan(&plan);
+    safety_expr_free(forest);
     out->tail_return = in->tail_return;
     out->ast = in->ast;
     text_free(in);
@@ -11012,6 +15589,12 @@ static int function_signature_is_internal(const char *head)
     static const char *needles[] = {
         "__cminus_",
         "__CMinus",
+        "__addvsi3(",
+        "__subvsi3(",
+        "__mulvsi3(",
+        "__addvdi3(",
+        "__subvdi3(",
+        "__mulvdi3(",
         "cminus_",
         "Ref_",
         "Span_",
@@ -11517,37 +16100,6 @@ static void append_zero_clear_after_decl(struct Text *stmt, const char *original
     text_free(indent);
 }
 
-static int unary_star_context(const char *start, const char *star)
-{
-    const char *p = star;
-
-    while (p > start && isspace((unsigned char)p[-1])) {
-        p--;
-    }
-    if (p == start) {
-        return 1;
-    }
-    p--;
-    if (is_ident((unsigned char)*p)) {
-        const char *end = p + 1;
-        const char *word = p;
-
-        while (word > start && is_ident((unsigned char)word[-1])) {
-            word--;
-        }
-        if (end - word == 6 && strncmp(word, "return", 6) == 0) {
-            return 1;
-        }
-    }
-    if (*p == '(' || *p == '[' || *p == '{' || *p == '=' || *p == ',' ||
-        *p == ':' || *p == '?' || *p == '!' || *p == '~' ||
-        *p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '%' ||
-        *p == '&' || *p == '|' || *p == '^' || *p == '<' || *p == '>') {
-        return 1;
-    }
-    return 0;
-}
-
 static const char *skip_safe_deref_trivia(const char *p)
 {
     while (1) {
@@ -11574,96 +16126,93 @@ static const char *skip_safe_deref_trivia(const char *p)
     }
 }
 
+static int safety_identifier_is_span(const struct SafetyExprNode *node)
+{
+    const struct SafetyExprNode *base = safety_unwrap_group(node);
+    struct Symbol *sym;
+    struct GenericInstance *inst = NULL;
+    struct GenericTemplate *tmpl = NULL;
+
+    if (base == NULL || base->kind != SAFETY_EXPR_IDENTIFIER) {
+        return 0;
+    }
+    sym = symbol_find_or_current_param(base->name);
+    if (sym == NULL) {
+        return 0;
+    }
+    if (sym->type.kind == TY_STRUCT) {
+        tmpl = generic_struct_find_by_concrete(sym->type.tag, &inst);
+    }
+    return (tmpl != NULL && strcmp(tmpl->name, "Span") == 0) ||
+        strncmp(sym->type.tag, "Span_", 5) == 0 ||
+        strcmp(sym->type.tag, "Span") == 0;
+}
+
+static int safety_node_is_raw_pointer(const struct SafetyExprNode *node, char name[NAME_MAX_LEN])
+{
+    const struct SafetyExprNode *base = safety_unwrap_group(node);
+    struct Symbol *sym;
+
+    while (base != NULL && base->kind == SAFETY_EXPR_MEMBER) {
+        base = safety_unwrap_group(base->lhs);
+    }
+    if (base == NULL || base->kind != SAFETY_EXPR_IDENTIFIER) {
+        return 0;
+    }
+    sym = symbol_find_or_current_param(base->name);
+    if (sym == NULL || !sym->type.raw_ptr) {
+        return 0;
+    }
+    strncpy(name, base->name, NAME_MAX_LEN - 1);
+    name[NAME_MAX_LEN - 1] = '\0';
+    return 1;
+}
+
+static void validate_safe_deref_node(const struct SafetyExprNode *node,
+                                     const struct SafetyExprNode *parent,
+                                     void *context)
+{
+    char name[NAME_MAX_LEN];
+    (void)parent;
+    (void)context;
+
+    if (node->kind == SAFETY_EXPR_UNARY_DEREF) {
+        const struct SafetyExprNode *operand = safety_unwrap_group(node->lhs);
+        if (safety_identifier_is_span(operand)) {
+            return;
+        }
+        if (operand != NULL && operand->kind == SAFETY_EXPR_IDENTIFIER) {
+            fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe for expression near '%s'\n",
+                    operand->name);
+        } else {
+            fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe\n");
+        }
+        exit(1);
+    }
+    if (node->kind == SAFETY_EXPR_INDEX &&
+        safety_node_is_raw_pointer(node->lhs, name)) {
+        fprintf(stderr, "c-: type error: raw pointer dereference is only allowed inside unsafe for pointer '%s'\n",
+                name);
+        exit(1);
+    }
+    if (node->kind == SAFETY_EXPR_MEMBER && strcmp(node->op, "->") == 0 &&
+        safety_node_is_raw_pointer(node->lhs, name)) {
+        fprintf(stderr, "c-: type error: raw pointer dereference is only allowed inside unsafe for pointer '%s'\n",
+                name);
+        exit(1);
+    }
+}
+
 static void check_safe_pointer_deref(const char *stmt)
 {
-    const char *p = stmt;
+    struct SafetyExprNode *forest;
 
     if (g_unsafe_depth > 0) {
         return;
     }
-    while (*p != '\0') {
-        if (p[0] == '/' && p[1] == '*') {
-            const char *close = strstr(p + 2, "*/");
-
-            if (close == NULL) {
-                return;
-            }
-            p = close + 2;
-            continue;
-        }
-        if (p[0] == '/' && p[1] == '/') {
-            const char *newline = strchr(p + 2, '\n');
-
-            if (newline == NULL) {
-                return;
-            }
-            p = newline + 1;
-            continue;
-        }
-        if (*p == '"' || *p == '\'') {
-            char quote = *p++;
-            while (*p != '\0') {
-                if (*p == '\\' && p[1] != '\0') {
-                    p += 2;
-                    continue;
-                }
-                if (*p++ == quote) {
-                    break;
-                }
-            }
-            continue;
-        }
-        if (is_ident_start((unsigned char)*p)) {
-            char name[NAME_MAX_LEN];
-            const char *name_end = read_name(p, name);
-            const char *after = skip_safe_deref_trivia(name_end);
-            struct Symbol *sym = symbol_find(name);
-            int grouping_parens = direct_grouping_parens_before(stmt, p);
-
-            while (grouping_parens > 0 && *after == ')') {
-                after = skip_safe_deref_trivia(after + 1);
-                grouping_parens--;
-            }
-
-            if (sym != NULL && sym->type.raw_ptr &&
-                (*after == '[' || (after[0] == '-' && after[1] == '>'))) {
-                fprintf(stderr, "c-: type error: raw pointer dereference is only allowed inside unsafe for pointer '%s'\n", name);
-                exit(1);
-            }
-            p = name_end;
-            continue;
-        }
-        if (*p == '*' && unary_star_context(stmt, p)) {
-            const char *name_start = skip_safe_deref_trivia(p + 1);
-            char name[NAME_MAX_LEN];
-
-            if (is_ident_start((unsigned char)*name_start)) {
-                struct Symbol *sym;
-
-                read_name(name_start, name);
-                sym = symbol_find(name);
-                if (sym != NULL) {
-                    struct GenericInstance *inst = NULL;
-                    struct GenericTemplate *tmpl = NULL;
-
-                    if (sym->type.kind == TY_STRUCT) {
-                        tmpl = generic_struct_find_by_concrete(sym->type.tag, &inst);
-                    }
-                    if ((tmpl != NULL && strcmp(tmpl->name, "Span") == 0) ||
-                        strncmp(sym->type.tag, "Span_", 5) == 0 ||
-                        strcmp(sym->type.tag, "Span") == 0) {
-                        p++;
-                        continue;
-                    }
-                }
-                fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe for expression near '%s'\n", name);
-                exit(1);
-            }
-            fprintf(stderr, "c-: type error: pointer dereference is only allowed inside unsafe\n");
-            exit(1);
-        }
-        p++;
-    }
+    forest = safety_parse_forest(stmt);
+    safety_expr_walk(forest, NULL, validate_safe_deref_node, NULL);
+    safety_expr_free(forest);
 }
 
 static int is_unsafe_head(const char *s)
@@ -11700,9 +16249,24 @@ void cminus_unsafe_pop(void)
     }
 }
 
+static struct Text *wrap_transparent_boundary(struct Text *body,
+                                              enum NodeKind kind)
+{
+    struct Node *node = ast_new(kind, body->text);
+    struct Text *out = text_new();
+
+    node->body = body->ast;
+    out->ast = node;
+    ast_emit_node(out, node);
+    body->ast = NULL;
+    text_free(body);
+    return out;
+}
+
 static struct Text *normalize_raw_c_block_body(struct Text *body)
 {
     struct Text *out = text_new();
+    struct Node *node;
 
     if (body->len > 0 && body->text[0] != '\n') {
         text_add_ch(out, '\n');
@@ -11711,6 +16275,8 @@ static struct Text *normalize_raw_c_block_body(struct Text *body)
     if (out->len > 0 && out->text[out->len - 1] != '\n') {
         text_add_ch(out, '\n');
     }
+    node = ast_new(ND_INLINE_C, out->text);
+    out->ast = node;
     body->ast = NULL;
     text_free(body);
     return out;
@@ -11726,10 +16292,15 @@ static void begin_stmt_block(struct Text *head)
 static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb)
 {
     struct Text *out;
+    struct Type function_ret;
+    char function_name[NAME_MAX_LEN];
 
     if (is_unsafe_head(head->text)) {
+        struct Text *joined;
+
         register_unsafe_metadata(body->text);
-        out = text_join3(lb, body, rb);
+        joined = text_join3(lb, body, rb);
+        out = wrap_transparent_boundary(joined, ND_UNSAFE);
         if (g_unsafe_depth > 0) {
             g_unsafe_depth--;
         }
@@ -11746,7 +16317,46 @@ static struct Text *finish_stmt_block(struct Text *head, struct Text *lb, struct
         text_free(rb);
         return out;
     }
-    return text_join4(process_control_head(head), lb, body, rb);
+    /* A top-level unsafe boundary is parsed with the compound-item grammar.
+       Recover function definitions here instead of treating their braces as
+       an opaque aggregate block.  Their bodies remain under ND_UNSAFE, while
+       the final AST pass can rebuild parameter and local scopes normally. */
+    if (g_unsafe_depth > 0 &&
+        parse_function_signature(head->text, function_name, &function_ret)) {
+        struct Node *function_ast;
+
+        register_function_params(head->text);
+        function_ast = ast_function(head->text, body->ast);
+        body->ast = NULL;
+        out = text_join3(head, lb, body);
+        out = text_join(out, rb);
+        out->ast = function_ast;
+        return out;
+    }
+    head = process_control_head(head);
+    {
+        struct Node *control;
+
+        if (ast_control_kind(head->text) == ND_RAW) {
+            control = ast_aggregate(head->text, lb->text, body->text,
+                                    rb->text, body->ast);
+        } else {
+            control = ast_control(head->text, lb->text, body->text,
+                                  rb->text, body->ast);
+            validate_safe_control_ast(control);
+        }
+
+        out = text_new();
+        out->ast = control;
+        ast_emit_node(out, control);
+        head->ast = NULL;
+        body->ast = NULL;
+        text_free(head);
+        text_free(lb);
+        text_free(body);
+        text_free(rb);
+    }
+    return out;
 }
 
 static void append_indent_from(const char *s, struct Text *out)
@@ -11825,17 +16435,44 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
         all = rewrite_generics(all);
         all = rewrite_safe_reference_decl(all);
     }
+    memset(&info, 0, sizeof(info));
+    if (parse_decl(all->text, &info) && info.is_typedef &&
+        info.name[0] != '\0') {
+        typedef_alias_add(info.name, info.type);
+    }
     is_func_sig = parse_function_signature(all->text, func_name, &ret);
     if (is_func_sig) {
+        if (g_unsafe_depth == 0 && !g_c_compat && strstr(all->text, "...") != NULL &&
+            !function_signature_is_internal(all->text)) {
+            fprintf(stderr, "c-: type error: variadic functions are only allowed inside unsafe at %s:%d; expose a typed safe wrapper\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
         validate_interrupt_function_head(all->text);
         register_function_params(all->text);
         register_owned_function_signature(all->text);
         register_malloc_attribute_function(all->text);
     }
-    if (!is_func_sig && parse_decl(all->text, &info) && info.name[0] != '\0' && !info.is_function) {
+    if (!is_func_sig && parse_decl(all->text, &info) && info.name[0] != '\0' &&
+        !info.is_function && !info.is_typedef) {
+        if (g_unsafe_depth == 0 && type_is_stored_safe_reference(info.type)) {
+            fprintf(stderr, "c-: type error: Ref/Span values cannot be stored in safe global '%s' at %s:%d; store owned/static data and create the reference locally\n",
+                    info.name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
         symbol_add_to(&g_globals, info.name, info.type);
     }
-    all->ast = ast_raw(ND_DECL, all->text);
+    if (info.is_typedef && info.name[0] != '\0') {
+        struct Node *typedef_node = ast_new(ND_TYPEDEF, all->text);
+
+        strncpy(typedef_node->name, info.name, NAME_MAX_LEN - 1);
+        typedef_node->name[NAME_MAX_LEN - 1] = '\0';
+        typedef_node->ty = type_copy(info.type);
+        typedef_node->type_node = ast_type_node(info.type);
+        all->ast = typedef_node;
+    } else {
+        all->ast = ast_raw(ND_DECL, all->text);
+    }
     if (is_func_sig) {
         all = strip_default_parameters(all);
         all = rewrite_interrupt_function_head(all);
@@ -11880,10 +16517,16 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     post_free_type = type_unknown();
     owned_assign_type = type_unknown();
     new_type = type_unknown();
+    pending_semantics_capture_statement(all->text);
     if (g_current_generic_kind != 0 || g_current_payload_enum) {
         all->tail_return = 0;
         all->ast = ast_raw(ND_RAW, all->text);
         return all;
+    }
+    if (parse_decl(all->text, &decl) && decl.is_decl &&
+        decl.name[0] != '\0' && !decl.is_function &&
+        decl.type.applied_name[0] != '\0') {
+        symbol_add(decl.name, decl.type);
     }
     if (g_c_compat && g_unsafe_depth == 0 && g_in_function) {
         if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
@@ -11907,6 +16550,34 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     all = rewrite_payload_enum_constructors(all);
     all = rewrite_optional_null_assignment(all);
     eq = find_assignment(all->text);
+    if (g_unsafe_depth == 0 && eq >= 0) {
+        char resource_source[NAME_MAX_LEN];
+        struct Symbol *source_symbol = NULL;
+        struct Type destination_type = type_unknown();
+        const char *rhs = all->text + eq + 1;
+
+        if (extract_plain_name_expr(rhs, resource_source)) {
+            source_symbol = symbol_find(resource_source);
+        }
+        if (source_symbol != NULL &&
+            type_is_runtime_resource_value(source_symbol->type)) {
+            struct DeclInfo resource_decl;
+
+            if (parse_decl(all->text, &resource_decl) &&
+                resource_decl.is_decl && resource_decl.name[0] != '\0') {
+                destination_type = resource_decl.type;
+            } else if (extract_lhs_name(all->text, eq, lhs_name)) {
+                destination_type = lhs_type_before_eq(all->text, eq, lhs_name);
+            }
+            if (type_is_runtime_resource_value(destination_type)) {
+                fprintf(stderr,
+                        "c-: type error: runtime resource '%s' cannot be copied in safe mode; initialize a fresh resource or pass it by ref\n",
+                        resource_source);
+                text_free(all);
+                exit(1);
+            }
+        }
+    }
     if (!g_in_function) {
         if (g_in_aggregate_struct && g_current_struct_mmio &&
             parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
@@ -11918,6 +16589,12 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             if (g_unsafe_depth == 0 && type_is_stored_safe_reference(decl.type)) {
                 fprintf(stderr, "c-: type error: Ref/Span fields are not allowed in safe structs for field '%s.%s' at %s:%d; keep safe references local or store owned data\n",
                         g_current_struct_tag, decl.name, g_input_path ? g_input_path : "<stdin>", yylineno);
+                exit(1);
+            }
+            if (g_unsafe_depth == 0 && type_is_runtime_resource_value(decl.type)) {
+                fprintf(stderr, "c-: type error: runtime resource fields are not allowed in safe structs for field '%s.%s' at %s:%d; keep the resource in a local/global variable and pass it by ref until move semantics are available\n",
+                        g_current_struct_tag, decl.name,
+                        g_input_path ? g_input_path : "<stdin>", yylineno);
                 exit(1);
             }
             struct_clone_add_field(g_current_struct_tag, decl.name, decl.type, decl.is_array);
@@ -11936,6 +16613,25 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     }
     check_null_assignment(all->text);
     if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+        if (g_unsafe_depth == 0 && decl.is_array && decl.type.array_len <= 0) {
+            fprintf(stderr, "c-: type error: variable-length or unsized array '%s' is only allowed inside unsafe at %s:%d; use a fixed array or checked collection\n",
+                    decl.name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+        if (g_unsafe_depth == 0 && decl.is_array && decl.type.array_len > 0 &&
+            decl.type.size > 0 &&
+            (unsigned long)decl.type.array_len >
+                MAX_SAFE_LOCAL_ARRAY_BYTES / (unsigned long)decl.type.size) {
+            fprintf(stderr, "c-: type error: local array '%s' exceeds the safe stack object limit of %lu bytes at %s:%d; use Box or a checked heap collection\n",
+                    decl.name, (unsigned long)MAX_SAFE_LOCAL_ARRAY_BYTES,
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
+        if (g_unsafe_depth == 0 && type_is_heap_container_with_safe_reference(decl.type)) {
+            fprintf(stderr, "c-: type error: heap container '%s' cannot store Ref/Span values in safe mode at %s:%d; store owned values instead\n",
+                    decl.name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
         moved_local_remove(decl.name);
         borrow_link_remove_borrower(decl.name);
     }
@@ -11966,7 +16662,17 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             decl.type.owned = 0;
         }
         if (decl.has_init) {
-            rhs_type = expr_type(decl.init);
+            char alias_owner[NAME_MAX_LEN];
+
+            if (!is_borrowed && !extract_move_name(decl.init, moved_name) &&
+                extract_plain_name_expr(decl.init, alias_owner) &&
+                owner_is_tracked_owned(alias_owner)) {
+                fprintf(stderr, "c-: type error: owned value '%s' cannot be aliased by '%s' at %s:%d; use move or declare an explicit borrow\n",
+                        alias_owner, decl.name,
+                        g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+            rhs_type = safety_ast_expr_type(decl.init);
             if ((is_borrowed && extract_direct_borrow_owner(decl.init, borrow_owner)) ||
                 (is_safe_reference_type(decl.type) &&
                  extract_safe_reference_borrow_owner(decl.init, borrow_owner))) {
@@ -12109,6 +16815,22 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         return all;
     }
 
+    if (eq >= 0 && !extract_move_name(all->text + eq + 1, moved_name)) {
+        char alias_owner[NAME_MAX_LEN];
+
+        if (extract_plain_name_expr(all->text + eq + 1, alias_owner) &&
+            owner_is_tracked_owned(alias_owner) &&
+            extract_lhs_name(all->text, eq, lhs_name)) {
+            lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
+            if (lhs_type.ptr > 0) {
+                fprintf(stderr, "c-: type error: owned value '%s' cannot be assigned by alias to '%s' at %s:%d; use move\n",
+                        alias_owner, lhs_name,
+                        g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+                exit(1);
+            }
+        }
+    }
+
     if (eq >= 0 && extract_move_name(all->text + eq + 1, moved_name)) {
         if (!extract_lhs_name(all->text, eq, lhs_name)) {
             fprintf(stderr, "c-: result of move must be assigned to a pointer lvalue\n");
@@ -12144,7 +16866,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         lhs_expr = slice_lhs_expr(all->text, eq);
         lhs = symbol_find(lhs_name);
         lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
-        rhs_type = expr_type(all->text + eq + 1);
+        rhs_type = safety_ast_expr_type(all->text + eq + 1);
         if (!type_is_known(lhs_type) || lhs_type.ptr <= 0 || lhs_type.kind != TY_CHAR) {
             fprintf(stderr, "c-: type error: s string requires a char pointer lvalue for '%s'\n", lhs_name);
             free(lhs_expr);
@@ -12233,7 +16955,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                !rhs_has_new_expr(all->text + eq + 1, &new_type)) {
         if (extract_lhs_name(all->text, eq, lhs_name)) {
             lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
-            rhs_type = expr_type(all->text + eq + 1);
+            rhs_type = safety_ast_expr_type(all->text + eq + 1);
             check_assignment_type(lhs_name, lhs_type, rhs_type);
             owned_rvalue_call = 1;
         } else {
@@ -12252,7 +16974,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         } else if (extract_lhs_name(all->text, eq, lhs_name)) {
             lhs = symbol_find(lhs_name);
             lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
-            rhs_type = expr_type(all->text + eq + 1);
+            rhs_type = safety_ast_expr_type(all->text + eq + 1);
             if (!type_is_known(lhs_type) || lhs_type.ptr <= 0) {
                 fprintf(stderr, "c-: type error: malloc result requires a pointer lvalue for '%s'\n", lhs_name);
                 text_free(all);
@@ -12297,7 +17019,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         lhs = symbol_find(lhs_name);
         if (lhs != NULL) {
             lhs_type = lhs_type_before_eq(all->text, eq, lhs_name);
-            rhs_type = expr_type(all->text + eq + 1);
+            rhs_type = safety_ast_expr_type(all->text + eq + 1);
             check_assignment_type(lhs_name, lhs_type, rhs_type);
             if (!lhs->type.owned &&
                 (extract_direct_borrow_owner(all->text + eq + 1, borrow_owner) ||
@@ -12395,6 +17117,7 @@ static char *extract_return_value_expr(const char *stmt)
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi)
 {
     struct Text *all = text_join3(ret, expr, semi);
+    pending_semantics_capture_return(all->text);
     all->ast = ast_raw(ND_RETURN, all->text);
     if (g_current_generic_kind != 0 || g_current_payload_enum) {
         all->tail_return = 1;
@@ -12443,7 +17166,7 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
                 expr_end--;
             }
             expr_text = xstrndup(expr_start, (size_t)(expr_end - expr_start));
-            return_type = expr_type(expr_text);
+            return_type = safety_ast_expr_type(expr_text);
             free(expr_text);
             if (return_type.raw_ptr) {
                 fprintf(stderr, "c-: type error: raw pointer taint cannot be returned from safe function '%s'; use unsafe or a managed safe wrapper\n",
@@ -12583,7 +17306,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     if (is_unsafe_head(head->text)) {
         register_unsafe_metadata(body->text);
         cminus_unsafe_pop();
-        out = body;
+        out = wrap_transparent_boundary(body, ND_UNSAFE);
         text_free(head);
         text_free(lb);
         text_free(rb);
@@ -12620,12 +17343,21 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     }
 
     if (g_current_payload_enum) {
+        struct Node *template_ast;
+
         if (!parse_payload_enum_head(head->text, param, name)) {
             die("invalid payload enum");
         }
-        payload_enum_add(param, name, body->text);
+        template_ast = ast_new(ND_PAYLOAD_ENUM_TEMPLATE, head->text);
+        strncpy(template_ast->name, name, NAME_MAX_LEN - 1);
+        template_ast->name[NAME_MAX_LEN - 1] = '\0';
+        strncpy(template_ast->type_name, param, NAME_MAX_LEN - 1);
+        template_ast->type_name[NAME_MAX_LEN - 1] = '\0';
+        template_ast->type_params = ast_type_parameters(param);
+        payload_enum_add(param, name, body->text, template_ast);
         out = text_new();
         g_current_payload_enum = 0;
+        g_current_generic_param[0] = '\0';
         g_top_block_is_function = 0;
         g_in_aggregate_struct = 0;
         g_current_struct_tag[0] = '\0';
@@ -12637,16 +17369,27 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         return out;
     }
     if (g_current_generic_kind == 1) {
+        struct Node *template_ast;
+
         if (!parse_generic_struct_head(head->text, param, name)) {
             die("invalid generic struct");
         }
-        generic_add(&g_generic_structs, param, name, head->text, body->text);
+        template_ast = ast_aggregate(head->text, lb->text, body->text,
+                                     rb->text, body_ast);
+        template_ast->kind = ND_GENERIC_STRUCT_TEMPLATE;
+        strncpy(template_ast->name, name, NAME_MAX_LEN - 1);
+        template_ast->name[NAME_MAX_LEN - 1] = '\0';
+        template_ast->type_params = ast_type_parameters(param);
+        generic_add(&g_generic_structs, param, name, head->text, body->text,
+                    template_ast);
         out = text_new();
         g_current_generic_kind = 0;
+        g_current_generic_param[0] = '\0';
         g_top_block_is_function = 0;
         g_in_aggregate_struct = 0;
         g_current_struct_tag[0] = '\0';
         g_skip_next_semi = 1;
+        body->ast = NULL;
         text_free(head);
         text_free(lb);
         text_free(body);
@@ -12654,13 +17397,26 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         return out;
     }
     if (g_current_generic_kind == 2) {
+        struct Node *template_ast;
+        const char *signature_head;
+
         if (!parse_generic_function_head(head->text, param, name)) {
             die("invalid generic function");
         }
-        generic_add(&g_generic_funcs, param, name, head->text, body->text);
+        signature_head = parse_generic_prefix(head->text, param);
+        template_ast = ast_function(signature_head == NULL ? head->text : signature_head,
+                                    body_ast);
+        template_ast->kind = ND_GENERIC_FUNCTION_TEMPLATE;
+        strncpy(template_ast->name, name, NAME_MAX_LEN - 1);
+        template_ast->name[NAME_MAX_LEN - 1] = '\0';
+        template_ast->type_params = ast_type_parameters(param);
+        generic_add(&g_generic_funcs, param, name, head->text, body->text,
+                    template_ast);
         out = text_new();
         g_current_generic_kind = 0;
+        g_current_generic_param[0] = '\0';
         g_in_function = 0;
+        body->ast = NULL;
         text_free(head);
         text_free(lb);
         text_free(body);
@@ -12689,8 +17445,11 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     if (!g_top_block_is_function) {
         struct StructFinalizer *fin = struct_finalizer_find(g_current_struct_tag);
         struct StructFinalizer *clone = struct_clone_find(g_current_struct_tag);
+        struct Node *aggregate_ast;
         register_tags_in_text(head->text);
         head = strip_mmio_modifier(head);
+        aggregate_ast = ast_aggregate(head->text, lb->text, body->text,
+                                      rb->text, body_ast);
         out = text_join3(head, lb, body);
         out = text_join(out, rb);
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0') {
@@ -12701,7 +17460,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
             append_struct_clone_definition(out, clone);
             g_skip_next_semi = 1;
         }
-        out->ast = ast_block(body_ast);
+        out->ast = aggregate_ast;
         g_top_block_is_function = 0;
         g_in_aggregate_struct = 0;
         g_current_struct_mmio = 0;
@@ -12710,9 +17469,11 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     }
 
     if (g_c_compat && g_unsafe_depth == 0) {
+        struct Node *function_ast = ast_function(head->text, body_ast);
+
         out = text_join3(head, lb, body);
         out = text_join(out, rb);
-        out->ast = ast_block(body_ast);
+        out->ast = function_ast;
         g_owned.count = 0;
         g_finalized_locals.count = 0;
         g_moved_locals.count = 0;
@@ -12743,6 +17504,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     head = remove_percent(strip_attributes(head));
     {
         struct Text *prologue = text_new();
+        struct Node *function_ast = ast_function(head->text, body_ast);
         int body_tail_return = body->tail_return;
         if (g_current_function_stack_guard) {
             append_stack_enter(prologue, "    ");
@@ -12759,9 +17521,9 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         if (!body_tail_return && g_current_function_stack_guard) {
             append_stack_leave(out, "    ");
         }
+        out->ast = function_ast;
     }
     out = text_join(out, rb);
-    out->ast = ast_block(body_ast);
     g_owned.count = 0;
     g_finalized_locals.count = 0;
     g_moved_locals.count = 0;
@@ -12783,12 +17545,132 @@ static const char *generic_template_body_start(const char *head, char *param)
     return p == NULL ? head : p;
 }
 
-static void fputs_with_trailing_newline(const char *s, FILE *out)
+static char *generic_concrete_ast_text(const char *text,
+                                       struct GenericTemplate *tmpl,
+                                       struct GenericInstance *inst)
 {
-    fputs(s, out);
-    if (s[0] != '\0' && s[strlen(s) - 1] != '\n') {
-        fputc('\n', out);
+    struct Text *rewritten;
+    char *result;
+
+    if (text == NULL) {
+        return NULL;
     }
+    rewritten = replace_param_and_generics(text, tmpl->param, inst->arg,
+                                           tmpl->name, inst->concrete);
+    rewritten = remove_percent(strip_attributes(rewritten));
+    result = xstrdup(rewritten->text);
+    text_free(rewritten);
+    return result;
+}
+
+static struct Node *clone_concrete_generic_ast(const struct Node *source,
+                                               struct GenericTemplate *tmpl,
+                                               struct GenericInstance *inst)
+{
+    struct Node *head = NULL;
+
+    for (; source != NULL; source = source->next) {
+        char *tok = generic_concrete_ast_text(source->tok, tmpl, inst);
+        struct Node *body = clone_concrete_generic_ast(source->body, tmpl, inst);
+        struct Node *node;
+
+        switch (source->kind) {
+        case ND_DECL:
+        case ND_FIELD:
+        case ND_ASSIGN:
+        case ND_EXPR_STMT:
+        case ND_RETURN:
+            node = ast_typed_statement(source->kind, tok == NULL ? "" : tok);
+            if (body != NULL) {
+                node->body = body;
+            }
+            if (source->kind == ND_FIELD) {
+                node->kind = ND_FIELD;
+            }
+            break;
+        case ND_IF:
+        case ND_WHILE:
+        case ND_FOR:
+        case ND_SWITCH:
+        case ND_DO:
+            node = ast_control(tok == NULL ? "" : tok,
+                               source->open_tok == NULL ? "" : source->open_tok,
+                               source->body_tok == NULL ? "" : source->body_tok,
+                               source->close_tok == NULL ? "" : source->close_tok,
+                               body);
+            break;
+        case ND_BLOCK:
+            node = ast_block(body);
+            node->open_tok = xstrdup(source->open_tok);
+            node->body_tok = xstrdup(source->body_tok);
+            node->close_tok = xstrdup(source->close_tok);
+            break;
+        default:
+            node = ast_new(source->kind, tok);
+            node->body = body;
+            if (source->ty != NULL) {
+                node->ty = type_copy(*source->ty);
+            }
+            if (source->expr != NULL && tok != NULL) {
+                node->expr = safety_parse_range(node->tok,
+                                                node->tok + strlen(node->tok));
+            }
+            break;
+        }
+        if (node->name[0] == '\0' && source->name[0] != '\0') {
+            strncpy(node->name, source->name, NAME_MAX_LEN - 1);
+            node->name[NAME_MAX_LEN - 1] = '\0';
+        }
+        if (source->type_name[0] != '\0') {
+            strncpy(node->type_name, source->type_name, NAME_MAX_LEN - 1);
+            node->type_name[NAME_MAX_LEN - 1] = '\0';
+        }
+        if (g_in_function && node->kind == ND_DECL && node->ty != NULL &&
+            node->name[0] != '\0') {
+            symbol_add_to(&g_locals, node->name, *node->ty);
+            node->var = symbol_find(node->name) == NULL ? NULL :
+                symbol_find(node->name)->var;
+        }
+        head = ast_append(head, node);
+        free(tok);
+    }
+    return head;
+}
+
+static struct Node *clone_concrete_generic_function_ast(
+    const struct Node *source, const char *function_head,
+    struct GenericTemplate *tmpl, struct GenericInstance *inst)
+{
+    struct Symbols saved_locals = g_locals;
+    struct VarScope *saved_var_scope = g_var_scope;
+    struct Type saved_return = g_current_function_ret;
+    char saved_name[NAME_MAX_LEN];
+    char name[NAME_MAX_LEN];
+    struct Type ret;
+    int saved_in_function = g_in_function;
+    struct Node *result;
+
+    strncpy(saved_name, g_current_function_name, NAME_MAX_LEN - 1);
+    saved_name[NAME_MAX_LEN - 1] = '\0';
+    g_locals.count = 0;
+    g_in_function = 1;
+    g_current_function_name[0] = '\0';
+    g_current_function_ret = type_unknown();
+    if (parse_function_signature(function_head, name, &ret)) {
+        strncpy(g_current_function_name, name, NAME_MAX_LEN - 1);
+        g_current_function_name[NAME_MAX_LEN - 1] = '\0';
+        g_current_function_ret = ret;
+        register_function_params(function_head);
+        register_function_param_symbols(function_head);
+    }
+    result = clone_concrete_generic_ast(source, tmpl, inst);
+    g_locals = saved_locals;
+    g_var_scope = saved_var_scope;
+    g_in_function = saved_in_function;
+    g_current_function_ret = saved_return;
+    strncpy(g_current_function_name, saved_name, NAME_MAX_LEN - 1);
+    g_current_function_name[NAME_MAX_LEN - 1] = '\0';
+    return result;
 }
 
 static void emit_generic_struct_instance(FILE *out,
@@ -12799,6 +17681,8 @@ static void emit_generic_struct_instance(FILE *out,
     const char *head;
     struct Text *concrete_head;
     struct Text *concrete_body;
+    struct Text *generated;
+    struct Node *generated_ast;
 
     if (inst->emitted || strcmp(inst->arg, tmpl->param) == 0) {
         return;
@@ -12816,10 +17700,20 @@ static void emit_generic_struct_instance(FILE *out,
                                                inst->concrete);
     concrete_head = remove_percent(strip_attributes(concrete_head));
     concrete_body = remove_percent(strip_attributes(concrete_body));
-    fputs(concrete_head->text, out);
-    fputs("{", out);
-    fputs_with_trailing_newline(concrete_body->text, out);
-    fputs("};\n", out);
+    generated = text_new();
+    text_add(generated, concrete_head->text);
+    text_add(generated, "{");
+    text_add(generated, concrete_body->text);
+    if (concrete_body->len > 0 && concrete_body->text[concrete_body->len - 1] != '\n') {
+        text_add_ch(generated, '\n');
+    }
+    text_add(generated, "};\n");
+    generated_ast = ast_aggregate(concrete_head->text, "{",
+                                  concrete_body->text, "};\n",
+                                  clone_concrete_generic_ast(tmpl->ast->body,
+                                                             tmpl, inst));
+    emit_generated_text_ast(out, ND_GENERIC_STRUCT, inst->concrete,
+                            generated, generated_ast);
     inst->emitted = 1;
     text_free(concrete_head);
     text_free(concrete_body);
@@ -12884,6 +17778,8 @@ static void emit_generic_function_instances(FILE *out)
                                                                     tmpl->inst[j].arg,
                                                                     tmpl->name,
                                                                     tmpl->inst[j].concrete);
+            struct Text *generated;
+            struct Node *generated_ast;
             struct Text *concrete_body = replace_param_and_generics(tmpl->body,
                                                                     tmpl->param,
                                                                     tmpl->inst[j].arg,
@@ -12900,23 +17796,35 @@ static void emit_generic_function_instances(FILE *out)
             concrete_body = remove_percent(strip_attributes(concrete_body));
             concrete_body = rewrite_parameter_calls(concrete_body);
             concrete_body = rewrite_payload_enum_constructors(concrete_body);
-            fputs(concrete_head->text, out);
-            fputs("{", out);
+            generated = text_new();
+            text_add(generated, concrete_head->text);
+            text_add(generated, "{");
             if (head_function_name(concrete_head->text, func_name) &&
                 function_needs_stack_guard(func_name) &&
                 strstr(concrete_head->text, "Iterator_next_") == NULL &&
                 strstr(concrete_head->text, "VecIterator_next_") == NULL &&
                 strstr(concrete_head->text, "ListIterator_next_") == NULL) {
-                fputs("    char __cminus_stack_anchor;\n    size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);\n", out);
+                text_add(generated, "    char __cminus_stack_anchor;\n    size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);\n");
                 concrete_body = rewrite_returns_with_stack_leave(concrete_body);
             } else {
                 func_name[0] = '\0';
             }
-            fputs_with_trailing_newline(concrete_body->text, out);
-            if (func_name[0] != '\0') {
-                fputs("    cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);\n", out);
+            text_add(generated, concrete_body->text);
+            if (concrete_body->len > 0 && concrete_body->text[concrete_body->len - 1] != '\n') {
+                text_add_ch(generated, '\n');
             }
-            fputs("}\n", out);
+            if (func_name[0] != '\0') {
+                text_add(generated, "    cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);\n");
+            }
+            text_add(generated, "}\n");
+            generated_ast = ast_function(
+                concrete_head->text,
+                clone_concrete_generic_function_ast(tmpl->ast->body,
+                                                     concrete_head->text,
+                                                     tmpl, &tmpl->inst[j]));
+            emit_generated_text_ast(out, ND_GENERIC_FUNCTION,
+                                    tmpl->inst[j].concrete, generated,
+                                    generated_ast);
             text_free(concrete_head);
             text_free(concrete_body);
         }
@@ -12939,14 +17847,21 @@ static void emit_generic_function_prototypes(FILE *out)
                                                                     tmpl->inst[j].arg,
                                                                     tmpl->name,
                                                                     tmpl->inst[j].concrete);
+            struct Text *generated;
+            struct Node *generated_ast;
             register_function_params(concrete_head->text);
             if (head_function_name(concrete_head->text, func_name)) {
                 emit_generic_default_macro(out, func_name, function_params_find(func_name));
             }
             concrete_head = strip_default_parameters(concrete_head);
             concrete_head = remove_percent(strip_attributes(concrete_head));
-            fputs(concrete_head->text, out);
-            fputs(";\n", out);
+            generated = text_new();
+            text_add(generated, concrete_head->text);
+            text_add(generated, ";\n");
+            generated_ast = ast_function_declaration(concrete_head->text);
+            emit_generated_text_ast(out, ND_GENERIC_PROTO,
+                                    tmpl->inst[j].concrete, generated,
+                                    generated_ast);
             text_free(concrete_head);
         }
     }
@@ -13036,7 +17951,7 @@ static void close_generic_instances(void)
     }
 }
 
-static void emit_payload_enum_instances(FILE *out)
+static void emit_payload_enum_instances_direct(FILE *out)
 {
     int i;
 
@@ -13083,6 +17998,24 @@ static void emit_payload_enum_instances(FILE *out)
                 struct PayloadVariant *variant = &en->variant[v];
                 int pointer_enum = strcmp(en->name, "__CMinusIndex") != 0 &&
                     strcmp(en->name, "Optional") != 0;
+                struct Type constructor_type =
+                    type_make(TY_STRUCT, pointer_enum ? 1 : 0, inst->concrete);
+                struct Text *helper_name = text_new();
+
+                if (pointer_enum) constructor_type.owned = 1;
+                text_add(helper_name, inst->concrete);
+                text_add_ch(helper_name, '_');
+                text_add(helper_name, variant->name);
+                register_generated_function_return(helper_name->text,
+                                                   constructor_type);
+                text_free(helper_name);
+                helper_name = text_new();
+                text_add(helper_name, inst->concrete);
+                text_add(helper_name, "_is_");
+                text_add(helper_name, variant->name);
+                register_generated_function_return(
+                    helper_name->text, type_make(TY_INT, 0, NULL));
+                text_free(helper_name);
 
                 fputs("static __attribute__((unused)) struct ", out);
                 fputs(inst->concrete, out);
@@ -13171,7 +18104,24 @@ static void emit_payload_enum_instances(FILE *out)
                                                                       inst->arg,
                                                                       en->name,
                                                                       inst->concrete);
+                    struct Text *payload_decl;
+                    struct DeclInfo payload_info;
+
                     payload = remove_percent(strip_attributes(payload));
+                    payload_decl = text_new();
+                    text_add(payload_decl, payload->text);
+                    text_add(payload_decl, " value;");
+                    if (parse_decl(payload_decl->text, &payload_info) &&
+                        payload_info.name[0] != '\0') {
+                        helper_name = text_new();
+                        text_add(helper_name, inst->concrete);
+                        text_add(helper_name, "_get_");
+                        text_add(helper_name, variant->name);
+                        register_generated_function_return(helper_name->text,
+                                                           payload_info.type);
+                        text_free(helper_name);
+                    }
+                    text_free(payload_decl);
                     fputs("static __attribute__((unused)) ", out);
                     fputs(payload->text, out);
                     fputc(' ', out);
@@ -13194,6 +18144,20 @@ static void emit_payload_enum_instances(FILE *out)
             }
         }
     }
+}
+
+static void emit_payload_enum_instances(FILE *out)
+{
+    FILE *stream = tmpfile();
+    struct Text *generated;
+
+    if (stream == NULL) {
+        die("cannot create payload-enum generation stream");
+    }
+    emit_payload_enum_instances_direct(stream);
+    generated = read_generated_stream(stream);
+    fclose(stream);
+    emit_generated_text(out, ND_PAYLOAD_HELPERS, "payload-enums", generated);
 }
 
 static int is_uniq_decl(const char *s)
@@ -13257,20 +18221,22 @@ static struct Text *uniq_extern_decl(struct Text *in)
  * runtime (lib/c-bare.h) at the top of the output so the result is a single,
  * self-contained source the user can drop onto a board next to their putchar.
  */
-static void emit_bare_prelude(FILE *out)
+static struct Text *build_bare_prelude(void)
 {
     FILE *fp = open_cminus_include("c-bare.h");
     char buf[4096];
     size_t n;
+    struct Text *text = text_new();
 
     if (fp == NULL) {
         fputs("c-: bare runtime not found: c-bare.h\n", stderr);
         exit(1);
     }
     while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
-        fwrite(buf, 1, n, out);
+        text_add_n(text, buf, n);
     }
     fclose(fp);
+    return text;
 }
 
 int main(int argc, char **argv)
@@ -13278,10 +18244,12 @@ int main(int argc, char **argv)
     int rc;
     int i;
     const char *input_path = NULL;
+    struct Node *translation_unit = NULL;
 
     g_bare_metal = 0;
     g_no_heap = 0;
     g_c_compat = 0;
+    g_dump_typed_ast = 0;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-bare") == 0) {
             g_bare_metal = 1;
@@ -13289,15 +18257,17 @@ int main(int argc, char **argv)
             g_no_heap = 1;
         } else if (strcmp(argv[i], "-c-compat") == 0 || strcmp(argv[i], "--c-compat") == 0) {
             g_c_compat = 1;
+        } else if (strcmp(argv[i], "--dump-typed-ast") == 0) {
+            g_dump_typed_ast = 1;
         } else if (input_path == NULL) {
             input_path = argv[i];
         } else {
-            fputs("usage: c- [-bare] [-no-heap] [-c-compat] input.c- > output.c\n", stderr);
+            fputs("usage: c- [-bare] [-no-heap] [-c-compat] [--dump-typed-ast] input.c- > output.c\n", stderr);
             return 2;
         }
     }
     if (input_path == NULL) {
-        fputs("usage: c- [-bare] [-no-heap] [-c-compat] input.c- > output.c\n", stderr);
+        fputs("usage: c- [-bare] [-no-heap] [-c-compat] [--dump-typed-ast] input.c- > output.c\n", stderr);
         return 2;
     }
 
@@ -13310,6 +18280,9 @@ int main(int argc, char **argv)
     yylineno = 1;
     g_output = text_new();
     g_defines = text_new();
+    g_consumed_directives = NULL;
+    g_generated_artifacts = NULL;
+    g_template_nodes = NULL;
     text_add(g_defines, "void cminus_panic(const char* message, const char* file, int line);\n");
     text_add(g_defines, "int cminus_ptr_classify(void* mem, unsigned long* stack_id_out);\n");
     text_add(g_defines, "void cminus_ptr_require_alive(void* mem, unsigned long kind, unsigned long stack_id, const char* file, int line);\n");
@@ -13318,6 +18291,17 @@ int main(int argc, char **argv)
     text_add(g_defines, "void* cminus_gc_calloc_impl(__SIZE_TYPE__ count, __SIZE_TYPE__ size, const char* file, int line);\n");
     text_add(g_defines, "void cminus_gc_free_impl(void* mem, const char* file, int line);\n");
     g_malloc_funcs.count = 0;
+    g_typedefs.count = 0;
+    typedef_alias_add_opaque("size_t");
+    typedef_alias_add_opaque("ptrdiff_t");
+    typedef_alias_add_opaque("intptr_t");
+    typedef_alias_add_opaque("uintptr_t");
+    typedef_alias_add_opaque("pthread_t");
+    typedef_alias_add_opaque("pthread_mutex_t");
+    typedef_alias_add_opaque("pthread_cond_t");
+    typedef_alias_add_opaque("__builtin_va_list");
+    typedef_alias_add_opaque("__SIZE_TYPE__");
+    typedef_alias_add_opaque("__auto_type");
     register_builtin_owned_functions();
     g_right_value_id = 0;
     g_need_string_h = 0;
@@ -13334,6 +18318,7 @@ int main(int argc, char **argv)
     g_generic_funcs.count = 0;
     g_payload_enums.count = 0;
     g_current_generic_kind = 0;
+    g_current_generic_param[0] = '\0';
     g_current_payload_enum = 0;
     g_foreach_id = 0;
     g_index_id = 0;
@@ -13355,38 +18340,55 @@ int main(int argc, char **argv)
     }
     {
         const char *p = g_output->text;
-        fputs(g_defines->text, stdout);
+        struct Text *prefix_text = text_new();
+        struct Text *source_text;
+        struct Node *prefix_node = NULL;
+        struct Node *source_node;
+
+        emit_generated_text(stdout, ND_RUNTIME_PRELUDE, "declarations", g_defines);
+        g_defines = NULL;
         while (strncmp(p, "#define", 7) == 0) {
             const char *nl = strchr(p, '\n');
             if (nl == NULL) {
-                fputs(p, stdout);
+                text_add(prefix_text, p);
                 p += strlen(p);
                 break;
             }
-            fwrite(p, 1, (size_t)(nl + 1 - p), stdout);
+            text_add_n(prefix_text, p, (size_t)(nl + 1 - p));
             p = nl + 1;
         }
+        if (prefix_text->len > 0) {
+            prefix_node = ast_new(ND_SOURCE_PREFIX, prefix_text->text);
+            strncpy(prefix_node->name, "leading-defines", NAME_MAX_LEN - 1);
+            emit_ast_output(stdout, prefix_node);
+        }
+        text_free(prefix_text);
         if (g_bare_metal) {
-            emit_bare_prelude(stdout);
+            emit_generated_text(stdout, ND_RUNTIME_PRELUDE, "bare-runtime",
+                                build_bare_prelude());
         } else {
+            struct Text *includes = text_new();
+
             if (g_need_string_h) {
-                fputs("#include <string.h>\n", stdout);
+                text_add(includes, "#include <string.h>\n");
             }
             if (g_need_stdlib_h) {
-                fputs("#include <stdlib.h>\n", stdout);
+                text_add(includes, "#include <stdlib.h>\n");
             }
             if (g_need_stdio_h) {
-                fputs("#include <stdio.h>\n", stdout);
+                text_add(includes, "#include <stdio.h>\n");
             }
             if (g_need_execinfo_h) {
-                fputs("#include <execinfo.h>\n", stdout);
+                text_add(includes, "#include <execinfo.h>\n");
             }
             if (g_need_pthread_h) {
-                fputs("#include <pthread.h>\n", stdout);
+                text_add(includes, "#include <pthread.h>\n");
             }
             if (g_need_sched_h) {
-                fputs("#include <sched.h>\n", stdout);
+                text_add(includes, "#include <sched.h>\n");
             }
+            emit_generated_text(stdout, ND_RUNTIME_PRELUDE, "system-includes",
+                                includes);
         }
         close_generic_instances();
         {
@@ -13394,15 +18396,49 @@ int main(int argc, char **argv)
             struct GenericTemplate *span_offset = generic_find(&g_generic_funcs, "Span_offset");
             if ((span_ptr_at != NULL && span_ptr_at->inst_count > 0) ||
                 (span_offset != NULL && span_offset->inst_count > 0)) {
-                fputs("void cminus_panic(const char* message, const char* file, int line);\n", stdout);
+                struct Text *panic_decl = text_new();
+
+                text_add(panic_decl, "void cminus_panic(const char* message, const char* file, int line);\n");
+                emit_generated_text(stdout, ND_RUNTIME_PRELUDE,
+                                    "generic-panic-declaration", panic_decl);
             }
         }
         emit_payload_enum_generic_dependencies(stdout);
         emit_payload_enum_instances(stdout);
         emit_generic_struct_instances(stdout);
         emit_generic_function_prototypes(stdout);
-        fputs_with_trailing_newline(p, stdout);
+        source_text = text_new();
+        text_add(source_text, p);
+        if (source_text->len > 0 && source_text->text[source_text->len - 1] != '\n') {
+            text_add_ch(source_text, '\n');
+        }
+        source_node = ast_new(ND_SOURCE_BODY, source_text->text);
+        strncpy(source_node->name, "source", NAME_MAX_LEN - 1);
+        source_node->body = g_output->ast;
+        emit_ast_output(stdout, source_node);
+        text_free(source_text);
         emit_generic_function_instances(stdout);
+
+        translation_unit = ast_new(ND_TRANSLATION_UNIT, NULL);
+        if (prefix_node != NULL) {
+            prefix_node->next = source_node;
+            translation_unit->body = prefix_node;
+        } else {
+            translation_unit->body = source_node;
+        }
+    }
+    ast_final_register_functions(translation_unit);
+    ast_final_register_macro_constants(g_consumed_directives);
+    ast_final_register_macro_constants(translation_unit);
+    ast_final_register_functions(g_generated_artifacts);
+    ast_final_resolve_nodes(translation_unit);
+    ast_final_resolve_nodes(g_generated_artifacts);
+    ast_final_resolve_nodes(g_template_nodes);
+    if (g_dump_typed_ast) {
+        dump_typed_ast(stderr, g_consumed_directives, 0);
+        dump_typed_ast(stderr, g_template_nodes, 0);
+        dump_typed_ast(stderr, translation_unit, 0);
+        dump_typed_ast(stderr, g_generated_artifacts, 0);
     }
     text_free(g_output);
     fclose(yyin);

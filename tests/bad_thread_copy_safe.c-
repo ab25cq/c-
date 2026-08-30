@@ -1,0 +1,12 @@
+int worker_for_copy(void)
+{
+    return 0;
+}
+
+int main(void)
+{
+    Thread first = Thread.spawn(worker_for_copy);
+    Thread second = first;
+
+    return first.join() + second.join();
+}

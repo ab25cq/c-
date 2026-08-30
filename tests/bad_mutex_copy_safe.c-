@@ -1,0 +1,9 @@
+int main(void)
+{
+    Mutex first = Mutex.init();
+    Mutex second = first;
+
+    first.destroy();
+    second.lock();
+    return 0;
+}

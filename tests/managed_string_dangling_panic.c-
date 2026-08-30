@@ -1,0 +1,12 @@
+unsafe {
+int main(void)
+{
+    char* text = (char*)cminus_gc_calloc(4, 1);
+
+    text[0] = 'o';
+    text[1] = 'k';
+    text[2] = '\0';
+    cminus_gc_free(text);
+    return cminus_string_len(text);
+}
+}

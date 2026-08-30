@@ -206,6 +206,18 @@ Safe code uses `Span` for contiguous views, `Ref` for non-owning references, and
 `Optional` for nullable/absent values. Raw pointers and C-compatible memory
 operations remain available inside `unsafe`.
 
+Signed addition, subtraction, and multiplication in generated GNU C code use
+the compiler's trapping-overflow mode. Allocation byte calculations additionally
+use explicit checked arithmetic, including unsigned `size_t` multiplication and
+header addition. A single managed allocation is limited to 1 GiB by default;
+boards can override `CMINUS_MAX_ALLOCATION`. Safe call depth is limited to 1024
+tracked frames by default. The runtime also panics after 2 MiB of tracked stack
+growth, and safe local arrays larger than 64 KiB are rejected at compile time.
+The runtime limits are named `CMINUS_MAX_STACK_DEPTH` and
+`CMINUS_MAX_STACK_BYTES`. Variable-length arrays are unsafe-only. Ordinary
+local scalars, structs, and fixed arrays are zero-initialized by the language
+before they can be read.
+
 Inline assembly does not have a separate C- surface syntax yet. Use the target
 C compiler's inline assembly inside `unsafe`:
 
@@ -227,10 +239,29 @@ to an owned value also become invalid after the owner is moved or reassigned;
 later use is rejected at compile time, including in `if`/`while`/`foreach`
 headers and other control expressions.
 
+At runtime, references into managed allocations retain the allocation's
+generation ID as well as its storage kind. Validation searches the managed
+live/dead registries without dereferencing an untrusted candidate address and
+supports pointers to fields inside an allocation. A reference therefore panics
+after its owner is released, and remains stale even if a later allocation
+reuses exactly the same address. The same provenance travels through `Span`,
+`FixedVec`, `RingBuffer`, `Bitmap`, and payload wrappers such as
+`Optional<Ref<T>>`.
+
 Safe structs cannot contain `Ref<T>` or `Span<T>` fields. C- does not yet have
 lifetime parameters for stored references, so safe references must stay in local
 variables, parameters, and return values that the compiler can check directly.
 Store owned data in structs and create `Ref`/`Span` views at the call site.
+Safe globals likewise cannot store `Ref`, `Span`, or an `Optional` containing
+one, and heap collections cannot use safe references as their element type.
+These conservative restrictions prevent an indirect stack reference from
+outliving its source until explicit lifetime parameters are available.
+
+Owned values are unique. Assigning an owned local to another pointer without
+`move` is rejected; use `move` to transfer ownership or an explicit `borrow`
+declaration for a non-owning local view. Safe unions and variadic functions are
+also rejected because their active type and argument types cannot be established
+by the current type checker; put them behind `unsafe` and expose a typed wrapper.
 
 Safe/unsafe boundaries are checked conservatively. Raw pointer taint from unsafe
 functions cannot be passed to safe function parameters, including calls nested
@@ -1058,6 +1089,12 @@ int main(void)
 Set `threads = true` in `C-.toml` to let `cpm build`, `cpm run`, `cpm val`, and
 `cpm leak` add `-pthread` automatically. Bare builds ignore this flag.
 
+`Thread`, `Mutex`, `Cond`, and `Critical` are non-copyable resources in safe
+mode. Initialize each variable separately and pass an existing resource with
+`ref` or `mut ref`; by-value parameters, aliases, and resource fields in safe
+structs are rejected. Joining and detaching the same thread concurrently is
+also guarded atomically and panics instead of releasing its state twice.
+
 `Vec<T>` and `List<T>` support `new`, `push`, `len`, `is_empty`, `clear`,
 `first`, `last`, `get`, `set`, checked indexed access, automatic deletion for
 owning local variables, and `foreach`. `Vec<T>` also supports `capacity`,
@@ -1276,10 +1313,256 @@ have known types. Complex expressions that are not yet modeled are left as
 unknown to avoid false positives.
 
 Internally, output text is kept in a separate `Text` buffer while parser facts
-are represented with chibicc-style `Node`, `Type`, and `Obj` records. The AST
-currently records statement/block-level nodes and keeps the existing C-to-C
-lowering path, so later expression parsing and code generation can move toward
-the chibicc model without changing the surface syntax.
+are represented with chibicc-style `Node`, `Type`, and `Obj` records. Safe-mode
+expression checks additionally build typed expression nodes for identifiers,
+grouping, unary address/dereference, calls, indexes, member access, and binary
+operators. Raw heap/C calls, pointer dereference, and fixed-array index checks
+walk this tree. Assignment type inference, owned-value alias/move recognition,
+borrow-root tracking, and raw-pointer argument taint also use the expression
+nodes, so parentheses, comments, and comma expressions cannot change the
+security result. After statement lowering, declarations, assignments,
+expression statements, and returns are rebuilt as typed statement nodes. A
+declaration node records its `Type`, `Obj`, name, and initializer expression;
+assignment and return nodes retain their typed expression root. Function
+definitions similarly own their typed body-node list. The statement emitter
+then reproduces C from the AST-owned source ranges, preserving comments and
+formatting while moving the statement/code-generation boundary away from raw
+`Text`. Braced `if`/`else`, `while`, `for`, `switch`, and `do` blocks are also
+control AST nodes which own their body-node list. Their condition is a typed
+expression; `for` additionally separates its initializer and increment, with a
+declaration initializer represented as a declaration node. Control blocks are
+emitted from their AST-owned head, brace, body, and closing source fragments.
+Ordinary labels and `case`/`default` labels are dedicated statement nodes;
+`case` owns its typed constant expression. Standalone braced blocks likewise
+own their child statement list and are emitted from AST-owned brace/body
+fragments.
+Value-less control transfers are explicit `goto`, `break`, and `continue`
+nodes, so they do not masquerade as untyped expression statements. Safe mode
+also enforces AST completeness after lowering: a nonempty expression,
+initializer, return value, case value, or control condition that cannot be
+represented by the typed AST is a compile-time error. Intentional compiler-
+specific C remains available inside `unsafe` or `inline c`; `return;`, a plain
+`else`, and the omitted clauses of `for (;;)` remain valid value-less syntax.
+Initializer lists, static assertions, and `offsetof` queries have dedicated
+typed expression forms instead of being exempted from this check.
+Top-level `struct`, `union`, and `enum` definitions have dedicated aggregate
+nodes containing the tag type and field/body statement list. Preprocessor lines
+that remain in generated C are represented by source-preserving preprocessor
+nodes; compiler-consumed C- includes and defines remain metadata instead of
+output nodes.
+When ownership finalization or stack guards insert statements before a return,
+the return node retains the final typed return expression and owns a generated
+`cleanup` child for the preceding C fragment. This prevents lowering from
+collapsing the return back into an untyped raw statement.
+Declarations and assignments lowered into several top-level C statements are
+represented by an `expansion` node. Its children are reparsed as typed
+declarations, assignments, and expression statements; trailing generated
+release blocks are explicit `cleanup` children. Semicolons inside calls,
+initializers, GNU statement expressions, strings, and comments do not split the
+expansion.
+Compiler-consumed directives are retained in a separate directive metadata AST.
+For example, a consumed define is shown by `--dump-typed-ast` as
+`directive define MACRO_NAME`, even though its placement is managed through the
+compiler prelude rather than the source-preserving output tree.
+Generic application and qualified method calls are represented
+explicitly as well: reference constructors such as `Ref<T>.from` and
+`Span<T>.from`, plus owned-returning calls, are classified by AST nodes instead
+of scanning for function-name text. Expression-level generic concretization and
+method-call lowering are dispatched only from matching AST source sites, and
+owned-return temporaries use AST call ranges. Generic type declarations still
+use the declaration/type parser. Method lowering first builds a sorted,
+non-overlapping replacement plan from call nodes, then emits unchanged source
+gaps and lowered C fragments; nested calls are handled by rebuilding the AST on
+the next lowering pass. The final source is represented by a `translation-unit`
+node with a `source-body` child that owns the typed top-level nodes. A leading
+preserved define section, when present, is a `source-prefix` child. These source
+nodes emit their source-preserving token buffers through the AST output path.
+Incrementally generated payload-enum
+helpers and default-argument macro fragments are retained as `payload-helpers`
+and `default-macro` generated-artifact AST nodes before their C text is emitted.
+Generic declarations consumed during parsing are retained separately as
+`generic-struct-template` and `generic-function-template` metadata nodes. Each
+template node owns the typed declaration or statement nodes from its original
+body, while its concrete emitted forms remain linked through the existing
+generic generated-artifact nodes.
+Concrete generic artifacts also own a parsed definition header: generated
+struct artifacts contain a concrete `struct` child, prototypes contain a
+`function-declaration` child, and generated bodies contain a concrete
+`function` child. This makes instantiated names and return types available
+without reparsing the complete emitted translation unit.
+Concrete struct fields and function bodies are cloned from their template AST
+with the type parameter replaced, then declarations, expressions, and control
+heads are typed again. The child tree therefore represents the concrete
+language-level body; C-only stack guards and similar instrumentation remain in
+the enclosing generated artifact text.
+Ordinary source prototypes use the same `function-declaration` node as generic
+prototypes instead of falling back to a general declaration. Function
+declarations and definitions both own an explicit `return-type` child and
+`parameter` children containing the registered parameter name and resolved
+`Type`, so their signatures can be inspected without scanning the function-head
+text. Generic function, struct, and payload-enum templates likewise own one
+`type-parameter` child per declared parameter; multi-parameter declarations such
+as `generic<K,V>` retain `K` and `V` as separate typed nodes.
+Variable declarations and parameters also own an explicit `type` child. A
+generic application records its template name and has one `type-argument`
+child per applied argument, so `Map<int,int>` remains a structured `Map`
+application instead of being observable only as its lowered C tag
+`struct Map_int_int`. The semantic lowered type is retained alongside that
+source structure for code generation and safety checks.
+Ownership analysis is represented in the same tree. Owned and borrowed
+declarations have an `ownership` child, moves retain a `move-transfer` child
+with the consumed source even after lowering removes the `move` keyword, and a
+borrow has a `lifetime` child naming its owner. Stack-backed safe references
+are marked `storage=stack` and `runtime-check=yes`; borrowed parameters use the
+caller as their lifetime owner. These are snapshots of the safety analysis,
+not guesses reconstructed from the generated C.
+Aggregate members are distinct `field` nodes rather than ordinary local
+declarations. Their `type` children retain generic arguments, and fixed arrays
+own an `array-dimension` child with the checked length. Struct-member type
+lookup consults this aggregate AST first, with the older field table retained
+only as a compatibility fallback while migration continues. Concrete generic
+struct ASTs receive substituted field types instead of copying template `T`
+types unchanged.
+Ordinary C-style enums also own `enum-member` nodes. Explicit initializer
+expressions are parsed once into typed expression trees, while constant
+integer expressions are evaluated for the member value and the following
+implicit member sequence. Comments and commas inside trivia do not split the
+member list. Payload enums and bitflags keep their specialized AST nodes.
+When a parameter has a default value, its node also owns the parsed typed
+default expression. For example, a dependent default such as `a = b + 1` is a
+binary expression, while an integer default is a literal; macro generation no
+longer needs to be the only observable representation of those defaults.
+`--dump-typed-ast` recursively exposes expression trees below their owning
+statement. Calls distinguish the callee and each argument; binary, conditional,
+index, member, grouping, generic, address, and dereference nodes show their
+operands, operator, resolved type, and constant integer value where available.
+Prefix and postfix increment/decrement are dedicated `update` expressions.
+They retain the `++`/`--` operator, their prefix/postfix form, typed operand,
+and also appear as the explicit increment expression owned by a `for` node.
+All C compound assignments, including bitwise and shift forms (`&=`, `|=`,
+`^=`, `<<=`, and `>>=`), remain typed assignment expressions rather than
+falling back to an empty expression statement.
+C casts, `sizeof`, `_Alignof`, and the remaining prefix unary operators are
+structured expressions too. A cast or type-form size query retains its source
+type spelling, while expression-form `sizeof` owns the typed operand. Size and
+offset queries have the opaque typedef type `size_t`; its representation width
+remains target-defined without making the expression type unknown or assuming
+that every target uses the host's `long` width.
+Unknown expression types are never anonymous in the typed AST. The dump records
+a reason such as `unresolved-call-return`,
+`unresolved-symbol`, or `unknown-operand-type`, and safe-mode AST validation
+rejects an unknown type that has no classified reason. This keeps opaque ABI
+facts distinct from missed expression parsing without inventing a host-specific
+type.
+Known function identifiers use a distinct function type such as
+`fn()->int`; the enclosing call takes its result type from that function type.
+Enum members are registered as typed constants when their declaration AST is
+built, and predefined `__FILE__`, `__func__`, and `__LINE__` expressions have
+their standard character-pointer or integer types. These identifiers therefore
+no longer appear as unresolved symbols in later safe expressions.
+Object-like preprocessor definitions whose replacement is a typed constant are
+registered for the final AST pass as well. Common hosted calls such as `printf`
+retain their builtin function signature even when encountered through a bare or
+unsafe boundary. Default-parameter expressions use their declared parameter
+type to type call-site-dependent names that cannot be bound until expansion.
+Lowering-generated `__cminus_return` temporaries inherit the enclosing
+function's return type. Concrete generic function ASTs are rebuilt in a
+temporary function scope containing their substituted parameters and local
+declarations, allowing member and index expressions such as `self->data[i]` to
+retain their concrete types. Compiler-generated checked-arithmetic, managed-GC,
+and common memory helper calls also have builtin function signatures instead of
+unresolved return types.
+After all generic prototypes and generated artifacts have been materialized, a
+final type-resolution pass revisits the retained AST. It reconstructs each
+function's parameter and local scope, resolves function identifiers registered
+later in translation, and propagates the resulting call/member/index types back
+through their parent expressions. Concrete `Vec`, `List`, and `Map` calls are
+therefore not left unresolved merely because their prototypes were emitted
+after the original source node was parsed.
+Attribute-qualified runtime functions are registered in a separate late AST
+step, after source rewriting has finished. Their return and parameter types are
+therefore available without exposing internal raw-pointer parameters to the
+safe source call-rewriting rules. Generated payload-enum constructors,
+predicates, and accessors register their concrete return types at generation
+time. As a result, `Bitmap` and `__CMinusIndex<T>` helper calls also remain
+typed throughout the final AST.
+The same final pass revisits generic function templates with their symbolic
+parameter and local scope. GCC atomic value builtins derive their result from
+the pointee type of the first argument, so an atomic template retains `T`
+instead of an unresolved call result; store and compare-exchange retain `void`
+and `int`. Variadic builtins, `vsnprintf`, `fopen`, and internal alignment
+helpers have explicit signatures. GNU `__alignof__` is represented by the same
+`size_t`-typed `alignof` expression node as standard `_Alignof`, rather than
+being misclassified as an unresolved function call.
+The final pass also assigns `NULL` the type required by its use site. Binary
+comparisons and assignments use the opposite operand, declarations and returns
+use their declared type, and calls use the corresponding parameter type.
+Parenthesized nulls retain the same context. A null whose surrounding member or
+generic type is itself unresolved remains explicitly `contextual-literal`; it
+is never guessed to be an arbitrary pointer type or reported as an unresolved
+symbol.
+Function parameter splitting treats commas inside generic applications as part
+of the type, so a declaration such as `Map<K,V>* self` remains one parameter
+instead of becoming `K` and `V* self`. Function-pointer declarators are also
+retained directly: `R (*next_fn)(void*)` produces a field or parameter named
+`next_fn` with type `fn()->R`. This lets member calls through Iterator-style
+callbacks and their null checks participate in final type propagation.
+Symbolic static method syntax such as `Span<T>.get` is linked to the matching
+generic function template, preserving `fn()->T` and the call result before any
+concrete instantiation exists. Generated payload-enum layouts expose typed
+`tag`, `payload`, and variant fields to member lookup, so checked-index GNU
+statement expressions propagate their final payload type to the parent node.
+The final scope rebuild also scans every initializer in the chained `for`
+loops produced by `foreach`, retaining the declared element variable type.
+Generic aggregate names used as the receiver of symbolic static syntax have a
+distinct type-constructor type (for example, `type Span`) instead of being
+reported as unresolved value symbols. Runtime globals and constants used by
+generated safety code, including `stderr`, allocation/stack limits, and
+lowering-generated return temporaries, also retain their concrete types.
+Typedef declarations have dedicated `typedef` nodes and are registered in the
+type table before following declarations are analyzed. Alias chains and
+function-pointer typedefs retain their resolved underlying type. Common
+implementation-provided names such as `size_t` and `pthread_t` are opaque
+typedefs, preserving their spelling without assuming a host-specific layout.
+A pointer hidden behind a typedef remains a pointer for safe-mode validation,
+so aliases cannot bypass the safe-mode pointer declaration ban.
+GNU statement expressions synthesized by lowering are dedicated
+`statement-expression` nodes. Their internal expression forest remains
+walkable by safety analysis, declarations provide local operand types, and the
+final value is marked `result=yes`. Declaration syntax, control keywords, and
+punctuation are not emitted as fake value expressions; declaration
+initializers remain ordinary typed expression children. Generic type spellings inside `sizeof`,
+such as `sizeof(struct ListNode<T>)`, are retained as type-form size queries.
+Uninstantiated generic parameters use a dedicated `TY_GENERIC` representation
+instead of `unknown`. Generic function templates therefore retain typed return,
+parameter, local, field, and expression information such as `T`, while applied
+types containing `T` remain symbolic and do not accidentally register an
+invalid concrete instance before substitution.
+Payload-enum declarations are likewise retained as `payload-enum-template`
+metadata. Their `payload-variant` children record the variant name and payload
+type spelling, including generic parameters such as `T`; payload-free variants
+remain explicit children without a type.
+Typed flag declarations remain `bitflags` nodes in the translation-unit AST
+after lowering to a C typedef and enum. The node records its base integer type,
+and each `bitflag-member` child owns its typed constant-value expression.
+Safe/unsafe transitions are explicit in the tree: an `unsafe` boundary owns the
+typed declarations and statements parsed inside it, even though the C output
+omits the C- keyword. Function definitions inside a top-level `unsafe` boundary
+remain structured function nodes with raw-pointer parameters and typed bodies;
+the boundary no longer turns them into anonymous raw blocks. An `inline-c` node
+marks deliberately opaque raw C at both file and statement scope instead of
+presenting it as typed C- statements.
+`c- --dump-typed-ast input.c-` prints the current typed
+function/statement tree to stderr while emitting C normally on stdout.
+
+Generated runtime declarations, synthesized system includes, and the inlined
+bare-metal runtime are emitted through `runtime-prelude` AST artifacts. Normal
+generic struct instances, function prototypes, and function bodies similarly
+use `generic-struct`, `generic-prototype`, and `generic-function` artifacts
+instead of writing their completed `Text` buffers directly. The generated
+artifact list is included at the end of `--dump-typed-ast` output. Payload-enum
+variants can still be materialized incrementally, but the completed helper
+fragment is captured by the generated-artifact AST before output.
 
 Build and test:
 

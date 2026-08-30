@@ -1,0 +1,8 @@
+unsafe {
+int raw_value(void);
+}
+
+int main(void)
+{
+    return raw_value();
+}

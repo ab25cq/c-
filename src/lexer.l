@@ -22,6 +22,7 @@ struct Text {
 
 void cminus_unsafe_push(void);
 void cminus_unsafe_pop(void);
+void cminus_process_braced_initializer(const char *text);
 
 static char *pending;
 static size_t pending_len;
@@ -210,7 +211,10 @@ CHAR       L?\'(\\.|[^\\\'\n])*\'
 {PP}        { return emit_token(PP_LINE); }
 {TYPEDEF_BRACED} { return emit_token(PP_LINE); }
 {TYPEDEF_FN_PTR} { return emit_token(PP_LINE); }
-{BRACED_INIT} { return emit_token(PP_LINE); }
+{BRACED_INIT} {
+                cminus_process_braced_initializer(yytext);
+                return emit_token(PP_LINE);
+            }
 {WS}        { pending_add(yytext, (size_t)yyleng); }
 {LINE}      { pending_add(yytext, (size_t)yyleng); }
 {BLOCK}     { pending_add(yytext, (size_t)yyleng); }

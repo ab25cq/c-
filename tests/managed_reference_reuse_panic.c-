@@ -1,0 +1,38 @@
+unsafe {
+#include <stdio.h>
+
+int main(void)
+{
+    void* first = cminus_gc_calloc(1, 32);
+    void* interior = (char*)first + 8;
+    void* second;
+    unsigned long old_allocation_id = 0UL;
+    unsigned long new_allocation_id = 0UL;
+    int old_kind;
+    int new_kind;
+
+    old_kind = cminus_ptr_classify(interior, &old_allocation_id);
+    if (old_kind != __CMinusPtrKind_Managed || old_allocation_id == 0UL) {
+        return 1;
+    }
+    cminus_ptr_require_alive(interior, old_kind, old_allocation_id,
+                             __FILE__, __LINE__);
+    cminus_gc_free(first);
+
+    second = cminus_gc_calloc(1, 16);
+    if (second != first) {
+        return 2;
+    }
+    new_kind = cminus_ptr_classify(second, &new_allocation_id);
+    if (new_kind != __CMinusPtrKind_Managed ||
+        new_allocation_id == old_allocation_id) {
+        return 3;
+    }
+
+    /* The address is inside the newly reused allocation, but the saved
+       generation belongs to the freed allocation and must still panic. */
+    cminus_ptr_require_alive(interior, old_kind, old_allocation_id,
+                             __FILE__, __LINE__);
+    return 4;
+}
+}

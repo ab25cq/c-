@@ -1,0 +1,15 @@
+int descend(int depth)
+{
+    int padding[1024];
+
+    padding[0] = depth;
+    if (depth == 0) {
+        return padding[0];
+    }
+    return descend(depth - 1) + padding[0];
+}
+
+int main(void)
+{
+    return descend(1000);
+}

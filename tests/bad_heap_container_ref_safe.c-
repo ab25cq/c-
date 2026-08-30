@@ -1,0 +1,9 @@
+int main(void)
+{
+    List<Ref<int>> values = List<Ref<int>>.new();
+    int local = 7;
+    Ref<int> reference = Ref<int>.from(&local);
+
+    values.push(reference);
+    return 0;
+}

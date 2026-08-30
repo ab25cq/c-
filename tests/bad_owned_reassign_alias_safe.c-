@@ -1,0 +1,9 @@
+struct Data { int value; };
+
+int main(void)
+{
+    Box<Data> first = new Data;
+    Box<Data> second = new Data;
+    second = first;
+    return second->value;
+}

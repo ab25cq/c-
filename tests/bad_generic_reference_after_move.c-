@@ -1,0 +1,7 @@
+Ref<int> bad_reference(void)
+{
+    int value = 7;
+    return Ref<int>./* typed AST */from(((&value)));
+}
+
+int main(void) { return 0; }

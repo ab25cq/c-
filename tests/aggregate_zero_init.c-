@@ -1,0 +1,15 @@
+struct State {
+    int value;
+    int values[2];
+};
+
+int main(void)
+{
+    State state;
+    int values[2];
+
+    if (state.value != 0 || state.values[0] != 0 || state.values[1] != 0) {
+        return 1;
+    }
+    return values[0] == 0 && values[1] == 0 ? 0 : 2;
+}

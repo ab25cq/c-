@@ -1,0 +1,15 @@
+struct StatementExpressionItem {
+    int value;
+};
+
+int cminus_statement_expression_ast_probe(Box<StatementExpressionItem> item)
+{
+    return item->value;
+}
+
+int main(void)
+{
+    int result = cminus_statement_expression_ast_probe(
+        new StatementExpressionItem { value: 5 });
+    return result == 5 ? 0 : 1;
+}

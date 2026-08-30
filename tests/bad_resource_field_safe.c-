@@ -1,0 +1,8 @@
+struct WorkerState {
+    Mutex gate;
+};
+
+int main(void)
+{
+    return 0;
+}

@@ -1,0 +1,11 @@
+unsafe {
+#include <string.h>
+}
+
+int main(void)
+{
+    int src = 1;
+    int dst = 0;
+    (/* wrapper */ memcpy)/**/(&dst, &src, sizeof(int));
+    return dst;
+}

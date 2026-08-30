@@ -1,0 +1,20 @@
+struct ManagedData {
+    int value;
+};
+
+int main(void)
+{
+    Box<ManagedData> owner = new ManagedData;
+    Ref<int> reference = Ref<int>.from(&owner->value);
+    Optional<Ref<int>> maybe = new Optional<Ref<int>>.Some(reference);
+    Ref<int> unwrapped = maybe.get_Some();
+
+    owner->value = 17;
+    if (unwrapped.get() != 17) {
+        return 1;
+    }
+    unsafe {
+        cminus_gc_free(owner);
+    }
+    return unwrapped.get();
+}

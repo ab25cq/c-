@@ -1,0 +1,48 @@
+Atomic<int> gc_workers_done;
+
+int gc_stress_worker(void)
+{
+    int i = 0;
+
+    while (i < 1000) {
+        unsafe {
+            void* allocation = cminus_gc_calloc(1, 64);
+            void* interior = (char*)allocation + 16;
+            unsigned long allocation_id = (unsigned long)0;
+            int kind = cminus_ptr_classify(interior, &allocation_id);
+
+            if (kind != __CMinusPtrKind_Managed || allocation_id == 0UL) {
+                return 1;
+            }
+            cminus_ptr_require_alive(interior, kind, allocation_id,
+                                     __FILE__, __LINE__);
+            cminus_gc_free(allocation);
+        }
+        i++;
+    }
+    gc_workers_done.fetch_add(1);
+    return 0;
+}
+
+int main(void)
+{
+    Thread first;
+    Thread second;
+    Thread third;
+    Thread fourth;
+    int result = 0;
+
+    gc_workers_done = Atomic<int>.init(0);
+    first = Thread.spawn(gc_stress_worker);
+    second = Thread.spawn(gc_stress_worker);
+    third = Thread.spawn(gc_stress_worker);
+    fourth = Thread.spawn(gc_stress_worker);
+    result += first.join();
+    result += second.join();
+    result += third.join();
+    result += fourth.join();
+    if (gc_workers_done.load() != 4) {
+        return 2;
+    }
+    return result;
+}

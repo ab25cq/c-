@@ -1,0 +1,6 @@
+int main(void)
+{
+    char data[65537];
+
+    return data[0];
+}

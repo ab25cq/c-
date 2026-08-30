@@ -1,0 +1,12 @@
+int cminus_typed_ast_probe(void)
+{
+    int value = 1 + 2;
+
+    value = value + 3;
+    return value;
+}
+
+int main(void)
+{
+    return cminus_typed_ast_probe() == 6 ? 0 : 1;
+}

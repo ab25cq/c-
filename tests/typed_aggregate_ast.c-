@@ -1,0 +1,26 @@
+#pragma GCC diagnostic push
+
+struct TypedAggregate {
+    int value;
+};
+
+enum TypedKind {
+    TYPED_KIND_ZERO = 0,
+    TYPED_KIND_ONE = 1,
+};
+
+#pragma GCC diagnostic pop
+
+int cminus_aggregate_ast_probe(void)
+{
+    TypedAggregate item;
+    enum TypedKind kind = TYPED_KIND_ONE;
+
+    item.value = kind;
+    return item.value;
+}
+
+int main(void)
+{
+    return cminus_aggregate_ast_probe() == 1 ? 0 : 1;
+}

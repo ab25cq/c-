@@ -1,0 +1,10 @@
+int main(void)
+{
+    int storage[2];
+    int output[2];
+    RingBuffer<int> queue = RingBuffer<int>.from(storage, 2);
+
+    queue.push(1);
+    queue.drain_to_span(output, 3);
+    return 0;
+}

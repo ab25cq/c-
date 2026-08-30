@@ -42,6 +42,119 @@ grep 'int initialized = 7;' tests/local_zero.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/local_zero.out.c -o tests/local_zero.out
 ./tests/local_zero.out
 
+./c- tests/aggregate_zero_init.c- > tests/aggregate_zero_init.out.c
+grep 'struct State state = {0};' tests/aggregate_zero_init.out.c >/dev/null
+grep 'int values\[2\] = {0};' tests/aggregate_zero_init.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/aggregate_zero_init.out.c -o tests/aggregate_zero_init.out
+./tests/aggregate_zero_init.out
+
+./c- tests/integer_overflow_panic.c- > tests/integer_overflow_panic.out.c
+cc -std=gnu99 -O0 -Wall -Wextra tests/integer_overflow_panic.out.c -o tests/integer_overflow_panic.out
+if ./tests/integer_overflow_panic.out > tests/integer_overflow_panic.out.log 2> tests/integer_overflow_panic.err; then
+    echo "signed integer overflow unexpectedly succeeded" >&2
+    exit 1
+fi
+
+./c- tests/size_overflow_panic.c- > tests/size_overflow_panic.out.c
+cc -std=gnu99 -O0 -Wall -Wextra tests/size_overflow_panic.out.c -o tests/size_overflow_panic.out
+if ./tests/size_overflow_panic.out > tests/size_overflow_panic.out.log 2> tests/size_overflow_panic.err; then
+    echo "allocation size overflow unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: size multiplication overflow' tests/size_overflow_panic.err >/dev/null
+
+./c- tests/stack_depth_panic.c- > tests/stack_depth_panic.out.c
+cc -std=gnu99 -O0 -Wall -Wextra tests/stack_depth_panic.out.c -o tests/stack_depth_panic.out
+if ./tests/stack_depth_panic.out > tests/stack_depth_panic.out.log 2> tests/stack_depth_panic.err; then
+    echo "safe recursion depth limit unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: safe stack depth exceeded' tests/stack_depth_panic.err >/dev/null
+
+./c- tests/stack_bytes_panic.c- > tests/stack_bytes_panic.out.c
+grep 'CMINUS_MAX_STACK_BYTES' tests/stack_bytes_panic.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/stack_bytes_panic.out.c \
+    -o tests/stack_bytes_panic.out
+if ./tests/stack_bytes_panic.out > tests/stack_bytes_panic.out.log \
+    2> tests/stack_bytes_panic.err; then
+    echo "stack byte budget overflow unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: safe stack byte budget exceeded' \
+    tests/stack_bytes_panic.err >/dev/null
+
+if ./c- tests/bad_large_stack_array_safe.c- > /dev/null \
+    2> tests/bad_large_stack_array_safe.err; then
+    echo "oversized safe local array unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "local array 'data' exceeds the safe stack object limit" \
+    tests/bad_large_stack_array_safe.err >/dev/null
+
+./c- tests/allocation_limit_panic.c- > tests/allocation_limit_panic.out.c
+cc -std=gnu99 -O0 -Wall -Wextra tests/allocation_limit_panic.out.c -o tests/allocation_limit_panic.out
+if ./tests/allocation_limit_panic.out > tests/allocation_limit_panic.out.log 2> tests/allocation_limit_panic.err; then
+    echo "safe allocation limit unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: allocation exceeds safe limit' tests/allocation_limit_panic.err >/dev/null
+
+if ./c- tests/bad_vla_safe.c- > /dev/null 2> tests/bad_vla_safe.err; then
+    echo "safe variable-length array unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "variable-length or unsized array 'values' is only allowed inside unsafe" tests/bad_vla_safe.err >/dev/null
+
+if ./c- tests/bad_owned_alias_safe.c- > /dev/null 2> tests/bad_owned_alias_safe.err; then
+    echo "owned alias declaration unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "owned value 'first' cannot be aliased by 'second'" tests/bad_owned_alias_safe.err >/dev/null
+
+if ./c- tests/bad_owned_grouped_alias_safe.c- > /dev/null 2> tests/bad_owned_grouped_alias_safe.err; then
+    echo "parenthesized owned alias unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "owned value 'first' cannot be aliased by 'second'" tests/bad_owned_grouped_alias_safe.err >/dev/null
+
+if ./c- tests/bad_grouped_borrow_after_move.c- > /dev/null 2> tests/bad_grouped_borrow_after_move.err; then
+    echo "parenthesized borrow survived owner move" >&2
+    exit 1
+fi
+grep "borrowed value 'view' is used after owner 'text' was released" tests/bad_grouped_borrow_after_move.err >/dev/null
+
+if ./c- tests/bad_generic_reference_after_move.c- > /dev/null 2> tests/bad_generic_reference_after_move.err; then
+    echo "generic reference to a local value unexpectedly escaped" >&2
+    exit 1
+fi
+grep "value 'value' cannot escape through returned safe reference" tests/bad_generic_reference_after_move.err >/dev/null
+
+if ./c- tests/bad_owned_reassign_alias_safe.c- > /dev/null 2> tests/bad_owned_reassign_alias_safe.err; then
+    echo "owned alias assignment unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "owned value 'first' cannot be assigned by alias to 'second'" tests/bad_owned_reassign_alias_safe.err >/dev/null
+
+if ./c- tests/bad_unsafe_prototype_call_safe.c- > /dev/null 2> tests/bad_unsafe_prototype_call_safe.err; then
+    echo "unsafe prototype call from safe mode unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "unsafe function 'raw_value' can only be called inside unsafe" tests/bad_unsafe_prototype_call_safe.err >/dev/null
+
+if ./c- tests/bad_variadic_function_safe.c- > /dev/null 2> tests/bad_variadic_function_safe.err; then
+    echo "safe variadic function unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'variadic functions are only allowed inside unsafe' tests/bad_variadic_function_safe.err >/dev/null
+
+if ./c- tests/bad_union_safe.c- > /dev/null 2> tests/bad_union_safe.err; then
+    echo "safe union unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'unions are only allowed inside unsafe' tests/bad_union_safe.err >/dev/null
+
+sh tests/fuzz_safe_mode.sh ./c- | grep 'safe-mode-fuzz-ok' >/dev/null
+
 ./c- -c-compat tests/c_compat_macros.c- > tests/c_compat_macros.out.c
 grep '#ifdef CCOMPAT_VALUE' tests/c_compat_macros.out.c >/dev/null
 grep '#pragma GCC diagnostic push' tests/c_compat_macros.out.c >/dev/null
@@ -56,7 +169,11 @@ grep 'CPoint p = { .x = 10, .y = 20 };' tests/c_compat_typedefs.out.c >/dev/null
 cc -std=gnu11 -Wall -Wextra tests/c_compat_typedefs.out.c -o tests/c_compat_typedefs.out
 ./tests/c_compat_typedefs.out
 
-./c- tests/inline_c_block.c- > tests/inline_c_block.out.c
+./c- --dump-typed-ast tests/inline_c_block.c- \
+    > tests/inline_c_block.out.c \
+    2> tests/inline_c_block.ast
+grep '^    inline-c$' tests/inline_c_block.ast >/dev/null
+grep '^      inline-c$' tests/inline_c_block.ast >/dev/null
 grep '#define INLINE_C_SCALE 4' tests/inline_c_block.out.c >/dev/null
 grep 'static inline int inline_c_mul' tests/inline_c_block.out.c >/dev/null
 grep 'local = inline_c_mul(local);' tests/inline_c_block.out.c >/dev/null
@@ -100,13 +217,24 @@ grep '__attribute__((aligned(4096))) int page_table\[1024\];' tests/os_attribute
 grep '__attribute__((naked)) void trampoline(void)' tests/os_attributes.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra -c tests/os_attributes.out.c -o tests/os_attributes.out.o
 
-./c- tests/os_compile_time.c- > tests/os_compile_time.out.c
+./c- --dump-typed-ast tests/os_compile_time.c- \
+    > tests/os_compile_time.out.c \
+    2> tests/os_compile_time.ast
 grep '_Static_assert(sizeof(struct TrapFrame) == 12, "trap frame size");' tests/os_compile_time.out.c >/dev/null
 grep '_Static_assert(__builtin_offsetof(struct TrapFrame, pc) == 8, "pc offset");' tests/os_compile_time.out.c >/dev/null
 grep '__attribute__((noreturn)) void halt_forever(void)' tests/os_compile_time.out.c >/dev/null
+grep '^      static-assert expression=binary$' tests/os_compile_time.ast >/dev/null
+grep '^          lhs offsetof name=r1 target="struct TrapFrame" type=size_t$' \
+    tests/os_compile_time.ast >/dev/null
 cc -std=gnu99 -Wall -Wextra -c tests/os_compile_time.out.c -o tests/os_compile_time.out.o
 
-./c- tests/bitflags_safe.c- > tests/bitflags_safe.out.c
+./c- --dump-typed-ast tests/bitflags_safe.c- \
+    > tests/bitflags_safe.out.c \
+    2> tests/bitflags_safe.ast
+grep '^    bitflags PageFlags base=unsigned int$' tests/bitflags_safe.ast >/dev/null
+grep '^      bitflag-member Present expression=literal$' tests/bitflags_safe.ast >/dev/null
+grep '^      bitflag-member Write expression=literal$' tests/bitflags_safe.ast >/dev/null
+grep '^      bitflag-member User expression=literal$' tests/bitflags_safe.ast >/dev/null
 grep 'typedef unsigned int PageFlags;' tests/bitflags_safe.out.c >/dev/null
 grep 'PageFlags_Present = 1u' tests/bitflags_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/bitflags_safe.out.c -o tests/bitflags_safe.out
@@ -137,7 +265,31 @@ grep 'RingBuffer_from_unsigned_char(storage.bytes, 4, 0)' tests/ring_buffer_safe
 cc -std=gnu99 -Wall -Wextra tests/ring_buffer_safe.out.c -o tests/ring_buffer_safe.out
 ./tests/ring_buffer_safe.out
 
-./c- tests/generic_default_params.c- > tests/generic_default_params.out.c
+if ./c- tests/bad_ring_buffer_drain_bounds_safe.c- > /dev/null 2> tests/bad_ring_buffer_drain_bounds_safe.err; then
+    echo "oversized RingBuffer drain unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "output capacity 3 exceeds array 'output' length 2" tests/bad_ring_buffer_drain_bounds_safe.err >/dev/null
+
+./c- --dump-typed-ast tests/generic_default_params.c- \
+    > tests/generic_default_params.out.c \
+    2> tests/generic_default_params.ast
+grep '^generic-function-template choose$' tests/generic_default_params.ast >/dev/null
+grep '^  type-parameter T type=T$' tests/generic_default_params.ast >/dev/null
+grep '^  return-type type=T$' tests/generic_default_params.ast >/dev/null
+grep '^  parameter a type=T$' tests/generic_default_params.ast >/dev/null
+grep '^  parameter b type=T default=literal$' tests/generic_default_params.ast >/dev/null
+grep '^    expr literal value=20 type=int$' tests/generic_default_params.ast >/dev/null
+grep '^    expr binary op=+ type=T$' tests/generic_default_params.ast >/dev/null
+test "$(grep -c '^default-macro choose_int$' tests/generic_default_params.ast)" -eq 2
+if grep 'type=unknown reason=' tests/generic_default_params.ast >/dev/null; then
+    echo "generic default-parameter AST retained an unknown expression type" >&2
+    exit 1
+fi
+if grep 'struct __CMinusIndex_T' tests/generic_default_params.out.c >/dev/null; then
+    echo "uninstantiated generic payload helper was emitted" >&2
+    exit 1
+fi
 grep '#define choose_int(...)' tests/generic_default_params.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/generic_default_params.out.c -o tests/generic_default_params.out
 test "$(./tests/generic_default_params.out)" = "62 14 22 102 141"
@@ -385,16 +537,175 @@ grep 'cminus_gc_free(person);' tests/object_initializer.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/object_initializer.out.c -o tests/object_initializer.out
 ./tests/object_initializer.out
 
-./c- tests/default_params.c- > tests/default_params.out.c
+./c- --dump-typed-ast tests/default_params.c- \
+    > tests/default_params.out.c \
+    2> tests/default_params.ast
+grep '^    function-declaration fun$' tests/default_params.ast >/dev/null
+grep '^    function fun$' tests/default_params.ast >/dev/null
+test "$(grep -c '^      parameter a type=int default=binary$' tests/default_params.ast)" -eq 2
+test "$(grep -c '^      parameter b type=int default=literal$' tests/default_params.ast)" -eq 2
+test "$(grep -c '^      parameter c type=int default=literal$' tests/default_params.ast)" -eq 2
 grep 'void fun(int a, int b, int c);' tests/default_params.out.c >/dev/null
 grep 'void fun(int a, int b, int c)' tests/default_params.out.c >/dev/null
+grep '^          lhs identifier name=b type=int$' tests/default_params.ast >/dev/null
+if grep 'type=unknown reason=' tests/default_params.ast >/dev/null; then
+    echo "default-parameter AST retained an unknown expression type" >&2
+    exit 1
+fi
 grep 'fun(b + 1, 22, 33);' tests/default_params.out.c >/dev/null
 grep 'fun(7, 22, 9);' tests/default_params.out.c >/dev/null
 grep 'fun(1, 22, 3);' tests/default_params.out.c >/dev/null
 cc -std=c99 -Wall -Wextra -pedantic tests/default_params.out.c -o tests/default_params.out
 ./tests/default_params.out
 
-./c- tests/generics_foreach.c- > tests/generics_foreach.out.c
+./c- --dump-typed-ast tests/generics_foreach.c- \
+    > tests/generics_foreach.out.c \
+    2> tests/generics_foreach.ast
+grep '^runtime-prelude declarations$' tests/generics_foreach.ast >/dev/null
+grep '^runtime-prelude system-includes$' tests/generics_foreach.ast >/dev/null
+grep '^generic-struct-template Vec$' tests/generics_foreach.ast >/dev/null
+grep -A1 '^generic-struct-template Vec$' tests/generics_foreach.ast \
+    | grep '^  type-parameter T type=T$' >/dev/null
+grep '^generic-function-template Vec_push$' tests/generics_foreach.ast >/dev/null
+grep -A2 '^generic-function-template Vec_push$' tests/generics_foreach.ast \
+    | grep '^  return-type type=void$' >/dev/null
+grep '^payload-enum-template Optional parameter=T$' tests/generics_foreach.ast >/dev/null
+grep -A3 '^payload-enum-template Optional parameter=T$' tests/generics_foreach.ast \
+    | grep '^  type-parameter T type=T$' >/dev/null
+grep -A3 '^payload-enum-template Optional parameter=T$' tests/generics_foreach.ast \
+    | grep '^  payload-variant Some type=T$' >/dev/null
+grep -A3 '^payload-enum-template Optional parameter=T$' tests/generics_foreach.ast \
+    | grep '^  payload-variant None$' >/dev/null
+grep -A2 '^generic-struct-template Map$' tests/generics_foreach.ast \
+    | grep '^  type-parameter K type=K$' >/dev/null
+grep -A2 '^generic-struct-template Map$' tests/generics_foreach.ast \
+    | grep '^  type-parameter V type=V$' >/dev/null
+grep -A3 '^      declaration map expression=call$' tests/generics_foreach.ast \
+    | grep '^        type type=struct Map_int_int\*% application=Map$' >/dev/null
+test "$(grep -A3 '^      declaration map expression=call$' tests/generics_foreach.ast \
+    | grep -c '^          type-argument type=int$')" -eq 2
+if grep 'type type=Vec_push<T> application=Vec_push' tests/generics_foreach.ast >/dev/null; then
+    echo "generic function call was misclassified as a declaration type" >&2
+    exit 1
+fi
+grep '^generic-struct Vec_int$' tests/generics_foreach.ast >/dev/null
+grep '^  struct Vec_int$' tests/generics_foreach.ast >/dev/null
+grep '^    field data$' tests/generics_foreach.ast >/dev/null
+grep -A1 '^    field data$' tests/generics_foreach.ast \
+    | grep '^      type type=int\*$' >/dev/null
+grep '^generic-prototype Vec_new_int$' tests/generics_foreach.ast >/dev/null
+grep '^  function-declaration Vec_new_int$' tests/generics_foreach.ast >/dev/null
+grep '^generic-function Vec_new_int$' tests/generics_foreach.ast >/dev/null
+grep '^  function Vec_new_int$' tests/generics_foreach.ast >/dev/null
+grep '^generic-function Vec_push_int$' tests/generics_foreach.ast >/dev/null
+grep -A20 '^generic-function Vec_push_int$' tests/generics_foreach.ast \
+    | grep '^            receiver identifier name=self type=struct Vec_int\*$' >/dev/null
+grep -A20 '^generic-function Vec_push_int$' tests/generics_foreach.ast \
+    | grep '^          callee identifier name=cminus_checked_int_mul type=fn()->int$' >/dev/null
+grep '^          callee identifier name=Vec_push_int type=fn()->void$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^              callee identifier name=Vec_len_int type=fn()->int$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          callee identifier name=Map_set_int_int type=fn()->int$' \
+    tests/generics_foreach.ast >/dev/null
+if grep -E 'callee identifier name=(Vec|List|Map)_[A-Za-z0-9_]+ type=unknown' \
+    tests/generics_foreach.ast >/dev/null; then
+    echo "concrete generic call remained unresolved in final AST" >&2
+    exit 1
+fi
+grep '^    function Bitmap_from_impl$' tests/generics_foreach.ast >/dev/null
+grep '^      parameter words type=long\*$' tests/generics_foreach.ast >/dev/null
+grep '^          callee identifier name=Bitmap_word_shift type=fn()->int$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          callee identifier name=Bitmap_find_zero type=fn()->struct __CMinusIndex_int$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          callee identifier name=__CMinusIndex_int_is_Some type=fn()->int$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^              callee identifier name=__CMinusIndex_int_get_Some type=fn()->int$' \
+    tests/generics_foreach.ast >/dev/null
+if grep -E 'callee identifier name=(Bitmap_|__CMinusIndex_int_)[A-Za-z0-9_]* type=unknown' \
+    tests/generics_foreach.ast >/dev/null; then
+    echo "Bitmap or payload helper call remained unresolved in final AST" >&2
+    exit 1
+fi
+grep '^      callee identifier name=__atomic_store_n type=fn()->void$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^      callee identifier name=__atomic_load_n type=fn()->T$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^      callee identifier name=__atomic_compare_exchange_n type=fn()->int$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          callee identifier name=__builtin_va_start type=fn()->void$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^            callee identifier name=vsnprintf type=fn()->int$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          callee identifier name=fopen type=fn()->FILE\* raw$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^      operand alignof target="T" op=_Alignof type=size_t$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^      rhs identifier name=NULL type=struct Atomic\* raw$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^      expr identifier name=NULL type=struct __CMinusGCHeader\* raw$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^            argument identifier name=NULL type=pthread_attr_t\* raw$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^            argument identifier name=NULL type=void\*\* raw$' \
+    tests/generics_foreach.ast >/dev/null
+if grep 'identifier name=NULL type=unknown reason=unresolved-symbol' \
+    tests/generics_foreach.ast >/dev/null; then
+    echo "NULL was classified as an unresolved symbol instead of a contextual literal" >&2
+    exit 1
+fi
+grep '^  field next_fn$' tests/generics_foreach.ast >/dev/null
+grep '^    type type=fn()->struct __CMinusIndex$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^  parameter next_fn type=fn()->struct __CMinusIndex$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^      callee member name=next_fn op=-> type=fn()->struct __CMinusIndex$' \
+    tests/generics_foreach.ast >/dev/null
+grep -A8 '^generic-function-template Map_clear$' tests/generics_foreach.ast \
+    | grep '^  parameter self type=struct Map\* raw$' >/dev/null
+grep -A18 '^generic-function-template Map_clear$' tests/generics_foreach.ast \
+    | grep '^      argument member name=keys op=-> type=K\* raw$' >/dev/null
+if grep 'identifier name=NULL type=unknown' tests/generics_foreach.ast >/dev/null; then
+    echo "contextual NULL remained unresolved after member typing" >&2
+    exit 1
+fi
+grep '^      callee member name=from op=. type=fn()->struct Span$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          callee member name=get op=. type=fn()->T$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^            body-expression member name=Some op=. result=yes type=int$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          lhs statement-expression type=int$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^              receiver identifier name=item type=struct Item\*$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^        receiver generic generic=T type=type Span$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          lhs identifier name=Span type=type Span$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          argument identifier name=stderr type=FILE\* raw$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^            rhs identifier name=__CMINUS_GC_MAGIC type=long$' \
+    tests/generics_foreach.ast >/dev/null
+grep '^          expr identifier name=__cminus_return0 type=struct Optional_FILE_ptr$' \
+    tests/generics_foreach.ast >/dev/null
+if grep -E 'type=unknown reason=(unresolved-member-type|unresolved-call-return|unresolved-statement-result|unknown-operand-type)' \
+    tests/generics_foreach.ast >/dev/null; then
+    echo "resolvable expression type remained unknown in final AST" >&2
+    exit 1
+fi
+if grep 'type=unknown reason=' tests/generics_foreach.ast >/dev/null; then
+    echo "expression type remained unknown in final AST" >&2
+    exit 1
+fi
+if grep 'callee identifier name=.* type=unknown' tests/generics_foreach.ast >/dev/null; then
+    echo "function call remained unresolved in final AST" >&2
+    exit 1
+fi
+grep '^    declaration next_cap expression=conditional$' tests/generics_foreach.ast >/dev/null
+grep '^    if expression=binary$' tests/generics_foreach.ast >/dev/null
+grep '^payload-helpers payload-enums$' tests/generics_foreach.ast >/dev/null
 grep 'struct Vec_int' tests/generics_foreach.out.c >/dev/null
 grep 'struct Vec_Item_ptr' tests/generics_foreach.out.c >/dev/null
 grep 'Vec_first_int' tests/generics_foreach.out.c >/dev/null
@@ -452,6 +763,11 @@ grep 'cminus_string_contains(text, "ell")' tests/string_methods.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/string_methods.out.c -o tests/string_methods.out
 ./tests/string_methods.out
 
+./c- tests/ast_nested_method_lowering.c- > tests/ast_nested_method_lowering.out.c
+grep 'cminus_string_eq(text, cminus_string_starts_with(text, "a") ? "abc" : "")' tests/ast_nested_method_lowering.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/ast_nested_method_lowering.out.c -o tests/ast_nested_method_lowering.out
+./tests/ast_nested_method_lowering.out
+
 if ./c- tests/bad_span_stack_len.c- > /dev/null 2> tests/bad_span_stack_len.err; then
     echo "oversized stack Span unexpectedly succeeded" >&2
     exit 1
@@ -470,7 +786,13 @@ grep 'Span_from_bytes_int(holder->data, sizeof(holder->data), 0)' tests/span_fie
 cc -std=gnu99 -Wall -Wextra tests/span_field_ok.out.c -o tests/span_field_ok.out
 test "$(./tests/span_field_ok.out)" = "3"
 
-./c- tests/fixed_array_safe.c- > tests/fixed_array_safe.out.c
+./c- --dump-typed-ast tests/fixed_array_safe.c- \
+    > tests/fixed_array_safe.out.c \
+    2> tests/fixed_array_safe.ast
+grep -A3 '^    struct Buffer$' tests/fixed_array_safe.ast \
+    | grep '^      field data$' >/dev/null
+grep -A3 '^    struct Buffer$' tests/fixed_array_safe.ast \
+    | grep '^          array-dimension length=4$' >/dev/null
 grep 'Span_from_int(buf->data, 4, 0)' tests/fixed_array_safe.out.c >/dev/null
 grep 'FixedVec_from_int(buf->data, 4, 0)' tests/fixed_array_safe.out.c >/dev/null
 grep 'struct FixedVec_int FixedVec_from_int' tests/fixed_array_safe.out.c >/dev/null
@@ -501,6 +823,36 @@ if ./c- tests/bad_array_nested_parenthesized_var_index_safe.c- > /dev/null 2> te
     exit 1
 fi
 grep "variable index into fixed array 'values' is not allowed in safe mode" tests/bad_array_nested_parenthesized_var_index_safe.err >/dev/null
+
+if ./c- tests/bad_array_pointer_arithmetic_safe.c- > /dev/null 2> tests/bad_array_pointer_arithmetic_safe.err; then
+    echo "fixed array pointer arithmetic unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "fixed array 'values' cannot decay to a raw pointer in safe mode" tests/bad_array_pointer_arithmetic_safe.err >/dev/null
+
+if ./c- tests/bad_array_address_subscript_safe.c- > /dev/null 2> tests/bad_array_address_subscript_safe.err; then
+    echo "fixed array element address subscript unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "taking the raw address of fixed array 'values' element is only allowed inside unsafe" tests/bad_array_address_subscript_safe.err >/dev/null
+
+if ./c- tests/bad_array_comma_decay_safe.c- > /dev/null 2> tests/bad_array_comma_decay_safe.err; then
+    echo "fixed array comma decay unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "fixed array 'values' cannot decay to a raw pointer in safe mode" tests/bad_array_comma_decay_safe.err >/dev/null
+
+if ./c- tests/bad_initialized_array_var_index_safe.c- > /dev/null 2> tests/bad_initialized_array_var_index_safe.err; then
+    echo "initialized fixed array variable index unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "variable index into fixed array 'values' is not allowed in safe mode" tests/bad_initialized_array_var_index_safe.err >/dev/null
+
+if ./c- tests/bad_array_comment_index_safe.c- > /dev/null 2> tests/bad_array_comment_index_safe.err; then
+    echo "comment-separated fixed array variable index unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "variable index into fixed array 'values' is not allowed in safe mode" tests/bad_array_comment_index_safe.err >/dev/null
 
 if ./c- tests/bad_span_field_len.c- > /dev/null 2> tests/bad_span_field_len.err; then
     echo "oversized field Span unexpectedly succeeded" >&2
@@ -669,6 +1021,12 @@ grep 'Map_values_to_span_int_int(map, value_buf, 4)' tests/collection_span.out.c
 cc -std=gnu99 -Wall -Wextra tests/collection_span.out.c -o tests/collection_span.out
 test "$(./tests/collection_span.out)" = "600"
 
+if ./c- tests/bad_list_to_span_var_capacity_safe.c- > /dev/null 2> tests/bad_list_to_span_var_capacity_safe.err; then
+    echo "variable List output capacity unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "variable output capacity for fixed array 'output' is not allowed in safe mode" tests/bad_list_to_span_var_capacity_safe.err >/dev/null
+
 ./c- tests/collection_convert.c- > tests/collection_convert.out.c
 grep 'Vec_to_list_int(vec)' tests/collection_convert.out.c >/dev/null
 grep 'List_to_vec_int(from_vec)' tests/collection_convert.out.c >/dev/null
@@ -761,6 +1119,50 @@ grep 'Thread_spawn(worker)' tests/thread_safe.out.c >/dev/null
 grep 'Mutex_lock(&gate)' tests/thread_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/thread_safe.out.c -o tests/thread_safe.out -pthread
 ./tests/thread_safe.out
+
+./c- tests/gc_thread_stress.c- > tests/gc_thread_stress.out.c
+grep '__cminus_gc_lock' tests/gc_thread_stress.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/gc_thread_stress.out.c \
+    -o tests/gc_thread_stress.out -pthread
+./tests/gc_thread_stress.out
+
+./c- tests/thread_detach_safe.c- > tests/thread_detach_safe.out.c
+grep '__cminus_thread_state_release' tests/thread_detach_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_detach_safe.out.c \
+    -o tests/thread_detach_safe.out -pthread
+./tests/thread_detach_safe.out
+
+if ./c- tests/bad_thread_copy_safe.c- > /dev/null \
+    2> tests/bad_thread_copy_safe.err; then
+    echo "Thread resource copy unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "runtime resource 'first' cannot be copied" \
+    tests/bad_thread_copy_safe.err >/dev/null
+
+if ./c- tests/bad_mutex_copy_safe.c- > /dev/null \
+    2> tests/bad_mutex_copy_safe.err; then
+    echo "Mutex resource copy unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "runtime resource 'first' cannot be copied" \
+    tests/bad_mutex_copy_safe.err >/dev/null
+
+if ./c- tests/bad_resource_parameter_safe.c- > /dev/null \
+    2> tests/bad_resource_parameter_safe.err; then
+    echo "runtime resource value parameter unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "runtime resource parameter 'value' must use ref or mut ref" \
+    tests/bad_resource_parameter_safe.err >/dev/null
+
+if ./c- tests/bad_resource_field_safe.c- > /dev/null \
+    2> tests/bad_resource_field_safe.err; then
+    echo "runtime resource struct field unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "runtime resource fields are not allowed in safe structs for field 'WorkerState.gate'" \
+    tests/bad_resource_field_safe.err >/dev/null
 
 ./c- tests/critical_safe.c- > tests/critical_safe.out.c
 grep 'struct Critical guard = Critical_enter();' tests/critical_safe.out.c >/dev/null
@@ -866,11 +1268,23 @@ if ./c- tests/bad_c_string_call_safe.c- > /dev/null 2> tests/bad_c_string_call_s
 fi
 grep "C function 'strlen' can only be called inside unsafe" tests/bad_c_string_call_safe.err >/dev/null
 
+if ./c- tests/bad_parenthesized_c_call_safe.c- > /dev/null 2> tests/bad_parenthesized_c_call_safe.err; then
+    echo "parenthesized C function call outside unsafe unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "C function 'memcpy' can only be called inside unsafe" tests/bad_parenthesized_c_call_safe.err >/dev/null
+
 if ./c- tests/bad_ref_raw_safe.c- > tests/bad_ref_raw_safe.out.c 2> tests/bad_ref_raw_safe.err; then
     echo "raw pointer Ref input outside unsafe unexpectedly succeeded" >&2
     exit 1
 fi
 grep 'raw pointer cannot be stored in Ref in safe mode' tests/bad_ref_raw_safe.err >/dev/null
+
+if ./c- tests/bad_raw_pointer_comma_input_safe.c- > /dev/null 2> tests/bad_raw_pointer_comma_input_safe.err; then
+    echo "raw pointer hidden in comma expression unexpectedly entered Ref" >&2
+    exit 1
+fi
+grep 'raw pointer cannot be stored in Ref in safe mode' tests/bad_raw_pointer_comma_input_safe.err >/dev/null
 
 if ./c- tests/bad_span_raw_safe.c- > tests/bad_span_raw_safe.out.c 2> tests/bad_span_raw_safe.err; then
     echo "raw pointer Span input outside unsafe unexpectedly succeeded" >&2
@@ -902,7 +1316,23 @@ if ./c- tests/bad_raw_field_taint_safe.c- > tests/bad_raw_field_taint_safe.out.c
 fi
 grep "raw pointer field 'Holder.raw' cannot be accessed in safe mode" tests/bad_raw_field_taint_safe.err >/dev/null
 
-./c- tests/safe_to_unsafe_ok.c- > tests/safe_to_unsafe_ok.out.c
+./c- --dump-typed-ast tests/safe_to_unsafe_ok.c- \
+    > tests/safe_to_unsafe_ok.out.c \
+    2> tests/safe_to_unsafe_ok.ast
+grep '^    unsafe$' tests/safe_to_unsafe_ok.ast >/dev/null
+grep '^      function read_value$' tests/safe_to_unsafe_ok.ast >/dev/null
+grep '^        parameter value type=int\* raw$' tests/safe_to_unsafe_ok.ast >/dev/null
+grep '^          expr dereference op=\* type=int$' tests/safe_to_unsafe_ok.ast >/dev/null
+grep '^      function sum_span$' tests/safe_to_unsafe_ok.ast >/dev/null
+grep '^            lhs identifier name=i type=int$' tests/safe_to_unsafe_ok.ast >/dev/null
+grep '^                receiver identifier name=values type=int\* raw$' \
+    tests/safe_to_unsafe_ok.ast >/dev/null
+grep '^      unsafe$' tests/safe_to_unsafe_ok.ast >/dev/null
+grep '^        assignment expression=binary$' tests/safe_to_unsafe_ok.ast >/dev/null
+if grep 'type=unknown reason=' tests/safe_to_unsafe_ok.ast >/dev/null; then
+    echo "unsafe-boundary AST retained an unknown expression type" >&2
+    exit 1
+fi
 grep 'read_value(&local)' tests/safe_to_unsafe_ok.out.c >/dev/null
 grep 'sum_span(data, 3)' tests/safe_to_unsafe_ok.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/safe_to_unsafe_ok.out.c -o tests/safe_to_unsafe_ok.out
@@ -969,6 +1399,63 @@ grep '__cminus_gc_take_dead_fit' tests/gc_double_free_reuse.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/gc_double_free_reuse.out.c -o tests/gc_double_free_reuse.out
 test "$(./tests/gc_double_free_reuse.out)" = "ok"
 
+./c- tests/managed_reference_reuse_panic.c- \
+    > tests/managed_reference_reuse_panic.out.c
+grep '__cminus_gc_find_live_containing' \
+    tests/managed_reference_reuse_panic.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/managed_reference_reuse_panic.out.c \
+    -o tests/managed_reference_reuse_panic.out
+if ./tests/managed_reference_reuse_panic.out \
+    > tests/managed_reference_reuse_panic.out.log \
+    2> tests/managed_reference_reuse_panic.err; then
+    echo "stale managed reference survived allocation reuse" >&2
+    exit 1
+fi
+grep 'panic: dangling managed heap reference' \
+    tests/managed_reference_reuse_panic.err >/dev/null
+
+./c- tests/gc_interior_free_panic.c- \
+    > tests/gc_interior_free_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/gc_interior_free_panic.out.c \
+    -o tests/gc_interior_free_panic.out
+if ./tests/gc_interior_free_panic.out \
+    > tests/gc_interior_free_panic.out.log \
+    2> tests/gc_interior_free_panic.err; then
+    echo "interior managed pointer free unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: cannot free interior managed pointer' \
+    tests/gc_interior_free_panic.err >/dev/null
+
+./c- tests/managed_optional_ref_panic.c- \
+    > tests/managed_optional_ref_panic.out.c
+grep 'cminus_ptr_classify' tests/managed_optional_ref_panic.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/managed_optional_ref_panic.out.c \
+    -o tests/managed_optional_ref_panic.out
+if ./tests/managed_optional_ref_panic.out \
+    > tests/managed_optional_ref_panic.out.log \
+    2> tests/managed_optional_ref_panic.err; then
+    echo "Optional Ref survived managed owner release" >&2
+    exit 1
+fi
+grep 'panic: dangling managed heap reference' \
+    tests/managed_optional_ref_panic.err >/dev/null
+
+./c- tests/managed_string_dangling_panic.c- \
+    > tests/managed_string_dangling_panic.out.c
+grep 'cminus_string_require_alive(self)' \
+    tests/managed_string_dangling_panic.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/managed_string_dangling_panic.out.c \
+    -o tests/managed_string_dangling_panic.out
+if ./tests/managed_string_dangling_panic.out \
+    > tests/managed_string_dangling_panic.out.log \
+    2> tests/managed_string_dangling_panic.err; then
+    echo "dangling managed string unexpectedly survived" >&2
+    exit 1
+fi
+grep 'panic: dangling managed heap reference' \
+    tests/managed_string_dangling_panic.err >/dev/null
+
 ./c- tests/gc_header_offset.c- > tests/gc_header_offset.out.c
 grep '__cminus_gc_header_from_payload(first)' tests/gc_header_offset.out.c >/dev/null
 grep 'first_header->magic != __CMINUS_GC_MAGIC' tests/gc_header_offset.out.c >/dev/null
@@ -996,7 +1483,16 @@ grep 'Vec_get_opt_int(nums, 1)' tests/index_string_literal.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra -Werror tests/index_string_literal.out.c -o tests/index_string_literal.out
 test "$(./tests/index_string_literal.out)" = "$(printf 'a[0] x[1] = 20\na')"
 
-C_MINUS_LIB="$ROOT/lib" ./c- -bare tests/bare_metal.c- > tests/bare_metal.out.c
+C_MINUS_LIB="$ROOT/lib" ./c- -bare --dump-typed-ast tests/bare_metal.c- \
+    > tests/bare_metal.out.c \
+    2> tests/bare_metal.ast
+grep '^runtime-prelude bare-runtime$' tests/bare_metal.ast >/dev/null
+grep '^          callee identifier name=printf type=fn()->int$' \
+    tests/bare_metal.ast >/dev/null
+if grep 'type=unknown reason=' tests/bare_metal.ast >/dev/null; then
+    echo "bare-mode AST retained an unknown expression type" >&2
+    exit 1
+fi
 # -bare output must not pull in any libc header.
 if grep -E '#include[[:space:]]*<' tests/bare_metal.out.c >/dev/null; then
     echo "bare output still includes a system header" >&2
@@ -1142,6 +1638,12 @@ if ./c- tests/bad_raw_heap_safe.c- > /dev/null 2> tests/bad_raw_heap_safe.err; t
 fi
 grep "raw heap function 'malloc' is only allowed inside unsafe" tests/bad_raw_heap_safe.err >/dev/null
 
+if ./c- tests/bad_parenthesized_heap_call_safe.c- > /dev/null 2> tests/bad_parenthesized_heap_call_safe.err; then
+    echo "parenthesized raw heap call unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "raw heap function 'malloc' is only allowed inside unsafe" tests/bad_parenthesized_heap_call_safe.err >/dev/null
+
 if ./c- tests/bad_alloc_attr_safe.c- > /dev/null 2> tests/bad_alloc_attr_safe.err; then
     echo "safe alloc-attributed call unexpectedly succeeded" >&2
     exit 1
@@ -1212,6 +1714,18 @@ if ./c- tests/bad_return_stack_span_safe.c- > /dev/null 2> tests/bad_return_stac
     exit 1
 fi
 grep "value 'values' cannot escape through returned safe reference" tests/bad_return_stack_span_safe.err >/dev/null
+
+if ./c- tests/bad_global_ref_safe.c- > /dev/null 2> tests/bad_global_ref_safe.err; then
+    echo "safe global Ref unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Ref/Span values cannot be stored in safe global 'saved'" tests/bad_global_ref_safe.err >/dev/null
+
+if ./c- tests/bad_heap_container_ref_safe.c- > /dev/null 2> tests/bad_heap_container_ref_safe.err; then
+    echo "heap container of Ref unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "heap container 'values' cannot store Ref/Span values in safe mode" tests/bad_heap_container_ref_safe.err >/dev/null
 
 if ./c- tests/bad_return_owned_borrow_safe.c- > /dev/null 2> tests/bad_return_owned_borrow_safe.err; then
     echo "return owned borrow unexpectedly succeeded" >&2
@@ -1504,5 +2018,249 @@ if ./c- tests/bad_s_string_type.c- > /dev/null 2> tests/bad_s_string_type.err; t
     exit 1
 fi
 grep "s string requires a char pointer declaration" tests/bad_s_string_type.err >/dev/null
+
+./c- --dump-typed-ast tests/typed_statement_ast.c- \
+    > tests/typed_statement_ast.out.c \
+    2> tests/typed_statement_ast.ast
+grep '^    function cminus_typed_ast_probe$' tests/typed_statement_ast.ast >/dev/null
+grep '^      declaration value expression=binary$' tests/typed_statement_ast.ast >/dev/null
+grep -A1 '^      declaration value expression=binary$' tests/typed_statement_ast.ast \
+    | grep '^        type type=int$' >/dev/null
+grep '^      assignment expression=binary$' tests/typed_statement_ast.ast >/dev/null
+grep '^      return expression=identifier$' tests/typed_statement_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_statement_ast.out.c -o tests/typed_statement_ast.out
+./tests/typed_statement_ast.out
+
+./c- --dump-typed-ast tests/typed_ownership_ast.c- \
+    > tests/typed_ownership_ast.out.c \
+    2> tests/typed_ownership_ast.ast
+grep -A3 '^        declaration source$' tests/typed_ownership_ast.ast \
+    | grep '^          ownership owned$' >/dev/null
+grep -A4 '^      declaration view expression=identifier$' tests/typed_ownership_ast.ast \
+    | grep '^        ownership borrowed$' >/dev/null
+grep -A4 '^      declaration view expression=identifier$' tests/typed_ownership_ast.ast \
+    | grep '^        lifetime owner=source storage=owned state=live$' >/dev/null
+grep -A5 '^      declaration reference expression=statement-expression$' \
+    tests/typed_ownership_ast.ast \
+    | grep '^        lifetime owner=value storage=stack state=live runtime-check=yes$' >/dev/null
+grep -A4 '^      declaration destination expression=identifier$' tests/typed_ownership_ast.ast \
+    | grep '^        move-transfer source=source$' >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_ownership_ast.out.c -o tests/typed_ownership_ast.out
+./tests/typed_ownership_ast.out
+
+./c- --dump-typed-ast tests/typed_control_ast.c- \
+    > tests/typed_control_ast.out.c \
+    2> tests/typed_control_ast.ast
+grep '^    function cminus_control_ast_probe$' tests/typed_control_ast.ast >/dev/null
+grep '^      for expression=binary initializer=declaration increment=binary$' tests/typed_control_ast.ast >/dev/null
+grep '^      while expression=binary$' tests/typed_control_ast.ast >/dev/null
+grep '^      if expression=binary$' tests/typed_control_ast.ast >/dev/null
+grep '^      if$' tests/typed_control_ast.ast >/dev/null
+grep '^      switch expression=identifier$' tests/typed_control_ast.ast >/dev/null
+grep '^        case expression=literal$' tests/typed_control_ast.ast >/dev/null
+grep '^        default$' tests/typed_control_ast.ast >/dev/null
+grep '^        break$' tests/typed_control_ast.ast >/dev/null
+grep '^        continue$' tests/typed_control_ast.ast >/dev/null
+grep '^      do$' tests/typed_control_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_control_ast.out.c -o tests/typed_control_ast.out
+./tests/typed_control_ast.out
+
+./c- --dump-typed-ast tests/typed_update_ast.c- \
+    > tests/typed_update_ast.out.c \
+    2> tests/typed_update_ast.ast
+grep '^      assignment expression=update$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr update op=++ form=postfix type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr update op=++ form=prefix type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr update op=-- form=postfix type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr update op=-- form=prefix type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^      for expression=binary initializer=declaration increment=update$' tests/typed_update_ast.ast >/dev/null
+grep '^        increment-expr update op=++ form=postfix type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^          operand identifier name=i type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr binary op=<<= type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr binary op=|= type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr binary op=\^= type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr binary op=&= type=int$' tests/typed_update_ast.ast >/dev/null
+grep '^        expr binary op=>>= type=int$' tests/typed_update_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_update_ast.out.c -o tests/typed_update_ast.out
+./tests/typed_update_ast.out
+
+./c- --dump-typed-ast tests/typed_cast_unary_ast.c- \
+    > tests/typed_cast_unary_ast.out.c \
+    2> tests/typed_cast_unary_ast.ast
+grep '^        expr unary op=- type=int$' tests/typed_cast_unary_ast.ast >/dev/null
+grep '^        expr unary op=~ type=int$' tests/typed_cast_unary_ast.ast >/dev/null
+grep '^        expr unary op=! type=int$' tests/typed_cast_unary_ast.ast >/dev/null
+grep '^            rhs cast target="int" type=int$' tests/typed_cast_unary_ast.ast >/dev/null
+grep '^              operand sizeof op=sizeof type=size_t$' \
+    tests/typed_cast_unary_ast.ast >/dev/null
+grep '^              operand alignof target="int" op=_Alignof type=size_t$' \
+    tests/typed_cast_unary_ast.ast >/dev/null
+cc -std=gnu11 -Wall -Wextra tests/typed_cast_unary_ast.out.c -o tests/typed_cast_unary_ast.out
+./tests/typed_cast_unary_ast.out
+
+./c- --dump-typed-ast tests/typed_typedef_ast.c- \
+    > tests/typed_typedef_ast.out.c \
+    2> tests/typed_typedef_ast.ast
+grep '^    typedef Word type=long$' tests/typed_typedef_ast.ast >/dev/null
+grep '^    typedef Counter type=long$' tests/typed_typedef_ast.ast >/dev/null
+grep '^    typedef Unary type=fn()->int$' tests/typed_typedef_ast.ast >/dev/null
+grep '^    function cminus_typedef_ast_probe$' tests/typed_typedef_ast.ast >/dev/null
+grep '^      return-type type=long$' tests/typed_typedef_ast.ast >/dev/null
+grep '^      parameter value type=long$' tests/typed_typedef_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_typedef_ast.out.c -o tests/typed_typedef_ast.out
+./tests/typed_typedef_ast.out
+
+./c- --dump-typed-ast tests/typed_statement_expression_ast.c- \
+    > tests/typed_statement_expression_ast.out.c \
+    2> tests/typed_statement_expression_ast.ast
+grep '^      declaration result expression=call$' \
+    tests/typed_statement_expression_ast.ast >/dev/null
+grep '^          argument statement-expression type=struct StatementExpressionItem\*$' \
+    tests/typed_statement_expression_ast.ast >/dev/null
+grep '^              callee identifier name=cminus_gc_calloc type=fn()->void\*%$' \
+    tests/typed_statement_expression_ast.ast >/dev/null
+grep '^              argument sizeof target="struct StatementExpressionItem" op=sizeof type=size_t$' \
+    tests/typed_statement_expression_ast.ast >/dev/null
+grep '^            body-expression identifier name=__right_value[0-9][0-9]* result=yes type=struct StatementExpressionItem\*$' \
+    tests/typed_statement_expression_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_statement_expression_ast.out.c \
+    -o tests/typed_statement_expression_ast.out
+./tests/typed_statement_expression_ast.out
+
+if ./c- tests/bad_typedef_pointer_safe.c- > /dev/null \
+    2> tests/bad_typedef_pointer_safe.err; then
+    echo "pointer hidden behind typedef unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "pointer declarations are only allowed inside unsafe" \
+    tests/bad_typedef_pointer_safe.err >/dev/null
+
+./c- --dump-typed-ast tests/typed_label_ast.c- \
+    > tests/typed_label_ast.out.c \
+    2> tests/typed_label_ast.ast
+grep '^    function cminus_label_ast_probe$' tests/typed_label_ast.ast >/dev/null
+grep '^      block$' tests/typed_label_ast.ast >/dev/null
+grep '^        assignment expression=binary$' tests/typed_label_ast.ast >/dev/null
+grep '^      goto resume$' tests/typed_label_ast.ast >/dev/null
+grep '^        goto resume$' tests/typed_label_ast.ast >/dev/null
+grep '^      label resume$' tests/typed_label_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_label_ast.out.c -o tests/typed_label_ast.out
+./tests/typed_label_ast.out
+
+./c- --dump-typed-ast tests/typed_aggregate_ast.c- \
+    > tests/typed_aggregate_ast.out.c \
+    2> tests/typed_aggregate_ast.ast
+grep '^    preprocessor$' tests/typed_aggregate_ast.ast >/dev/null
+grep '^    struct TypedAggregate$' tests/typed_aggregate_ast.ast >/dev/null
+grep '^      field value$' tests/typed_aggregate_ast.ast >/dev/null
+grep -A1 '^      field value$' tests/typed_aggregate_ast.ast \
+    | grep '^        type type=int$' >/dev/null
+grep '^    enum TypedKind$' tests/typed_aggregate_ast.ast >/dev/null
+grep '^      enum-member TYPED_KIND_ZERO value=0 type=enum TypedKind expression=literal$' \
+    tests/typed_aggregate_ast.ast >/dev/null
+grep '^      enum-member TYPED_KIND_ONE value=1 type=enum TypedKind expression=literal$' \
+    tests/typed_aggregate_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_aggregate_ast.out.c -o tests/typed_aggregate_ast.out
+./tests/typed_aggregate_ast.out
+
+./c- --dump-typed-ast tests/typed_enum_ast.c- \
+    > tests/typed_enum_ast.out.c \
+    2> tests/typed_enum_ast.ast
+grep '^      enum-member TYPED_VALUE_ZERO value=0 type=enum TypedValues$' \
+    tests/typed_enum_ast.ast >/dev/null
+grep '^      enum-member TYPED_VALUE_FOUR value=4 type=enum TypedValues expression=binary$' \
+    tests/typed_enum_ast.ast >/dev/null
+grep '^      enum-member TYPED_VALUE_FIVE value=5 type=enum TypedValues$' \
+    tests/typed_enum_ast.ast >/dev/null
+grep -A3 '^      enum-member TYPED_VALUE_FOUR ' tests/typed_enum_ast.ast \
+    | grep '^        expr binary op=<< type=int$' >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_enum_ast.out.c -o tests/typed_enum_ast.out
+./tests/typed_enum_ast.out
+
+./c- --dump-typed-ast tests/typed_cleanup_ast.c- \
+    > tests/typed_cleanup_ast.out.c \
+    2> tests/typed_cleanup_ast.ast
+grep '^    function cminus_cleanup_ast_probe$' tests/typed_cleanup_ast.ast >/dev/null
+grep '^        return expression=literal$' tests/typed_cleanup_ast.ast >/dev/null
+grep '^          cleanup$' tests/typed_cleanup_ast.ast >/dev/null
+grep '^      return expression=literal$' tests/typed_cleanup_ast.ast >/dev/null
+grep '^        cleanup$' tests/typed_cleanup_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_cleanup_ast.out.c -o tests/typed_cleanup_ast.out
+./tests/typed_cleanup_ast.out
+
+./c- --dump-typed-ast tests/typed_expansion_ast.c- \
+    > tests/typed_expansion_ast.out.c \
+    2> tests/typed_expansion_ast.ast
+grep '^directive define CMINUS_TYPED_EXPANSION_VALUE$' tests/typed_expansion_ast.ast >/dev/null
+grep '^translation-unit$' tests/typed_expansion_ast.ast >/dev/null
+grep '^  source-body source$' tests/typed_expansion_ast.ast >/dev/null
+grep '^    function cminus_expansion_ast_probe$' tests/typed_expansion_ast.ast >/dev/null
+grep '^      expansion$' tests/typed_expansion_ast.ast >/dev/null
+grep '^        declaration data expression=initializer-list$' \
+    tests/typed_expansion_ast.ast >/dev/null
+grep '^        declaration text$' tests/typed_expansion_ast.ast >/dev/null
+grep '^        assignment expression=binary$' tests/typed_expansion_ast.ast >/dev/null
+grep '^        cleanup$' tests/typed_expansion_ast.ast >/dev/null
+grep '^          rhs identifier name=CMINUS_TYPED_EXPANSION_VALUE type=int$' \
+    tests/typed_expansion_ast.ast >/dev/null
+if grep 'type=unknown reason=' tests/typed_expansion_ast.ast >/dev/null; then
+    echo "macro expansion AST retained an unknown expression type" >&2
+    exit 1
+fi
+cc -std=gnu99 -Wall -Wextra tests/typed_expansion_ast.out.c -o tests/typed_expansion_ast.out
+./tests/typed_expansion_ast.out
+
+./c- --dump-typed-ast tests/typed_expression_tree_ast.c- \
+    > tests/typed_expression_tree_ast.out.c \
+    2> tests/typed_expression_tree_ast.ast
+grep '^      declaration value expression=call$' tests/typed_expression_tree_ast.ast >/dev/null
+grep '^        expr call type=int$' tests/typed_expression_tree_ast.ast >/dev/null
+grep '^          callee identifier name=combine type=fn()->int$' \
+    tests/typed_expression_tree_ast.ast >/dev/null
+grep '^          argument literal value=1 type=int$' tests/typed_expression_tree_ast.ast >/dev/null
+grep '^          argument binary op=\* type=int$' tests/typed_expression_tree_ast.ast >/dev/null
+grep '^            lhs literal value=2 type=int$' tests/typed_expression_tree_ast.ast >/dev/null
+grep '^            rhs literal value=3 type=int$' tests/typed_expression_tree_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_expression_tree_ast.out.c \
+    -o tests/typed_expression_tree_ast.out
+./tests/typed_expression_tree_ast.out
+
+./c- --dump-typed-ast tests/typed_symbol_resolution_ast.c- \
+    > tests/typed_symbol_resolution_ast.out.c \
+    2> tests/typed_symbol_resolution_ast.ast
+grep '^            rhs identifier name=TYPED_SYMBOL_ONE type=enum TypedSymbolMode$' \
+    tests/typed_symbol_resolution_ast.ast >/dev/null
+grep '^          then identifier name=__LINE__ type=int$' \
+    tests/typed_symbol_resolution_ast.ast >/dev/null
+grep '^          callee identifier name=cminus_typed_symbol_probe type=fn()->int$' \
+    tests/typed_symbol_resolution_ast.ast >/dev/null
+grep '^          argument identifier name=TYPED_SYMBOL_ONE type=enum TypedSymbolMode$' \
+    tests/typed_symbol_resolution_ast.ast >/dev/null
+grep '^          callee identifier name=cminus_checked_int_add type=fn()->int$' \
+    tests/typed_symbol_resolution_ast.ast >/dev/null
+grep '^        expr identifier name=__cminus_return[0-9][0-9]* type=int$' \
+    tests/typed_symbol_resolution_ast.ast >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/typed_symbol_resolution_ast.out.c \
+    -o tests/typed_symbol_resolution_ast.out
+./tests/typed_symbol_resolution_ast.out
+
+if ./c- tests/bad_untyped_safe_statement.c- > /dev/null \
+    2> tests/bad_untyped_safe_statement.err; then
+    echo "unrepresented safe-mode statement unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "safe-mode typed AST cannot represent an expression statement" \
+    tests/bad_untyped_safe_statement.err >/dev/null
+
+if grep -E '^[[:space:]]+(expression|assignment)$' tests/typed_*_ast.ast \
+    >/dev/null; then
+    echo "typed AST contains an untyped expression fallback" >&2
+    exit 1
+fi
+if grep -E 'type=unknown reason=(unclassified|none)' tests/typed_*_ast.ast \
+    >/dev/null; then
+    echo "typed AST contains an unclassified unknown type" >&2
+    exit 1
+fi
 
 echo "ok"
