@@ -192,6 +192,8 @@ segmentation fault, and prefer a precise source-location diagnostic over a
 runtime surprise. Safe mode rejects unsafe lifetime escapes, raw pointer taint
 crossing safe boundaries, invalid `NULL` use, unsafe pointer dereference, raw
 heap calls, and many borrow-after-release patterns before C code is compiled.
+The precise guarantee, trusted boundary, and current concurrency limitation are
+documented in [`SAFETY.md`](SAFETY.md).
 
 Outside `unsafe`, pointer arithmetic on pointer variables is a compile-time
 error. This applies to borrowed and owned pointers. Use field access on structs,
@@ -1094,6 +1096,10 @@ mode. Initialize each variable separately and pass an existing resource with
 `ref` or `mut ref`; by-value parameters, aliases, and resource fields in safe
 structs are rejected. Joining and detaching the same thread concurrently is
 also guarded atomically and panics instead of releasing its state twice.
+Struct values containing owned/finalized fields are likewise non-copyable;
+use `clone` for an independent value and `ref`/`mut ref` for borrowing.
+Ordered atomic methods validate both the numeric order and operation-specific
+rules before invoking the target compiler builtin.
 
 `Vec<T>` and `List<T>` support `new`, `push`, `len`, `is_empty`, `clear`,
 `first`, `last`, `get`, `set`, checked indexed access, automatic deletion for

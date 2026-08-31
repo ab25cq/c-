@@ -135,6 +135,7 @@ struct Vec_int{
 };
 struct Vec_int* Vec_new_int(void);
 void Vec_push_int(struct Vec_int* self, int value);
+void Vec_delete_int(struct Vec_int* self);
 struct __CMinusIndex_int Vec_get_opt_int(struct Vec_int* self, int index);
 #ifndef CMINUS_BARE_H
 #endif
@@ -1340,6 +1341,48 @@ static __attribute__((unused)) struct Cond* Cond_clone(struct Cond* self)
 #endif
 
 
+static __attribute__((unused)) void cminus_atomic_require_load_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_ACQUIRE &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic load memory order", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_store_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_RELEASE &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic store memory order", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_rmw_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_ACQUIRE &&
+        order != __ATOMIC_RELEASE && order != __ATOMIC_ACQ_REL &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic read-modify-write memory order",
+                     __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_compare_orders(
+    int success_order, int failure_order)
+{
+    cminus_atomic_require_rmw_order(success_order);
+    cminus_atomic_require_load_order(failure_order);
+    if ((failure_order == __ATOMIC_ACQUIRE &&
+         success_order != __ATOMIC_ACQUIRE &&
+         success_order != __ATOMIC_ACQ_REL &&
+         success_order != __ATOMIC_SEQ_CST) ||
+        (failure_order == __ATOMIC_SEQ_CST &&
+         success_order != __ATOMIC_SEQ_CST)) {
+        cminus_panic("atomic compare-exchange failure order is stronger than success order",
+                     __FILE__, __LINE__);
+    }
+}
+
 #ifndef CMINUS_BARE_H
 static __attribute__((unused)) void __cminus_thread_state_release(
     struct __CMinusThreadState* state)
@@ -1831,6 +1874,11 @@ int main(void)
 
     Vec_push_int(values, 1);
     __typeof__((({ struct __CMinusIndex_int __index_result0 = Vec_get_opt_int(values, 3); if (__index_result0.tag == __CMinusIndex_int_TAG_None) { cminus_panic("index out of range", "tests/index_panic.c-", 6); } __index_result0.payload.Some; }))) __cminus_return6 = (({ struct __CMinusIndex_int __index_result0 = Vec_get_opt_int(values, 3); if (__index_result0.tag == __CMinusIndex_int_TAG_None) { cminus_panic("index out of range", "tests/index_panic.c-", 6); } __index_result0.payload.Some; }));
+    if (values != NULL) {
+        Vec_delete_int(values);
+        cminus_gc_free(values);
+    }
+
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
     return __cminus_return6;
 }
@@ -1855,6 +1903,11 @@ void Vec_push_int(struct Vec_int* self, int value){
     }
     self->data[self->len] = value;
     self->len = cminus_checked_int_add(self->len, 1);
+}
+void Vec_delete_int(struct Vec_int* self){
+    if (self != NULL) {
+        cminus_gc_free(self->data);
+    }
 }
 struct __CMinusIndex_int Vec_get_opt_int(struct Vec_int* self, int index){
     if (self == NULL || index < 0 || index >= self->len) {

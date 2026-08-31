@@ -1,0 +1,6 @@
+extern int foreign_value(void);
+
+int main(void)
+{
+    return foreign_value();
+}

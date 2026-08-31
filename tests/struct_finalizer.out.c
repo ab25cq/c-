@@ -1332,6 +1332,48 @@ static __attribute__((unused)) struct Cond* Cond_clone(struct Cond* self)
 #endif
 
 
+static __attribute__((unused)) void cminus_atomic_require_load_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_ACQUIRE &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic load memory order", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_store_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_RELEASE &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic store memory order", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_rmw_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_ACQUIRE &&
+        order != __ATOMIC_RELEASE && order != __ATOMIC_ACQ_REL &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic read-modify-write memory order",
+                     __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_compare_orders(
+    int success_order, int failure_order)
+{
+    cminus_atomic_require_rmw_order(success_order);
+    cminus_atomic_require_load_order(failure_order);
+    if ((failure_order == __ATOMIC_ACQUIRE &&
+         success_order != __ATOMIC_ACQUIRE &&
+         success_order != __ATOMIC_ACQ_REL &&
+         success_order != __ATOMIC_SEQ_CST) ||
+        (failure_order == __ATOMIC_SEQ_CST &&
+         success_order != __ATOMIC_SEQ_CST)) {
+        cminus_panic("atomic compare-exchange failure order is stronger than success order",
+                     __FILE__, __LINE__);
+    }
+}
+
 #ifndef CMINUS_BARE_H
 static __attribute__((unused)) void __cminus_thread_state_release(
     struct __CMinusThreadState* state)
@@ -1868,6 +1910,16 @@ int main(void)
     struct Holder *heap = cminus_gc_calloc(1, sizeof(struct Holder));
 
     __typeof__((stack != NULL && heap != NULL ? 0 : 1)) __cminus_return6 = (stack != NULL && heap != NULL ? 0 : 1);
+    if (heap != NULL) {
+        Holder_finalize(heap);
+        cminus_gc_free(heap);
+    }
+
+    if (stack != NULL) {
+        Holder_finalize(stack);
+        cminus_gc_free(stack);
+    }
+
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
     return __cminus_return6;
 }

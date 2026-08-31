@@ -1332,6 +1332,48 @@ static __attribute__((unused)) struct Cond* Cond_clone(struct Cond* self)
 #endif
 
 
+static __attribute__((unused)) void cminus_atomic_require_load_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_ACQUIRE &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic load memory order", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_store_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_RELEASE &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic store memory order", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_rmw_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_ACQUIRE &&
+        order != __ATOMIC_RELEASE && order != __ATOMIC_ACQ_REL &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic read-modify-write memory order",
+                     __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_compare_orders(
+    int success_order, int failure_order)
+{
+    cminus_atomic_require_rmw_order(success_order);
+    cminus_atomic_require_load_order(failure_order);
+    if ((failure_order == __ATOMIC_ACQUIRE &&
+         success_order != __ATOMIC_ACQUIRE &&
+         success_order != __ATOMIC_ACQ_REL &&
+         success_order != __ATOMIC_SEQ_CST) ||
+        (failure_order == __ATOMIC_SEQ_CST &&
+         success_order != __ATOMIC_SEQ_CST)) {
+        cminus_panic("atomic compare-exchange failure order is stronger than success order",
+                     __FILE__, __LINE__);
+    }
+}
+
 #ifndef CMINUS_BARE_H
 static __attribute__((unused)) void __cminus_thread_state_release(
     struct __CMinusThreadState* state)
@@ -1821,24 +1863,26 @@ int cminus_cleanup_ast_probe(void)
     text = cminus_string_format("temporary");
 
     if (cminus_string_eq(text, "temporary")) {
+        __typeof__((7)) __cminus_return6 = (7);
         if (text != NULL) {
             cminus_gc_free(text);
         }
 
-        return 7;
+        return __cminus_return6;
     }
+    __typeof__((1)) __cminus_return7 = (1);
     if (text != NULL) {
         cminus_gc_free(text);
     }
 
-    return 1;
+    return __cminus_return7;
 }
 
 int main(void)
 {    char __cminus_stack_anchor;
     size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
 
-    __typeof__((cminus_cleanup_ast_probe() == 7 ? 0 : 1)) __cminus_return6 = (cminus_cleanup_ast_probe() == 7 ? 0 : 1);
+    __typeof__((cminus_cleanup_ast_probe() == 7 ? 0 : 1)) __cminus_return8 = (cminus_cleanup_ast_probe() == 7 ? 0 : 1);
     cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
-    return __cminus_return6;
+    return __cminus_return8;
 }

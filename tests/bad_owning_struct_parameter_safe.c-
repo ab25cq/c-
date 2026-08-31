@@ -1,0 +1,13 @@
+struct Message {
+    string text;
+};
+
+void consume(Message value)
+{
+    value.text.len();
+}
+
+int main(void)
+{
+    return 0;
+}

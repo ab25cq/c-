@@ -437,6 +437,8 @@ The following operations require `unsafe` in safe mode:
 `unsafe` grants permission to perform these operations; it does not assert that
 they are correct. A small unsafe wrapper should validate raw state and return a
 safe value, `Optional<T>`, `Ref<T>`, or `Span<T>` interface.
+Explicit `extern` function declarations must also be placed inside `unsafe`.
+The complete trusted-boundary contract is specified in `SAFETY.md`.
 
 ## 13. No-heap mode
 

@@ -1,0 +1,6 @@
+int main(void)
+{
+    Atomic<int> value = Atomic<int>.init(1);
+
+    return value.load_order(AtomicRelease);
+}

@@ -1113,6 +1113,21 @@ grep '__atomic_fetch_xor' tests/atomic_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/atomic_safe.out.c -o tests/atomic_safe.out
 ./tests/atomic_safe.out
 
+./c- tests/atomic_invalid_order_panic.c- \
+    > tests/atomic_invalid_order_panic.out.c
+grep 'cminus_atomic_require_load_order(order)' \
+    tests/atomic_invalid_order_panic.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/atomic_invalid_order_panic.out.c \
+    -o tests/atomic_invalid_order_panic.out
+if ./tests/atomic_invalid_order_panic.out \
+    > tests/atomic_invalid_order_panic.out.log \
+    2> tests/atomic_invalid_order_panic.err; then
+    echo "invalid atomic load order unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: invalid atomic load memory order' \
+    tests/atomic_invalid_order_panic.err >/dev/null
+
 ./c- tests/thread_safe.c- > tests/thread_safe.out.c
 grep 'Thread t1 = {0};' tests/thread_safe.out.c >/dev/null
 grep 'Thread_spawn(worker)' tests/thread_safe.out.c >/dev/null
@@ -1163,6 +1178,36 @@ if ./c- tests/bad_resource_field_safe.c- > /dev/null \
 fi
 grep "runtime resource fields are not allowed in safe structs for field 'WorkerState.gate'" \
     tests/bad_resource_field_safe.err >/dev/null
+
+if ./c- tests/bad_owning_struct_copy_safe.c- > /dev/null \
+    2> tests/bad_owning_struct_copy_safe.err; then
+    echo "owning struct copy unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "owning struct 'first' cannot be copied in safe mode" \
+    tests/bad_owning_struct_copy_safe.err >/dev/null
+
+./c- tests/owning_struct_return.c- > tests/owning_struct_return.out.c
+grep 'Message_finalize(&message)' tests/owning_struct_return.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/owning_struct_return.out.c \
+    -o tests/owning_struct_return.out
+./tests/owning_struct_return.out
+
+if ./c- tests/bad_owning_struct_parameter_safe.c- > /dev/null \
+    2> tests/bad_owning_struct_parameter_safe.err; then
+    echo "owning struct value parameter unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "owning struct parameter 'value' must use ref or mut ref" \
+    tests/bad_owning_struct_parameter_safe.err >/dev/null
+
+if ./c- tests/bad_extern_function_safe.c- > /dev/null \
+    2> tests/bad_extern_function_safe.err; then
+    echo "safe extern function declaration unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "extern functions must be declared inside unsafe" \
+    tests/bad_extern_function_safe.err >/dev/null
 
 ./c- tests/critical_safe.c- > tests/critical_safe.out.c
 grep 'struct Critical guard = Critical_enter();' tests/critical_safe.out.c >/dev/null

@@ -1,0 +1,22 @@
+struct Message {
+    string text;
+};
+
+Message make_message(void)
+{
+    Message message;
+    string temporary = s"temporary";
+
+    message.text = s"hello";
+    if (temporary.len() != 9) {
+        message.text = s"bad";
+    }
+    return message;
+}
+
+int main(void)
+{
+    Message message = make_message();
+
+    return message.text.eq("hello") ? 0 : 1;
+}

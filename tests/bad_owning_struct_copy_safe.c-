@@ -1,0 +1,13 @@
+struct Message {
+    string text;
+};
+
+int main(void)
+{
+    Message first;
+    Message second;
+
+    first.text = s"hello";
+    second = first;
+    return 0;
+}

@@ -568,6 +568,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
 static struct Text *finish_c_compat_braced_decl(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb, struct Text *suffix, struct Text *semi);
 static struct Text *process_statement(struct Text *stmt, struct Text *semi);
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi);
+static char *extract_return_value_expr(const char *stmt);
 static struct Text *process_external_decl(struct Text *decl, struct Text *semi);
 static struct Text *process_control_head(struct Text *head);
 static int find_assignment(const char *s);
@@ -11093,6 +11094,14 @@ static void register_function_params(const char *s)
                         free(param_decl);
                         exit(1);
                     }
+                    if (g_unsafe_depth == 0 && decl.type.ptr == 0 &&
+                        type_has_finalizer(decl.type)) {
+                        fprintf(stderr,
+                                "c-: type error: owning struct parameter '%s' must use ref or mut ref in safe mode; clone explicitly when an independent value is required\n",
+                                param_name);
+                        free(param_decl);
+                        exit(1);
+                    }
                 }
                 if (def_len >= DEFAULT_EXPR_MAX) {
                     def_len = DEFAULT_EXPR_MAX - 1;
@@ -16442,6 +16451,13 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     }
     is_func_sig = parse_function_signature(all->text, func_name, &ret);
     if (is_func_sig) {
+        if (g_unsafe_depth == 0 && !g_c_compat &&
+            text_has_word(all->text, "extern") &&
+            !function_signature_is_internal(all->text)) {
+            fprintf(stderr, "c-: type error: extern functions must be declared inside unsafe at %s:%d; expose a checked safe wrapper after validating all inputs and outputs\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
         if (g_unsafe_depth == 0 && !g_c_compat && strstr(all->text, "...") != NULL &&
             !function_signature_is_internal(all->text)) {
             fprintf(stderr, "c-: type error: variadic functions are only allowed inside unsafe at %s:%d; expose a typed safe wrapper\n",
@@ -16560,7 +16576,9 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             source_symbol = symbol_find(resource_source);
         }
         if (source_symbol != NULL &&
-            type_is_runtime_resource_value(source_symbol->type)) {
+            (type_is_runtime_resource_value(source_symbol->type) ||
+             (source_symbol->type.ptr == 0 &&
+              type_has_finalizer(source_symbol->type)))) {
             struct DeclInfo resource_decl;
 
             if (parse_decl(all->text, &resource_decl) &&
@@ -16572,6 +16590,16 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             if (type_is_runtime_resource_value(destination_type)) {
                 fprintf(stderr,
                         "c-: type error: runtime resource '%s' cannot be copied in safe mode; initialize a fresh resource or pass it by ref\n",
+                        resource_source);
+                text_free(all);
+                exit(1);
+            }
+            if (source_symbol->type.ptr == 0 &&
+                type_has_finalizer(source_symbol->type) &&
+                destination_type.ptr == 0 &&
+                type_has_finalizer(destination_type)) {
+                fprintf(stderr,
+                        "c-: type error: owning struct '%s' cannot be copied in safe mode; use clone for an independent value or pass it by ref\n",
                         resource_source);
                 text_free(all);
                 exit(1);
@@ -17077,15 +17105,25 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     return all;
 }
 
-static int return_uses_owned(const char *s)
+static int detach_plain_return_owner(const char *s)
 {
-    int i;
-    for (i = 0; i < g_owned.count; i++) {
-        if (text_has_word(s, g_owned.name[i])) {
-            return 1;
-        }
+    char *expr = extract_return_value_expr(s);
+    char name[NAME_MAX_LEN];
+    int detached = 0;
+
+    if (expr == NULL) {
+        return 0;
     }
-    return 0;
+    if ((extract_plain_name_expr(expr, name) || extract_move_name(expr, name)) &&
+        (owned_index_in(&g_owned, name) >= 0 ||
+         owned_index_in(&g_finalized_locals, name) >= 0)) {
+        owned_remove_from(&g_owned, name);
+        owned_remove_from(&g_finalized_locals, name);
+        moved_local_add(name);
+        detached = 1;
+    }
+    free(expr);
+    return detached;
 }
 
 static char *extract_return_value_expr(const char *stmt)
@@ -17195,13 +17233,25 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     check_null_arguments(all->text);
     all = rewrite_division_checks(all);
     all = remove_percent(strip_attributes(all));
-    if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
+    {
+        int detached_return_owner = detach_plain_return_owner(all->text);
+
+        if (g_unsafe_depth == 0 && g_current_function_ret.ptr == 0 &&
+            type_has_finalizer(g_current_function_ret) &&
+            !detached_return_owner) {
+            fprintf(stderr, "c-: type error: an owning struct return must transfer a plain local value at %s:%d; assign the result to a local first\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            text_free(all);
+            exit(1);
+        }
+    }
+    if (g_owned.count > 0 || g_finalized_locals.count > 0) {
         struct Text *out = text_new();
         struct Text *indent = text_new();
         char *return_expr = extract_return_value_expr(all->text);
         append_leading_newlines(all->text, out);
         append_indent_from(all->text, indent);
-        if (return_expr != NULL && g_current_function_stack_guard) {
+        if (return_expr != NULL) {
             char tmp[64];
 
             snprintf(tmp, sizeof(tmp), "__cminus_return%d", g_right_value_id++);
@@ -17214,7 +17264,9 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
             text_add(out, return_expr);
             text_add(out, ");\n");
             emit_frees(out, indent->text);
-            append_stack_leave(out, indent->text);
+            if (g_current_function_stack_guard) {
+                append_stack_leave(out, indent->text);
+            }
             text_add(out, indent->text);
             text_add(out, "return ");
             text_add(out, tmp);

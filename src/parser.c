@@ -638,6 +638,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
 static struct Text *finish_c_compat_braced_decl(struct Text *head, struct Text *lb, struct Text *body, struct Text *rb, struct Text *suffix, struct Text *semi);
 static struct Text *process_statement(struct Text *stmt, struct Text *semi);
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi);
+static char *extract_return_value_expr(const char *stmt);
 static struct Text *process_external_decl(struct Text *decl, struct Text *semi);
 static struct Text *process_control_head(struct Text *head);
 static int find_assignment(const char *s);
@@ -781,7 +782,7 @@ static void append_zero_clear_after_decl(struct Text *stmt, const char *original
 static int starts_word(const char *s, const char *word);
 static const char *skip_ws(const char *s);
 
-#line 785 "src/parser.c"
+#line 786 "src/parser.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -1247,15 +1248,15 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   738,   738,   739,   744,   746,   748,   750,   753,   752,
-     759,   761,   766,   768,   770,   772,   778,   779,   784,   786,
-     788,   790,   792,   794,   796,   798,   800,   803,   802,   809,
-     811,   816,   818,   823,   825,   827,   829,   834,   840,   841,
-     846,   848,   850,   852,   854,   859,   865,   866,   871,   873,
-     875,   877,   879,   884,   890,   891,   896,   898,   900,   902,
-     904,   909,   911,   913,   915,   917,   919,   921,   923,   925,
-     927,   929,   931,   933,   938,   940,   942,   944,   946,   948,
-     950,   952,   954,   956,   958,   960
+       0,   739,   739,   740,   745,   747,   749,   751,   754,   753,
+     760,   762,   767,   769,   771,   773,   779,   780,   785,   787,
+     789,   791,   793,   795,   797,   799,   801,   804,   803,   810,
+     812,   817,   819,   824,   826,   828,   830,   835,   841,   842,
+     847,   849,   851,   853,   855,   860,   866,   867,   872,   874,
+     876,   878,   880,   885,   891,   892,   897,   899,   901,   903,
+     905,   910,   912,   914,   916,   918,   920,   922,   924,   926,
+     928,   930,   932,   934,   939,   941,   943,   945,   947,   949,
+     951,   953,   955,   957,   959,   961
 };
 #endif
 
@@ -1956,511 +1957,511 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* translation_unit: %empty  */
-#line 738 "src/parser.y"
+#line 739 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1962 "src/parser.c"
+#line 1963 "src/parser.c"
     break;
 
   case 3: /* translation_unit: translation_unit external_item  */
-#line 740 "src/parser.y"
+#line 741 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); g_output = (yyval.node); }
-#line 1968 "src/parser.c"
+#line 1969 "src/parser.c"
     break;
 
   case 4: /* external_item: PP_LINE  */
-#line 745 "src/parser.y"
+#line 746 "src/parser.y"
         { (yyval.node) = finalize_typed_raw(process_pp_line((yyvsp[0].node)), ND_PP); }
-#line 1974 "src/parser.c"
+#line 1975 "src/parser.c"
     break;
 
   case 5: /* external_item: SEMI  */
-#line 747 "src/parser.y"
+#line 748 "src/parser.y"
         { (yyval.node) = process_standalone_semi((yyvsp[0].node)); }
-#line 1980 "src/parser.c"
+#line 1981 "src/parser.c"
     break;
 
   case 6: /* external_item: top_seq SEMI  */
-#line 749 "src/parser.y"
+#line 750 "src/parser.y"
         { (yyval.node) = finalize_typed_statement(process_external_decl((yyvsp[-1].node), (yyvsp[0].node)), ND_DECL); }
-#line 1986 "src/parser.c"
+#line 1987 "src/parser.c"
     break;
 
   case 7: /* external_item: top_seq LBRACE compound_items RBRACE top_seq SEMI  */
-#line 751 "src/parser.y"
+#line 752 "src/parser.y"
         { (yyval.node) = finish_c_compat_braced_decl((yyvsp[-5].node), (yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 1992 "src/parser.c"
+#line 1993 "src/parser.c"
     break;
 
   case 8: /* $@1: %empty  */
-#line 753 "src/parser.y"
+#line 754 "src/parser.y"
         { begin_top_block((yyvsp[-1].node)); }
-#line 1998 "src/parser.c"
+#line 1999 "src/parser.c"
     break;
 
   case 9: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
-#line 755 "src/parser.y"
+#line 756 "src/parser.y"
         { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2004 "src/parser.c"
+#line 2005 "src/parser.c"
     break;
 
   case 10: /* top_seq: top_part  */
-#line 760 "src/parser.y"
+#line 761 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2010 "src/parser.c"
+#line 2011 "src/parser.c"
     break;
 
   case 11: /* top_seq: top_seq top_part  */
-#line 762 "src/parser.y"
+#line 763 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2016 "src/parser.c"
+#line 2017 "src/parser.c"
     break;
 
   case 12: /* top_part: token_no_comma  */
-#line 767 "src/parser.y"
+#line 768 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2022 "src/parser.c"
+#line 2023 "src/parser.c"
     break;
 
   case 13: /* top_part: paren_group  */
-#line 769 "src/parser.y"
+#line 770 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2028 "src/parser.c"
+#line 2029 "src/parser.c"
     break;
 
   case 14: /* top_part: bracket_group  */
-#line 771 "src/parser.y"
+#line 772 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2034 "src/parser.c"
+#line 2035 "src/parser.c"
     break;
 
   case 15: /* top_part: angle_group  */
-#line 773 "src/parser.y"
+#line 774 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2040 "src/parser.c"
+#line 2041 "src/parser.c"
     break;
 
   case 16: /* compound_items: %empty  */
-#line 778 "src/parser.y"
+#line 779 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 2046 "src/parser.c"
+#line 2047 "src/parser.c"
     break;
 
   case 17: /* compound_items: compound_items compound_item  */
-#line 780 "src/parser.y"
+#line 781 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2052 "src/parser.c"
+#line 2053 "src/parser.c"
     break;
 
   case 18: /* compound_item: PP_LINE  */
-#line 785 "src/parser.y"
+#line 786 "src/parser.y"
         { (yyval.node) = finalize_typed_raw(process_pp_line((yyvsp[0].node)), ND_PP); }
-#line 2058 "src/parser.c"
+#line 2059 "src/parser.c"
     break;
 
   case 19: /* compound_item: SEMI  */
-#line 787 "src/parser.y"
+#line 788 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2064 "src/parser.c"
+#line 2065 "src/parser.c"
     break;
 
   case 20: /* compound_item: return_statement  */
-#line 789 "src/parser.y"
+#line 790 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2070 "src/parser.c"
+#line 2071 "src/parser.c"
     break;
 
   case 21: /* compound_item: stmt_seq SEMI  */
-#line 791 "src/parser.y"
+#line 792 "src/parser.y"
         { (yyval.node) = finalize_typed_statement(process_statement((yyvsp[-1].node), (yyvsp[0].node)), ND_EXPR_STMT); }
-#line 2076 "src/parser.c"
+#line 2077 "src/parser.c"
     break;
 
   case 22: /* compound_item: stmt_seq COMMA  */
-#line 793 "src/parser.y"
+#line 794 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 2082 "src/parser.c"
+#line 2083 "src/parser.c"
     break;
 
   case 23: /* compound_item: IDENT COLON  */
-#line 795 "src/parser.y"
+#line 796 "src/parser.y"
         { (yyval.node) = finalize_typed_label(text_join((yyvsp[-1].node), (yyvsp[0].node)), ND_LABEL); (yyval.node)->tail_return = 0; }
-#line 2088 "src/parser.c"
+#line 2089 "src/parser.c"
     break;
 
   case 24: /* compound_item: DEFAULT COLON  */
-#line 797 "src/parser.y"
+#line 798 "src/parser.y"
         { (yyval.node) = finalize_typed_label(text_join((yyvsp[-1].node), (yyvsp[0].node)), ND_DEFAULT); (yyval.node)->tail_return = 0; }
-#line 2094 "src/parser.c"
+#line 2095 "src/parser.c"
     break;
 
   case 25: /* compound_item: CASE stmt_seq COLON  */
-#line 799 "src/parser.y"
+#line 800 "src/parser.y"
         { (yyval.node) = finalize_typed_label(text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)), ND_CASE); (yyval.node)->tail_return = 0; }
-#line 2100 "src/parser.c"
+#line 2101 "src/parser.c"
     break;
 
   case 26: /* compound_item: LBRACE compound_items RBRACE  */
-#line 801 "src/parser.y"
+#line 802 "src/parser.y"
         { (yyval.node) = finalize_typed_block((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 2106 "src/parser.c"
+#line 2107 "src/parser.c"
     break;
 
   case 27: /* $@2: %empty  */
-#line 803 "src/parser.y"
+#line 804 "src/parser.y"
         { begin_stmt_block((yyvsp[-1].node)); }
-#line 2112 "src/parser.c"
+#line 2113 "src/parser.c"
     break;
 
   case 28: /* compound_item: stmt_seq LBRACE $@2 compound_items RBRACE  */
-#line 805 "src/parser.y"
+#line 806 "src/parser.y"
         { (yyval.node) = finish_stmt_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 2118 "src/parser.c"
+#line 2119 "src/parser.c"
     break;
 
   case 29: /* return_statement: RETURN SEMI  */
-#line 810 "src/parser.y"
+#line 811 "src/parser.y"
         { (yyval.node) = finalize_typed_statement(process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)), ND_RETURN); }
-#line 2124 "src/parser.c"
+#line 2125 "src/parser.c"
     break;
 
   case 30: /* return_statement: RETURN stmt_seq SEMI  */
-#line 812 "src/parser.y"
+#line 813 "src/parser.y"
         { (yyval.node) = finalize_typed_statement(process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)), ND_RETURN); }
-#line 2130 "src/parser.c"
+#line 2131 "src/parser.c"
     break;
 
   case 31: /* stmt_seq: stmt_part  */
-#line 817 "src/parser.y"
+#line 818 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2136 "src/parser.c"
+#line 2137 "src/parser.c"
     break;
 
   case 32: /* stmt_seq: stmt_seq stmt_part  */
-#line 819 "src/parser.y"
+#line 820 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2142 "src/parser.c"
+#line 2143 "src/parser.c"
     break;
 
   case 33: /* stmt_part: token_no_comma  */
-#line 824 "src/parser.y"
+#line 825 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2148 "src/parser.c"
+#line 2149 "src/parser.c"
     break;
 
   case 34: /* stmt_part: paren_group  */
-#line 826 "src/parser.y"
+#line 827 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2154 "src/parser.c"
+#line 2155 "src/parser.c"
     break;
 
   case 35: /* stmt_part: bracket_group  */
-#line 828 "src/parser.y"
+#line 829 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2160 "src/parser.c"
+#line 2161 "src/parser.c"
     break;
 
   case 36: /* stmt_part: angle_group  */
-#line 830 "src/parser.y"
+#line 831 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2166 "src/parser.c"
+#line 2167 "src/parser.c"
     break;
 
   case 37: /* paren_group: LPAREN paren_items RPAREN  */
-#line 835 "src/parser.y"
+#line 836 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2172 "src/parser.c"
+#line 2173 "src/parser.c"
     break;
 
   case 38: /* paren_items: %empty  */
-#line 840 "src/parser.y"
+#line 841 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 2178 "src/parser.c"
+#line 2179 "src/parser.c"
     break;
 
   case 39: /* paren_items: paren_items paren_part  */
-#line 842 "src/parser.y"
+#line 843 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2184 "src/parser.c"
+#line 2185 "src/parser.c"
     break;
 
   case 40: /* paren_part: token  */
-#line 847 "src/parser.y"
+#line 848 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2190 "src/parser.c"
+#line 2191 "src/parser.c"
     break;
 
   case 41: /* paren_part: SEMI  */
-#line 849 "src/parser.y"
+#line 850 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2196 "src/parser.c"
+#line 2197 "src/parser.c"
     break;
 
   case 42: /* paren_part: paren_group  */
-#line 851 "src/parser.y"
+#line 852 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2202 "src/parser.c"
+#line 2203 "src/parser.c"
     break;
 
   case 43: /* paren_part: bracket_group  */
-#line 853 "src/parser.y"
+#line 854 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2208 "src/parser.c"
+#line 2209 "src/parser.c"
     break;
 
   case 44: /* paren_part: angle_group  */
-#line 855 "src/parser.y"
+#line 856 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2214 "src/parser.c"
+#line 2215 "src/parser.c"
     break;
 
   case 45: /* bracket_group: LBRACKET bracket_items RBRACKET  */
-#line 860 "src/parser.y"
+#line 861 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2220 "src/parser.c"
+#line 2221 "src/parser.c"
     break;
 
   case 46: /* bracket_items: %empty  */
-#line 865 "src/parser.y"
+#line 866 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 2226 "src/parser.c"
+#line 2227 "src/parser.c"
     break;
 
   case 47: /* bracket_items: bracket_items bracket_part  */
-#line 867 "src/parser.y"
+#line 868 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2232 "src/parser.c"
+#line 2233 "src/parser.c"
     break;
 
   case 48: /* bracket_part: token  */
-#line 872 "src/parser.y"
+#line 873 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2238 "src/parser.c"
+#line 2239 "src/parser.c"
     break;
 
   case 49: /* bracket_part: SEMI  */
-#line 874 "src/parser.y"
+#line 875 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2244 "src/parser.c"
+#line 2245 "src/parser.c"
     break;
 
   case 50: /* bracket_part: paren_group  */
-#line 876 "src/parser.y"
+#line 877 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2250 "src/parser.c"
+#line 2251 "src/parser.c"
     break;
 
   case 51: /* bracket_part: bracket_group  */
-#line 878 "src/parser.y"
+#line 879 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2256 "src/parser.c"
+#line 2257 "src/parser.c"
     break;
 
   case 52: /* bracket_part: angle_group  */
-#line 880 "src/parser.y"
+#line 881 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2262 "src/parser.c"
+#line 2263 "src/parser.c"
     break;
 
   case 53: /* angle_group: LT angle_items GT  */
-#line 885 "src/parser.y"
+#line 886 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2268 "src/parser.c"
+#line 2269 "src/parser.c"
     break;
 
   case 54: /* angle_items: %empty  */
-#line 890 "src/parser.y"
+#line 891 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 2274 "src/parser.c"
+#line 2275 "src/parser.c"
     break;
 
   case 55: /* angle_items: angle_items angle_part  */
-#line 892 "src/parser.y"
+#line 893 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2280 "src/parser.c"
+#line 2281 "src/parser.c"
     break;
 
   case 56: /* angle_part: token  */
-#line 897 "src/parser.y"
+#line 898 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2286 "src/parser.c"
+#line 2287 "src/parser.c"
     break;
 
   case 57: /* angle_part: SEMI  */
-#line 899 "src/parser.y"
+#line 900 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2292 "src/parser.c"
+#line 2293 "src/parser.c"
     break;
 
   case 58: /* angle_part: paren_group  */
-#line 901 "src/parser.y"
+#line 902 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2298 "src/parser.c"
+#line 2299 "src/parser.c"
     break;
 
   case 59: /* angle_part: bracket_group  */
-#line 903 "src/parser.y"
+#line 904 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2304 "src/parser.c"
+#line 2305 "src/parser.c"
     break;
 
   case 60: /* angle_part: angle_group  */
-#line 905 "src/parser.y"
+#line 906 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2310 "src/parser.c"
+#line 2311 "src/parser.c"
     break;
 
   case 61: /* token: IDENT  */
-#line 910 "src/parser.y"
+#line 911 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2316 "src/parser.c"
+#line 2317 "src/parser.c"
     break;
 
   case 62: /* token: NUMBER  */
-#line 912 "src/parser.y"
+#line 913 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2322 "src/parser.c"
+#line 2323 "src/parser.c"
     break;
 
   case 63: /* token: STRING_LITERAL  */
-#line 914 "src/parser.y"
+#line 915 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2328 "src/parser.c"
+#line 2329 "src/parser.c"
     break;
 
   case 64: /* token: CHAR_LITERAL  */
-#line 916 "src/parser.y"
+#line 917 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2334 "src/parser.c"
+#line 2335 "src/parser.c"
     break;
 
   case 65: /* token: KEYWORD  */
-#line 918 "src/parser.y"
+#line 919 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2340 "src/parser.c"
+#line 2341 "src/parser.c"
     break;
 
   case 66: /* token: OP  */
-#line 920 "src/parser.y"
+#line 921 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2346 "src/parser.c"
+#line 2347 "src/parser.c"
     break;
 
   case 67: /* token: LT  */
-#line 922 "src/parser.y"
+#line 923 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2352 "src/parser.c"
+#line 2353 "src/parser.c"
     break;
 
   case 68: /* token: GT  */
-#line 924 "src/parser.y"
+#line 925 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2358 "src/parser.c"
+#line 2359 "src/parser.c"
     break;
 
   case 69: /* token: COMMA  */
-#line 926 "src/parser.y"
+#line 927 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2364 "src/parser.c"
+#line 2365 "src/parser.c"
     break;
 
   case 70: /* token: COLON  */
-#line 928 "src/parser.y"
+#line 929 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2370 "src/parser.c"
+#line 2371 "src/parser.c"
     break;
 
   case 71: /* token: EQUAL  */
-#line 930 "src/parser.y"
+#line 931 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2376 "src/parser.c"
+#line 2377 "src/parser.c"
     break;
 
   case 72: /* token: PERCENT  */
-#line 932 "src/parser.y"
+#line 933 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2382 "src/parser.c"
+#line 2383 "src/parser.c"
     break;
 
   case 73: /* token: OTHER  */
-#line 934 "src/parser.y"
+#line 935 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2388 "src/parser.c"
+#line 2389 "src/parser.c"
     break;
 
   case 74: /* token_no_comma: IDENT  */
-#line 939 "src/parser.y"
+#line 940 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2394 "src/parser.c"
+#line 2395 "src/parser.c"
     break;
 
   case 75: /* token_no_comma: NUMBER  */
-#line 941 "src/parser.y"
+#line 942 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2400 "src/parser.c"
+#line 2401 "src/parser.c"
     break;
 
   case 76: /* token_no_comma: STRING_LITERAL  */
-#line 943 "src/parser.y"
+#line 944 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2406 "src/parser.c"
+#line 2407 "src/parser.c"
     break;
 
   case 77: /* token_no_comma: CHAR_LITERAL  */
-#line 945 "src/parser.y"
+#line 946 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2412 "src/parser.c"
+#line 2413 "src/parser.c"
     break;
 
   case 78: /* token_no_comma: KEYWORD  */
-#line 947 "src/parser.y"
+#line 948 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2418 "src/parser.c"
+#line 2419 "src/parser.c"
     break;
 
   case 79: /* token_no_comma: OP  */
-#line 949 "src/parser.y"
+#line 950 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2424 "src/parser.c"
+#line 2425 "src/parser.c"
     break;
 
   case 80: /* token_no_comma: LT  */
-#line 951 "src/parser.y"
+#line 952 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2430 "src/parser.c"
+#line 2431 "src/parser.c"
     break;
 
   case 81: /* token_no_comma: GT  */
-#line 953 "src/parser.y"
+#line 954 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2436 "src/parser.c"
+#line 2437 "src/parser.c"
     break;
 
   case 82: /* token_no_comma: COLON  */
-#line 955 "src/parser.y"
+#line 956 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2442 "src/parser.c"
+#line 2443 "src/parser.c"
     break;
 
   case 83: /* token_no_comma: EQUAL  */
-#line 957 "src/parser.y"
+#line 958 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2448 "src/parser.c"
+#line 2449 "src/parser.c"
     break;
 
   case 84: /* token_no_comma: PERCENT  */
-#line 959 "src/parser.y"
+#line 960 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2454 "src/parser.c"
+#line 2455 "src/parser.c"
     break;
 
   case 85: /* token_no_comma: OTHER  */
-#line 961 "src/parser.y"
+#line 962 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2460 "src/parser.c"
+#line 2461 "src/parser.c"
     break;
 
 
-#line 2464 "src/parser.c"
+#line 2465 "src/parser.c"
 
       default: break;
     }
@@ -2653,7 +2654,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 964 "src/parser.y"
+#line 965 "src/parser.y"
 
 
 static void die(const char *msg)
@@ -12786,6 +12787,14 @@ static void register_function_params(const char *s)
                         free(param_decl);
                         exit(1);
                     }
+                    if (g_unsafe_depth == 0 && decl.type.ptr == 0 &&
+                        type_has_finalizer(decl.type)) {
+                        fprintf(stderr,
+                                "c-: type error: owning struct parameter '%s' must use ref or mut ref in safe mode; clone explicitly when an independent value is required\n",
+                                param_name);
+                        free(param_decl);
+                        exit(1);
+                    }
                 }
                 if (def_len >= DEFAULT_EXPR_MAX) {
                     def_len = DEFAULT_EXPR_MAX - 1;
@@ -18135,6 +18144,13 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     }
     is_func_sig = parse_function_signature(all->text, func_name, &ret);
     if (is_func_sig) {
+        if (g_unsafe_depth == 0 && !g_c_compat &&
+            text_has_word(all->text, "extern") &&
+            !function_signature_is_internal(all->text)) {
+            fprintf(stderr, "c-: type error: extern functions must be declared inside unsafe at %s:%d; expose a checked safe wrapper after validating all inputs and outputs\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            exit(1);
+        }
         if (g_unsafe_depth == 0 && !g_c_compat && strstr(all->text, "...") != NULL &&
             !function_signature_is_internal(all->text)) {
             fprintf(stderr, "c-: type error: variadic functions are only allowed inside unsafe at %s:%d; expose a typed safe wrapper\n",
@@ -18253,7 +18269,9 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             source_symbol = symbol_find(resource_source);
         }
         if (source_symbol != NULL &&
-            type_is_runtime_resource_value(source_symbol->type)) {
+            (type_is_runtime_resource_value(source_symbol->type) ||
+             (source_symbol->type.ptr == 0 &&
+              type_has_finalizer(source_symbol->type)))) {
             struct DeclInfo resource_decl;
 
             if (parse_decl(all->text, &resource_decl) &&
@@ -18265,6 +18283,16 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             if (type_is_runtime_resource_value(destination_type)) {
                 fprintf(stderr,
                         "c-: type error: runtime resource '%s' cannot be copied in safe mode; initialize a fresh resource or pass it by ref\n",
+                        resource_source);
+                text_free(all);
+                exit(1);
+            }
+            if (source_symbol->type.ptr == 0 &&
+                type_has_finalizer(source_symbol->type) &&
+                destination_type.ptr == 0 &&
+                type_has_finalizer(destination_type)) {
+                fprintf(stderr,
+                        "c-: type error: owning struct '%s' cannot be copied in safe mode; use clone for an independent value or pass it by ref\n",
                         resource_source);
                 text_free(all);
                 exit(1);
@@ -18770,15 +18798,25 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     return all;
 }
 
-static int return_uses_owned(const char *s)
+static int detach_plain_return_owner(const char *s)
 {
-    int i;
-    for (i = 0; i < g_owned.count; i++) {
-        if (text_has_word(s, g_owned.name[i])) {
-            return 1;
-        }
+    char *expr = extract_return_value_expr(s);
+    char name[NAME_MAX_LEN];
+    int detached = 0;
+
+    if (expr == NULL) {
+        return 0;
     }
-    return 0;
+    if ((extract_plain_name_expr(expr, name) || extract_move_name(expr, name)) &&
+        (owned_index_in(&g_owned, name) >= 0 ||
+         owned_index_in(&g_finalized_locals, name) >= 0)) {
+        owned_remove_from(&g_owned, name);
+        owned_remove_from(&g_finalized_locals, name);
+        moved_local_add(name);
+        detached = 1;
+    }
+    free(expr);
+    return detached;
 }
 
 static char *extract_return_value_expr(const char *stmt)
@@ -18888,13 +18926,25 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     check_null_arguments(all->text);
     all = rewrite_division_checks(all);
     all = remove_percent(strip_attributes(all));
-    if ((g_owned.count > 0 || g_finalized_locals.count > 0) && !return_uses_owned(all->text)) {
+    {
+        int detached_return_owner = detach_plain_return_owner(all->text);
+
+        if (g_unsafe_depth == 0 && g_current_function_ret.ptr == 0 &&
+            type_has_finalizer(g_current_function_ret) &&
+            !detached_return_owner) {
+            fprintf(stderr, "c-: type error: an owning struct return must transfer a plain local value at %s:%d; assign the result to a local first\n",
+                    g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
+            text_free(all);
+            exit(1);
+        }
+    }
+    if (g_owned.count > 0 || g_finalized_locals.count > 0) {
         struct Text *out = text_new();
         struct Text *indent = text_new();
         char *return_expr = extract_return_value_expr(all->text);
         append_leading_newlines(all->text, out);
         append_indent_from(all->text, indent);
-        if (return_expr != NULL && g_current_function_stack_guard) {
+        if (return_expr != NULL) {
             char tmp[64];
 
             snprintf(tmp, sizeof(tmp), "__cminus_return%d", g_right_value_id++);
@@ -18907,7 +18957,9 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
             text_add(out, return_expr);
             text_add(out, ");\n");
             emit_frees(out, indent->text);
-            append_stack_leave(out, indent->text);
+            if (g_current_function_stack_guard) {
+                append_stack_leave(out, indent->text);
+            }
             text_add(out, indent->text);
             text_add(out, "return ");
             text_add(out, tmp);

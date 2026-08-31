@@ -1190,6 +1190,48 @@ T StaticCell_replace(struct StaticCell<T>* self, T value)
     return old;
 }
 
+static __attribute__((unused)) void cminus_atomic_require_load_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_ACQUIRE &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic load memory order", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_store_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_RELEASE &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic store memory order", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_rmw_order(int order)
+{
+    if (order != __ATOMIC_RELAXED && order != __ATOMIC_ACQUIRE &&
+        order != __ATOMIC_RELEASE && order != __ATOMIC_ACQ_REL &&
+        order != __ATOMIC_SEQ_CST) {
+        cminus_panic("invalid atomic read-modify-write memory order",
+                     __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void cminus_atomic_require_compare_orders(
+    int success_order, int failure_order)
+{
+    cminus_atomic_require_rmw_order(success_order);
+    cminus_atomic_require_load_order(failure_order);
+    if ((failure_order == __ATOMIC_ACQUIRE &&
+         success_order != __ATOMIC_ACQUIRE &&
+         success_order != __ATOMIC_ACQ_REL &&
+         success_order != __ATOMIC_SEQ_CST) ||
+        (failure_order == __ATOMIC_SEQ_CST &&
+         success_order != __ATOMIC_SEQ_CST)) {
+        cminus_panic("atomic compare-exchange failure order is stronger than success order",
+                     __FILE__, __LINE__);
+    }
+}
+
 generic<T>
 struct Atomic<T> Atomic_init(T value)
 {
@@ -1214,6 +1256,7 @@ T Atomic_load_order(struct Atomic<T>* self, int order)
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_load_order(order);
     return __atomic_load_n(&self->value, order);
 }
 
@@ -1232,6 +1275,7 @@ void Atomic_store_order(struct Atomic<T>* self, T value, int order)
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_store_order(order);
     __atomic_store_n(&self->value, value, order);
 }
 
@@ -1250,6 +1294,7 @@ T Atomic_exchange_order(struct Atomic<T>* self, T value, int order)
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_rmw_order(order);
     return __atomic_exchange_n(&self->value, value, order);
 }
 
@@ -1268,6 +1313,7 @@ int Atomic_compare_exchange_order(struct Atomic<T>* self, T expected, T desired,
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_compare_orders(success_order, failure_order);
     return __atomic_compare_exchange_n(&self->value, &expected, desired, 0, success_order, failure_order);
 }
 
@@ -1286,6 +1332,7 @@ T Atomic_fetch_add_order(struct Atomic<T>* self, T value, int order)
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_rmw_order(order);
     return __atomic_fetch_add(&self->value, value, order);
 }
 
@@ -1304,6 +1351,7 @@ T Atomic_fetch_sub_order(struct Atomic<T>* self, T value, int order)
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_rmw_order(order);
     return __atomic_fetch_sub(&self->value, value, order);
 }
 
@@ -1322,6 +1370,7 @@ T Atomic_fetch_or_order(struct Atomic<T>* self, T value, int order)
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_rmw_order(order);
     return __atomic_fetch_or(&self->value, value, order);
 }
 
@@ -1340,6 +1389,7 @@ T Atomic_fetch_and_order(struct Atomic<T>* self, T value, int order)
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_rmw_order(order);
     return __atomic_fetch_and(&self->value, value, order);
 }
 
@@ -1358,6 +1408,7 @@ T Atomic_fetch_xor_order(struct Atomic<T>* self, T value, int order)
     if (self == NULL) {
         cminus_panic("atomic is null", __FILE__, __LINE__);
     }
+    cminus_atomic_require_rmw_order(order);
     return __atomic_fetch_xor(&self->value, value, order);
 }
 
