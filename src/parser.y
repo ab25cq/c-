@@ -341,6 +341,7 @@ struct ParamInfo {
     char def[DEFAULT_EXPR_MAX];
     struct Type type;
     int borrowed;
+    int owned;
 };
 
 struct FunctionParams {
@@ -436,6 +437,10 @@ static struct Text *g_defines;
 static struct Node *g_consumed_directives;
 static struct Node *g_generated_artifacts;
 static struct Node *g_template_nodes;
+static struct Text *g_thread_owned_helpers;
+static char g_thread_owned_entries[MAX_FUNCS][NAME_MAX_LEN];
+static int g_thread_owned_entry_count;
+static int g_thread_owned_helper_id;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
 static struct MovedLocals g_moved_locals;
@@ -559,6 +564,7 @@ static void symbol_add(const char *name, struct Type type);
 struct DeclInfo;
 static void register_function_params(const char *s);
 static void register_function_param_symbols(const char *s);
+static void register_owned_parameter_cleanup(const char *function_name);
 static void begin_function(void);
 static void begin_top_block(struct Text *head);
 static int source_has_cminus_include(FILE *fp);
@@ -598,6 +604,7 @@ static void check_casts(const char *text);
 static struct Type expr_type(const char *s);
 static int decl_has_borrow(const char *s);
 static int extract_move_name(const char *s, char *name);
+static int extract_direct_move_name(const char *s, char *name);
 static void remove_moved_locals(const char *s);
 static const char *find_top_level_char(const char *start, const char *end, char ch);
 static void moved_local_add(const char *name);
@@ -4737,6 +4744,7 @@ static void begin_top_block(struct Text *head)
             if (head_function_name(normalized_head->text, name) &&
                 !function_signature_is_internal(normalized_head->text)) {
                 register_function_param_symbols(normalized_head->text);
+                register_owned_parameter_cleanup(name);
             }
             text_free(normalized_head);
         }
@@ -5271,10 +5279,15 @@ static int word_occurs_after_first_token(const char *stmt, const char *word)
     if (is_ident_start((unsigned char)*p)) {
         char first[NAME_MAX_LEN];
         const char *end = read_name(p, first);
-        if (strcmp(first, word) == 0) {
-            p = end;
+        const char *after = skip_ws(end);
+
+        /* Reassignment revives a moved variable.  Only skip a plain lhs;
+         * member/index access still reads the moved object and must fail. */
+        if (strcmp(first, word) == 0 && *after == '=' && after[1] != '=') {
+            p = after + 1;
         }
     }
+
     while ((p = strstr(p, word)) != NULL) {
         if ((p == stmt || (!is_ident((unsigned char)p[-1]) && p[-1] != '.' && p[-1] != '>')) &&
             !is_ident((unsigned char)p[n])) {
@@ -9337,11 +9350,32 @@ static void thread_validate_spawn_expression(struct Node *root,
 
 static void validate_thread_spawn_safety(struct Node *root, struct Node *node)
 {
+    int top = root == node;
+    int i;
+
     for (; node != NULL; node = node->next) {
         thread_validate_spawn_expression(root, node->expr);
         thread_validate_spawn_expression(root, node->inc_expr);
         validate_thread_spawn_safety(root, node->lhs);
         validate_thread_spawn_safety(root, node->body);
+    }
+    if (top) {
+        for (i = 0; i < g_thread_owned_entry_count; i++) {
+            struct ThreadSafetyContext context;
+            struct Node *entry = thread_find_function(
+                root, g_thread_owned_entries[i]);
+
+            if (entry == NULL) {
+                fprintf(stderr,
+                        "c-: thread safety error: Thread.spawn worker '%s' has no visible safe definition\n",
+                        g_thread_owned_entries[i]);
+                exit(1);
+            }
+            memset(&context, 0, sizeof(context));
+            context.root = root;
+            context.entry = g_thread_owned_entries[i];
+            thread_analyze_function(&context, entry);
+        }
     }
 }
 
@@ -10937,7 +10971,7 @@ static void pending_semantics_capture_statement(const char *statement)
         g_pending_semantics.borrowed = decl_has_borrow(statement);
         strcpy(g_pending_semantics.target, decl.name);
         if (decl.has_init && decl.init != NULL) {
-            if (extract_move_name(decl.init, move_source)) {
+            if (extract_direct_move_name(decl.init, move_source)) {
                 strcpy(g_pending_semantics.move_source, move_source);
                 g_pending_semantics.owned = 1;
             }
@@ -10951,7 +10985,7 @@ static void pending_semantics_capture_statement(const char *statement)
         }
         return;
     }
-    if (eq >= 0 && extract_move_name(statement + eq + 1, move_source)) {
+    if (eq >= 0 && extract_direct_move_name(statement + eq + 1, move_source)) {
         char target[NAME_MAX_LEN];
 
         target[0] = '\0';
@@ -10983,6 +11017,26 @@ static int extract_move_name(const char *s, char *name)
     return safety_ast_move_identifier(s, s + strlen(s), name);
 }
 
+static int extract_direct_move_name(const char *s, char *name)
+{
+    struct SafetyExprNode *tree = safety_parse_range(s, s + strlen(s));
+    const struct SafetyExprNode *node = safety_strip_groups(tree);
+    const struct SafetyExprNode *value = NULL;
+    int result = 0;
+
+    name[0] = '\0';
+    if (node != NULL && node->kind == SAFETY_EXPR_MOVE && node->next == NULL) {
+        value = safety_strip_groups(node->lhs);
+        if (value != NULL && value->kind == SAFETY_EXPR_IDENTIFIER) {
+            strncpy(name, value->name, NAME_MAX_LEN - 1);
+            name[NAME_MAX_LEN - 1] = '\0';
+            result = 1;
+        }
+    }
+    safety_expr_free(tree);
+    return result;
+}
+
 static int extract_plain_name_expr(const char *s, char *name)
 {
     return safety_ast_plain_identifier(s, s + strlen(s), name);
@@ -11003,6 +11057,7 @@ static void remove_moved_locals(const char *s)
                     name[end - q] = '\0';
                     borrow_links_invalidate_owner(name);
                     owned_remove(name);
+                    owned_remove_from(&g_finalized_locals, name);
                     moved_local_add(name);
                 }
             }
@@ -11287,12 +11342,19 @@ static void register_function_params(const char *s)
                 fn->param[fn->count].name[NAME_MAX_LEN - 1] = '\0';
                 fn->param[fn->count].type = type_unknown();
                 fn->param[fn->count].borrowed = 0;
+                fn->param[fn->count].owned = 0;
                 if (parse_decl(param_decl, &decl) && decl.name[0] != '\0') {
                     if (decl_has_borrow(param_decl)) {
                         decl.type.owned = 0;
                     }
                     fn->param[fn->count].borrowed =
                         decl_has_borrow(param_decl) || text_has_word(param_decl, "ref");
+                    fn->param[fn->count].owned =
+                        !fn->param[fn->count].borrowed &&
+                        (decl.type.owned || text_has_word(param_decl, "owned"));
+                    if (fn->param[fn->count].owned) {
+                        decl.type.owned = 1;
+                    }
                     fn->param[fn->count].type = decl.type;
                     if (g_unsafe_depth == 0 &&
                         type_is_runtime_resource_value(decl.type)) {
@@ -11303,7 +11365,8 @@ static void register_function_params(const char *s)
                         exit(1);
                     }
                     if (g_unsafe_depth == 0 && decl.type.ptr == 0 &&
-                        type_has_finalizer(decl.type)) {
+                        type_has_finalizer(decl.type) &&
+                        !fn->param[fn->count].owned) {
                         fprintf(stderr,
                                 "c-: type error: owning struct parameter '%s' must use ref or mut ref in safe mode; clone explicitly when an independent value is required\n",
                                 param_name);
@@ -11381,6 +11444,26 @@ static void register_function_param_symbols(const char *s)
         p = arg_end;
         if (p < close && *p == ',') {
             p++;
+        }
+    }
+}
+
+static void register_owned_parameter_cleanup(const char *function_name)
+{
+    struct FunctionParams *fn = function_params_find(function_name);
+    int i;
+
+    if (fn == NULL) {
+        return;
+    }
+    for (i = 0; i < fn->count; i++) {
+        if (!fn->param[i].owned) {
+            continue;
+        }
+        if (fn->param[i].type.ptr > 0) {
+            owned_add(fn->param[i].name, fn->param[i].type);
+        } else if (type_has_finalizer(fn->param[i].type)) {
+            finalized_local_add(fn->param[i].name, fn->param[i].type);
         }
     }
 }
@@ -13796,6 +13879,123 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
         return 0;
     }
     if (strcmp(type, "Thread") == 0 && strcmp(method, "spawn") == 0) {
+        const char *comma = find_parameter_comma(open + 1, close);
+
+        if (comma != NULL) {
+            const char *extra = find_parameter_comma(comma + 1, close);
+            char capture_expr[DEFAULT_EXPR_MAX];
+            char worker_expr[DEFAULT_EXPR_MAX];
+            char capture_name[NAME_MAX_LEN];
+            char worker_name[NAME_MAX_LEN];
+            char helper_name[NAME_MAX_LEN];
+            struct Symbol *capture;
+            struct FunctionParams *worker;
+            struct StructFinalizer *fields;
+            int i;
+            int send = 1;
+
+            if (extra != NULL) {
+                fprintf(stderr,
+                        "c-: type error: Thread.spawn accepts either worker or move value, worker\n");
+                exit(1);
+            }
+            copy_trimmed(capture_expr, sizeof(capture_expr), open + 1, comma);
+            copy_trimmed(worker_expr, sizeof(worker_expr), comma + 1, close);
+            if (!extract_plain_name_expr(capture_expr, capture_name) ||
+                moved_local_index(capture_name) < 0) {
+                fprintf(stderr,
+                        "c-: ownership error: Thread.spawn(value, worker) requires 'move value' as its first argument\n");
+                exit(1);
+            }
+            if (!extract_plain_name_expr(worker_expr, worker_name)) {
+                fprintf(stderr,
+                        "c-: thread safety error: Thread.spawn requires a directly named worker function\n");
+                exit(1);
+            }
+            capture = symbol_find(capture_name);
+            if (capture == NULL) {
+                fprintf(stderr,
+                        "c-: type error: Thread.spawn capture '%s' is not a visible local variable\n",
+                        capture_name);
+                exit(1);
+            }
+
+            /* The first Send surface is deliberately narrow: an exclusive,
+             * managed heap owner.  Scalars can be copied explicitly and safe
+             * references must never cross a thread boundary. */
+            if (capture->type.ptr <= 0 || !capture->type.owned ||
+                capture->type.raw_ptr ||
+                type_is_stored_safe_reference(capture->type) ||
+                type_is_runtime_resource_value(capture->type)) {
+                send = 0;
+            }
+            fields = capture->type.kind == TY_STRUCT
+                ? struct_clone_find(capture->type.tag) : NULL;
+            if (send && fields != NULL) {
+                for (i = 0; i < fields->count; i++) {
+                    struct Type field = fields->fields[i].type;
+                    if (type_is_stored_safe_reference(field) ||
+                        type_is_runtime_resource_value(field) ||
+                        field.raw_ptr || (field.ptr > 0 && !field.owned)) {
+                        send = 0;
+                        break;
+                    }
+                }
+            }
+            if (!send) {
+                char type_text[NAME_MAX_LEN * 2];
+                type_to_string(capture->type, type_text, sizeof(type_text));
+                fprintf(stderr,
+                        "c-: thread safety error: moved value '%s' of type '%s' is not Send; use an owned Box/string without Ref, Span, raw pointers, or runtime resources\n",
+                        capture_name, type_text);
+                exit(1);
+            }
+            worker = function_params_find(worker_name);
+            if (worker == NULL) {
+                fprintf(stderr,
+                        "c-: thread safety error: Thread.spawn worker '%s' needs a visible safe declaration\n",
+                        worker_name);
+                exit(1);
+            }
+            if (worker->is_unsafe || worker->ret.kind != TY_INT ||
+                worker->ret.ptr != 0 || worker->count != 1 ||
+                !worker->param[0].owned || worker->param[0].borrowed ||
+                !type_same_unowned(capture->type, worker->param[0].type)) {
+                fprintf(stderr,
+                        "c-: thread safety error: worker '%s' must be a safe 'int' function with one owned parameter matching moved value '%s'\n",
+                        worker_name, capture_name);
+                exit(1);
+            }
+            if (g_thread_owned_helper_id >= MAX_FUNCS ||
+                g_thread_owned_entry_count >= MAX_FUNCS) {
+                die("too many owned Thread.spawn calls");
+            }
+            snprintf(helper_name, sizeof(helper_name),
+                     "__cminus_thread_owned_entry_%d",
+                     g_thread_owned_helper_id++);
+            text_add(g_defines, "static int ");
+            text_add(g_defines, helper_name);
+            text_add(g_defines, "(void* __cminus_raw);\n");
+            text_add(g_thread_owned_helpers, "static int ");
+            text_add(g_thread_owned_helpers, helper_name);
+            text_add(g_thread_owned_helpers, "(void* __cminus_raw)\n{\n    return ");
+            text_add(g_thread_owned_helpers, worker_name);
+            text_add(g_thread_owned_helpers, "((");
+            append_c_type(g_thread_owned_helpers, worker->param[0].type);
+            text_add(g_thread_owned_helpers, ")__cminus_raw);\n}\n");
+            strncpy(g_thread_owned_entries[g_thread_owned_entry_count],
+                    worker_name, NAME_MAX_LEN - 1);
+            g_thread_owned_entries[g_thread_owned_entry_count][NAME_MAX_LEN - 1] = '\0';
+            g_thread_owned_entry_count++;
+
+            text_add(replacement, "Thread_spawn_context((void*)");
+            text_add(replacement, capture_name);
+            text_add(replacement, ", ");
+            text_add(replacement, helper_name);
+            text_add_ch(replacement, ')');
+            *end = close + 1;
+            return 1;
+        }
         text_add(replacement, "Thread_spawn(");
     } else if (strcmp(type, "Thread") == 0 && strcmp(method, "yield") == 0) {
         text_add(replacement, "Thread_yield(");
@@ -16900,7 +17100,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (decl.has_init) {
             char alias_owner[NAME_MAX_LEN];
 
-            if (!is_borrowed && !extract_move_name(decl.init, moved_name) &&
+            if (!is_borrowed && !extract_direct_move_name(decl.init, moved_name) &&
                 extract_plain_name_expr(decl.init, alias_owner) &&
                 owner_is_tracked_owned(alias_owner)) {
                 fprintf(stderr, "c-: type error: owned value '%s' cannot be aliased by '%s' at %s:%d; use move or declare an explicit borrow\n",
@@ -16914,7 +17114,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                  extract_safe_reference_borrow_owner(decl.init, borrow_owner))) {
                 borrow_link_add(decl.name, borrow_owner);
             }
-            if (extract_move_name(decl.init, moved_name)) {
+            if (extract_direct_move_name(decl.init, moved_name)) {
                 if (decl.type.ptr <= 0) {
                     fprintf(stderr, "c-: type error: move result requires a pointer declaration for '%s'\n", decl.name);
                     text_free(all);
@@ -17051,7 +17251,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         return all;
     }
 
-    if (eq >= 0 && !extract_move_name(all->text + eq + 1, moved_name)) {
+    if (eq >= 0 && !extract_direct_move_name(all->text + eq + 1, moved_name)) {
         char alias_owner[NAME_MAX_LEN];
 
         if (extract_plain_name_expr(all->text + eq + 1, alias_owner) &&
@@ -17067,7 +17267,7 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         }
     }
 
-    if (eq >= 0 && extract_move_name(all->text + eq + 1, moved_name)) {
+    if (eq >= 0 && extract_direct_move_name(all->text + eq + 1, moved_name)) {
         if (!extract_lhs_name(all->text, eq, lhs_name)) {
             fprintf(stderr, "c-: result of move must be assigned to a pointer lvalue\n");
             text_free(all);
@@ -18540,6 +18740,9 @@ int main(int argc, char **argv)
     yylineno = 1;
     g_output = text_new();
     g_defines = text_new();
+    g_thread_owned_helpers = text_new();
+    g_thread_owned_entry_count = 0;
+    g_thread_owned_helper_id = 0;
     g_consumed_directives = NULL;
     g_generated_artifacts = NULL;
     g_template_nodes = NULL;
@@ -18677,6 +18880,14 @@ int main(int argc, char **argv)
         source_node->body = g_output->ast;
         emit_ast_output(stdout, source_node);
         text_free(source_text);
+        if (g_thread_owned_helpers->len > 0) {
+            emit_generated_text(stdout, ND_EXPANSION,
+                                "owned-thread-helpers",
+                                g_thread_owned_helpers);
+        } else {
+            text_free(g_thread_owned_helpers);
+        }
+        g_thread_owned_helpers = NULL;
         emit_generic_function_instances(stdout);
 
         translation_unit = ast_new(ND_TRANSLATION_UNIT, NULL);

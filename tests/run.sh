@@ -1135,6 +1135,54 @@ grep 'Mutex_lock(&gate)' tests/thread_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/thread_safe.out.c -o tests/thread_safe.out -pthread
 ./tests/thread_safe.out
 
+./c- tests/thread_owned_send_safe.c- > tests/thread_owned_send_safe.out.c
+grep 'Thread_spawn_context((void\*)work, __cminus_thread_owned_entry_' \
+    tests/thread_owned_send_safe.out.c >/dev/null
+grep 'return consume((struct Work\*)__cminus_raw);' \
+    tests/thread_owned_send_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_owned_send_safe.out.c \
+    -o tests/thread_owned_send_safe.out -pthread
+./tests/thread_owned_send_safe.out
+
+if ./c- tests/bad_thread_owned_without_move_safe.c- > /dev/null \
+    2> tests/bad_thread_owned_without_move_safe.err; then
+    echo "owned thread argument without move unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "requires 'move value'" \
+    tests/bad_thread_owned_without_move_safe.err >/dev/null
+
+if ./c- tests/bad_thread_non_send_safe.c- > /dev/null \
+    2> tests/bad_thread_non_send_safe.err; then
+    echo "non-Send thread argument unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "is not Send" tests/bad_thread_non_send_safe.err >/dev/null
+
+if ./c- tests/bad_thread_owned_use_after_move_safe.c- > /dev/null \
+    2> tests/bad_thread_owned_use_after_move_safe.err; then
+    echo "thread argument remained usable after move" >&2
+    exit 1
+fi
+grep "use of moved value 'work'" \
+    tests/bad_thread_owned_use_after_move_safe.err >/dev/null
+
+if ./c- tests/bad_thread_owned_worker_type_safe.c- > /dev/null \
+    2> tests/bad_thread_owned_worker_type_safe.err; then
+    echo "mismatched owned thread worker unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "one owned parameter matching moved value 'work'" \
+    tests/bad_thread_owned_worker_type_safe.err >/dev/null
+
+if ./c- tests/bad_thread_owned_global_access_safe.c- > /dev/null \
+    2> tests/bad_thread_owned_global_access_safe.err; then
+    echo "owned thread worker ordinary global access unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Thread.spawn entry 'consume' accesses ordinary global 'shared_value'" \
+    tests/bad_thread_owned_global_access_safe.err >/dev/null
+
 ./c- tests/gc_thread_stress.c- > tests/gc_thread_stress.out.c
 grep '__cminus_gc_lock' tests/gc_thread_stress.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/gc_thread_stress.out.c \

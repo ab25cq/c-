@@ -1,0 +1,21 @@
+struct Work {
+    int value;
+};
+
+struct Other {
+    int value;
+};
+
+int consume(owned Box<Other> work)
+{
+    return work.value;
+}
+
+int main(void)
+{
+    Box<Work> work = new Work;
+    Thread thread;
+
+    thread = Thread.spawn(move work, consume);
+    return thread.join();
+}

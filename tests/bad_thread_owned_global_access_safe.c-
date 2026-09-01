@@ -1,0 +1,20 @@
+struct Work {
+    int value;
+};
+
+int shared_value;
+
+int consume(owned Box<Work> work)
+{
+    shared_value = shared_value + 1;
+    return work.value;
+}
+
+int main(void)
+{
+    Box<Work> work = new Work;
+    Thread thread;
+
+    thread = Thread.spawn(move work, consume);
+    return thread.join();
+}

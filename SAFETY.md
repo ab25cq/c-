@@ -51,7 +51,13 @@ only `Atomic<T>`, `Mutex`, `Cond`, and compile-time constants cross that global
 boundary. Indirect calls and calls without a visible safe definition are also
 rejected from a thread entry.
 
-A full Rust-style `Send`/`Sync` proof for arbitrary user types and owned thread
-arguments is the next layer. Until that is available, the hosted safe thread
-API remains deliberately limited to argument-free entry functions and the
-explicit synchronization primitives above.
+The initial `Send` surface supports transferring one exclusive managed heap
+owner with `Thread.spawn(move value, worker)`. The worker must be a visible safe
+function returning `int` and accepting exactly one matching owned parameter.
+`Ref`, `Span`, raw/non-owning pointers, runtime resources, and structs storing
+those values are rejected. The source becomes unusable immediately after the
+move, and the worker owns cleanup of the value.
+
+This is intentionally narrower than a full Rust-style structural `Send`/`Sync`
+proof. By-value captures, tuples of captures, user-defined synchronization
+containers, and shared references are not yet part of the safe thread surface.

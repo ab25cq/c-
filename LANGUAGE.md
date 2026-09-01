@@ -420,11 +420,28 @@ non-copyable in safe mode. They cannot be passed by value or stored as safe
 struct fields; pass them with `ref`/`mut ref`. This prevents two value aliases
 from joining, destroying, or leaving the same runtime resource twice.
 
-The current argument-free `Thread.spawn` form performs a transitive typed-AST
-check of its entry function. Ordinary globals, indirect calls, and calls without
-a visible safe definition are rejected. Global `Atomic<T>`, `Mutex`, and `Cond`
-values are the permitted synchronization surface until owned `Send` arguments
-and `Sync` containers are implemented.
+Both safe thread forms perform a transitive typed-AST check of the entry
+function. Ordinary globals, indirect calls, and calls without a visible safe
+definition are rejected. Global `Atomic<T>`, `Mutex`, and `Cond` values are the
+permitted shared synchronization surface.
+
+An exclusive managed value can be transferred to a worker:
+
+```c
+int worker(owned Box<Job> job)
+{
+    return job.result;
+}
+
+Box<Job> job = new Job;
+Thread thread = Thread.spawn(move job, worker);
+```
+
+The worker must return `int` and have one matching owned parameter. The initial
+`Send` predicate accepts owned managed heap values and rejects `Ref`, `Span`,
+raw/non-owning pointers, runtime resources, and structs containing them. The
+moved source cannot be used afterward. By-value and multi-value captures are
+not yet supported.
 
 ## 12. Unsafe boundary
 

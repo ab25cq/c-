@@ -1104,6 +1104,7 @@ struct Atomic {
 
 #ifndef CMINUS_BARE_H
 typedef int (*CMinusThreadMain)(void);
+typedef int (*CMinusThreadContextMain)(void*);
 
 typedef struct Thread Thread;
 typedef struct Mutex Mutex;
@@ -1111,6 +1112,8 @@ typedef struct Cond Cond;
 
 struct __CMinusThreadState {
     CMinusThreadMain fn;
+    CMinusThreadContextMain context_fn;
+    void* context;
     int result;
     int references;
 };
@@ -1426,7 +1429,12 @@ static __attribute__((unused)) void* __cminus_thread_entry(void* raw)
 {
     struct __CMinusThreadState* state = (struct __CMinusThreadState*)raw;
 
-    state->result = (*(state->fn))();
+    if (state->context_fn != NULL) {
+        state->result = (*(state->context_fn))(state->context);
+    }
+    else {
+        state->result = (*(state->fn))();
+    }
     __cminus_thread_state_release(state);
     return NULL;
 }
@@ -1449,6 +1457,40 @@ static __attribute__((unused)) struct Thread Thread_spawn(CMinusThreadMain fn)
         cminus_panic("thread allocation failed", __FILE__, __LINE__);
     }
     out.state->fn = fn;
+    out.state->references = 2;
+    rc = pthread_create(&handle, NULL, __cminus_thread_entry, out.state);
+    if (rc != 0) {
+        free(out.state);
+        cminus_panic("pthread_create failed", __FILE__, __LINE__);
+    }
+    memcpy(&out.handle_bits, &handle, sizeof(handle));
+    out.started = 1;
+    return out;
+}
+
+static __attribute__((unused)) struct Thread Thread_spawn_context(
+    void* context, CMinusThreadContextMain fn)
+{
+    struct Thread out;
+    pthread_t handle;
+    int rc;
+
+    if (context == NULL) {
+        cminus_panic("thread context is null", __FILE__, __LINE__);
+    }
+    if (fn == NULL) {
+        cminus_panic("thread context function is null", __FILE__, __LINE__);
+    }
+    if (sizeof(pthread_t) > sizeof(out.handle_bits)) {
+        cminus_panic("pthread_t is too large", __FILE__, __LINE__);
+    }
+    memset(&out, 0, sizeof(out));
+    out.state = (struct __CMinusThreadState*)calloc(1, sizeof(struct __CMinusThreadState));
+    if (out.state == NULL) {
+        cminus_panic("thread allocation failed", __FILE__, __LINE__);
+    }
+    out.state->context_fn = fn;
+    out.state->context = context;
     out.state->references = 2;
     rc = pthread_create(&handle, NULL, __cminus_thread_entry, out.state);
     if (rc != 0) {

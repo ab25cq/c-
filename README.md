@@ -1094,8 +1094,29 @@ Set `threads = true` in `C-.toml` to let `cpm build`, `cpm run`, `cpm val`, and
 Safe `Thread.spawn` entries are checked transitively. They cannot read or write
 ordinary globals, call through an indirect function pointer, or call a function
 without a visible safe definition. Shared global state must currently use
-`Atomic<T>`, `Mutex`, or `Cond`. This is the first stage of the `Send`/`Sync`
-model; owned arguments will replace the remaining argument-free restriction.
+`Atomic<T>`, `Mutex`, or `Cond`.
+
+One exclusive managed value can be moved into a thread:
+
+```c
+struct Work {
+    int value;
+};
+
+int consume(owned Box<Work> work)
+{
+    return work.value;
+}
+
+Box<Work> work = new Work;
+Thread thread = Thread.spawn(move work, consume);
+```
+
+The worker must be a visible safe `int` function with exactly one matching
+owned parameter. The initial `Send` check accepts managed owners such as
+`Box<T>` and owned strings, while rejecting `Ref`, `Span`, raw/non-owning
+pointers, runtime resources, and structs storing them. The moved source is no
+longer usable. By-value and multiple captures remain unsupported.
 
 `Thread`, `Mutex`, `Cond`, and `Critical` are non-copyable resources in safe
 mode. Initialize each variable separately and pass an existing resource with
