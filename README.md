@@ -1091,6 +1091,12 @@ int main(void)
 Set `threads = true` in `C-.toml` to let `cpm build`, `cpm run`, `cpm val`, and
 `cpm leak` add `-pthread` automatically. Bare builds ignore this flag.
 
+Safe `Thread.spawn` entries are checked transitively. They cannot read or write
+ordinary globals, call through an indirect function pointer, or call a function
+without a visible safe definition. Shared global state must currently use
+`Atomic<T>`, `Mutex`, or `Cond`. This is the first stage of the `Send`/`Sync`
+model; owned arguments will replace the remaining argument-free restriction.
+
 `Thread`, `Mutex`, `Cond`, and `Critical` are non-copyable resources in safe
 mode. Initialize each variable separately and pass an existing resource with
 `ref` or `mut ref`; by-value parameters, aliases, and resource fields in safe

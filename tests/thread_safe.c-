@@ -1,11 +1,11 @@
 Atomic<int> total;
 Mutex gate;
-int guarded_total;
+Atomic<int> guarded_total;
 
 int worker(void)
 {
     gate.lock();
-    guarded_total = guarded_total + 1;
+    guarded_total.fetch_add(1);
     gate.unlock();
     total.fetch_add(1);
     Thread.yield();
@@ -21,7 +21,7 @@ int main(void)
 
     total = Atomic<int>.init(0);
     gate = Mutex.init();
-    guarded_total = 0;
+    guarded_total = Atomic<int>.init(0);
     t1 = Thread.spawn(worker);
     t2 = Thread.spawn(worker);
     r1 = t1.join();
@@ -30,7 +30,7 @@ int main(void)
     if (r1 != 11 || r2 != 11) {
         return 1;
     }
-    if (total.load() != 2 || guarded_total != 2) {
+    if (total.load() != 2 || guarded_total.load() != 2) {
         return 2;
     }
     return 0;

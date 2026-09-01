@@ -325,6 +325,7 @@ struct SafetyExprNode {
     int has_constant_integer;
     int postfix;
     int statement_result;
+    int symbol_is_global;
     enum SafetyUnknownReason unknown_reason;
 };
 
@@ -6590,9 +6591,15 @@ static void safety_resolve_identifier_node(struct SafetyExprNode *node)
     struct FunctionParams *fn;
     struct Type resolved;
     struct Symbol *symbol;
+    struct Symbol *local_symbol;
+    struct Symbol *global_symbol;
 
-    if (node == NULL || node->kind != SAFETY_EXPR_IDENTIFIER ||
-        type_is_known(node->type)) return;
+    if (node == NULL || node->kind != SAFETY_EXPR_IDENTIFIER) return;
+    local_symbol = g_in_function ? symbol_find_in(&g_locals, node->name) : NULL;
+    global_symbol = symbol_find_in(&g_globals, node->name);
+    node->symbol_is_global = local_symbol == NULL && global_symbol != NULL &&
+        global_symbol->var != NULL;
+    if (type_is_known(node->type)) return;
     symbol = symbol_find_or_current_param(node->name);
     if (symbol != NULL) {
         node->type = symbol->type;
@@ -9069,7 +9076,16 @@ static void ast_final_register_macro_constants(struct Node *node)
                             safety_parse_range(value, end);
 
                         if (expr != NULL && type_is_known(expr->type)) {
-                            symbol_add(name, expr->type);
+                            struct Symbol *existing =
+                                symbol_find_in(&g_globals, name);
+
+                            if (existing == NULL) {
+                                symbol_add_to(&g_globals, name, expr->type);
+                                existing = symbol_find_in(&g_globals, name);
+                                if (existing != NULL) {
+                                    existing->var = NULL;
+                                }
+                            }
                         }
                         safety_expr_free(expr);
                     }
@@ -9134,6 +9150,198 @@ static void ast_final_resolve_nodes(struct Node *node)
             ast_final_add_local(node->name, *node->ty);
         }
         ast_final_resolve_nodes(node->body);
+    }
+}
+
+struct ThreadSafetyContext {
+    struct Node *root;
+    const char *entry;
+    char stack[MAX_FUNCS][NAME_MAX_LEN];
+    int depth;
+};
+
+static int type_is_thread_shared_primitive(struct Type type)
+{
+    return type.kind == TY_STRUCT && type.ptr == 0 &&
+        (strcmp(type.tag, "Atomic") == 0 ||
+         strncmp(type.tag, "Atomic_", 7) == 0 ||
+         strcmp(type.tag, "Mutex") == 0 ||
+         strcmp(type.tag, "Cond") == 0);
+}
+
+static int thread_identifier_is_constant(struct Node *node, const char *name)
+{
+    for (; node != NULL; node = node->next) {
+        if ((node->kind == ND_ENUM_MEMBER ||
+             node->kind == ND_BITFLAG_MEMBER ||
+             node->kind == ND_DIRECTIVE || node->kind == ND_PP) &&
+            strcmp(node->name, name) == 0) {
+            return 1;
+        }
+        if (thread_identifier_is_constant(node->lhs, name) ||
+            thread_identifier_is_constant(node->body, name)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static struct Node *thread_find_function(struct Node *node, const char *name)
+{
+    struct Node *found;
+
+    for (; node != NULL; node = node->next) {
+        if (node->kind == ND_FUNCDEF && strcmp(node->name, name) == 0) {
+            return node;
+        }
+        found = thread_find_function(node->lhs, name);
+        if (found != NULL) {
+            return found;
+        }
+        found = thread_find_function(node->body, name);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
+static int thread_safety_stack_contains(struct ThreadSafetyContext *context,
+                                        const char *name)
+{
+    int i;
+
+    for (i = 0; i < context->depth; i++) {
+        if (strcmp(context->stack[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int thread_call_is_trusted_runtime(const char *name)
+{
+    return function_signature_is_internal(name) ||
+        strncmp(name, "__builtin_", 10) == 0 ||
+        strncmp(name, "Thread_", 7) == 0 ||
+        strncmp(name, "Mutex_", 6) == 0 ||
+        strncmp(name, "Cond_", 5) == 0 ||
+        strcmp(name, "memset") == 0 || strcmp(name, "memcpy") == 0;
+}
+
+static void thread_analyze_function(struct ThreadSafetyContext *context,
+                                    struct Node *function);
+
+static void thread_analyze_expression(struct ThreadSafetyContext *context,
+                                      struct SafetyExprNode *expr)
+{
+    for (; expr != NULL; expr = expr->next) {
+        if (expr->kind == SAFETY_EXPR_IDENTIFIER && expr->symbol_is_global &&
+            expr->type.kind != TY_FUNCTION &&
+            !type_is_thread_shared_primitive(expr->type) &&
+            !thread_identifier_is_constant(context->root, expr->name)) {
+            fprintf(stderr,
+                    "c-: thread safety error: Thread.spawn entry '%s' accesses ordinary global '%s'; use Atomic<T> or move the state into a later Send-capable thread argument\n",
+                    context->entry, expr->name);
+            exit(1);
+        }
+        if (expr->kind == SAFETY_EXPR_CALL) {
+            struct SafetyExprNode *callee = expr->lhs;
+
+            if (callee == NULL || callee->kind != SAFETY_EXPR_IDENTIFIER) {
+                fprintf(stderr,
+                        "c-: thread safety error: Thread.spawn entry '%s' uses an indirect call that cannot be proven thread-safe\n",
+                        context->entry);
+                exit(1);
+            }
+            if (!thread_call_is_trusted_runtime(callee->name)) {
+                struct Node *called =
+                    thread_find_function(context->root, callee->name);
+
+                if (called == NULL) {
+                    fprintf(stderr,
+                            "c-: thread safety error: Thread.spawn entry '%s' calls '%s' without a visible safe definition\n",
+                            context->entry, callee->name);
+                    exit(1);
+                }
+                thread_analyze_function(context, called);
+            }
+        }
+        thread_analyze_expression(context, expr->lhs);
+        thread_analyze_expression(context, expr->rhs);
+        thread_analyze_expression(context, expr->child);
+    }
+}
+
+static void thread_analyze_nodes(struct ThreadSafetyContext *context,
+                                 struct Node *node)
+{
+    for (; node != NULL; node = node->next) {
+        thread_analyze_expression(context, node->expr);
+        thread_analyze_expression(context, node->inc_expr);
+        thread_analyze_nodes(context, node->lhs);
+        thread_analyze_nodes(context, node->body);
+    }
+}
+
+static void thread_analyze_function(struct ThreadSafetyContext *context,
+                                    struct Node *function)
+{
+    if (function == NULL || function->name[0] == '\0' ||
+        thread_safety_stack_contains(context, function->name)) {
+        return;
+    }
+    if (context->depth >= MAX_FUNCS) {
+        die("thread safety call graph is too deep");
+    }
+    strncpy(context->stack[context->depth], function->name, NAME_MAX_LEN - 1);
+    context->stack[context->depth][NAME_MAX_LEN - 1] = '\0';
+    context->depth++;
+    thread_analyze_nodes(context, function->body);
+    context->depth--;
+}
+
+static void thread_validate_spawn_expression(struct Node *root,
+                                             struct SafetyExprNode *expr)
+{
+    for (; expr != NULL; expr = expr->next) {
+        if (expr->kind == SAFETY_EXPR_CALL && expr->lhs != NULL &&
+            expr->lhs->kind == SAFETY_EXPR_IDENTIFIER &&
+            strcmp(expr->lhs->name, "Thread_spawn") == 0) {
+            struct SafetyExprNode *argument = expr->child;
+            struct ThreadSafetyContext context;
+            struct Node *entry;
+
+            if (argument == NULL || argument->kind != SAFETY_EXPR_IDENTIFIER) {
+                fprintf(stderr,
+                        "c-: thread safety error: Thread.spawn requires a directly named entry function in safe mode\n");
+                exit(1);
+            }
+            entry = thread_find_function(root, argument->name);
+            if (entry == NULL) {
+                fprintf(stderr,
+                        "c-: thread safety error: Thread.spawn entry '%s' has no visible safe definition\n",
+                        argument->name);
+                exit(1);
+            }
+            memset(&context, 0, sizeof(context));
+            context.root = root;
+            context.entry = argument->name;
+            thread_analyze_function(&context, entry);
+        }
+        thread_validate_spawn_expression(root, expr->lhs);
+        thread_validate_spawn_expression(root, expr->rhs);
+        thread_validate_spawn_expression(root, expr->child);
+    }
+}
+
+static void validate_thread_spawn_safety(struct Node *root, struct Node *node)
+{
+    for (; node != NULL; node = node->next) {
+        thread_validate_spawn_expression(root, node->expr);
+        thread_validate_spawn_expression(root, node->inc_expr);
+        validate_thread_spawn_safety(root, node->lhs);
+        validate_thread_spawn_safety(root, node->body);
     }
 }
 
@@ -18486,6 +18694,7 @@ int main(int argc, char **argv)
     ast_final_resolve_nodes(translation_unit);
     ast_final_resolve_nodes(g_generated_artifacts);
     ast_final_resolve_nodes(g_template_nodes);
+    validate_thread_spawn_safety(translation_unit, translation_unit);
     if (g_dump_typed_ast) {
         dump_typed_ast(stderr, g_consumed_directives, 0);
         dump_typed_ast(stderr, g_template_nodes, 0);

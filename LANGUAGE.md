@@ -420,6 +420,12 @@ non-copyable in safe mode. They cannot be passed by value or stored as safe
 struct fields; pass them with `ref`/`mut ref`. This prevents two value aliases
 from joining, destroying, or leaving the same runtime resource twice.
 
+The current argument-free `Thread.spawn` form performs a transitive typed-AST
+check of its entry function. Ordinary globals, indirect calls, and calls without
+a visible safe definition are rejected. Global `Atomic<T>`, `Mutex`, and `Cond`
+values are the permitted synchronization surface until owned `Send` arguments
+and `Sync` containers are implemented.
+
 ## 12. Unsafe boundary
 
 The following operations require `unsafe` in safe mode:

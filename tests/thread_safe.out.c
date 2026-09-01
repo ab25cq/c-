@@ -1865,14 +1865,14 @@ static __attribute__((unused)) void Bitmap_free_bit(struct Bitmap* self, int ind
 }
 struct Atomic_int total;
 Mutex gate;
-int guarded_total;
+struct Atomic_int guarded_total;
 
 int worker(void)
 {    char __cminus_stack_anchor;
     size_t __cminus_stack_id = cminus_stack_enter_impl(__FILE__, __LINE__, &__cminus_stack_anchor);
 
     Mutex_lock(&gate);
-    guarded_total = guarded_total + 1;
+    Atomic_fetch_add_int(&guarded_total, 1);
     Mutex_unlock(&gate);
     Atomic_fetch_add_int(&total, 1);
     Thread_yield();
@@ -1900,7 +1900,7 @@ int main(void)
 
     total = Atomic_init_int(0);
     gate = Mutex_init();
-    guarded_total = 0;
+    guarded_total = Atomic_init_int(0);
     t1 = Thread_spawn(worker);
     t2 = Thread_spawn(worker);
     r1 = Thread_join(&t1);
@@ -1911,7 +1911,7 @@ int main(void)
         cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
         return __cminus_return7;
     }
-    if (Atomic_load_int(&total) != 2 || guarded_total != 2) {
+    if (Atomic_load_int(&total) != 2 || Atomic_load_int(&guarded_total) != 2) {
         __typeof__((2)) __cminus_return8 = (2);
         cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);
         return __cminus_return8;

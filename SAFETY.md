@@ -45,8 +45,13 @@ foreign code are responsible for preserving its invariants.
 
 The managed allocator and thread-handle lifetime operations are synchronized,
 and invalid memory-order combinations panic. `Atomic<T>` and `Mutex`/`Cond`
-are the supported synchronization primitives. A full Rust-style `Send`/`Sync`
-proof for arbitrary user types is not implemented yet, so sharing ordinary
-mutable user data between threads remains outside the proven subset. Keep
-shared state behind synchronization and use sanitizer testing for hosted
-threaded programs.
+are the supported synchronization primitives. A `Thread.spawn` entry and its
+transitive user-function calls cannot access ordinary globals in safe mode;
+only `Atomic<T>`, `Mutex`, `Cond`, and compile-time constants cross that global
+boundary. Indirect calls and calls without a visible safe definition are also
+rejected from a thread entry.
+
+A full Rust-style `Send`/`Sync` proof for arbitrary user types and owned thread
+arguments is the next layer. Until that is available, the hosted safe thread
+API remains deliberately limited to argument-free entry functions and the
+explicit synchronization primitives above.

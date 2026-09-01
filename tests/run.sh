@@ -1147,6 +1147,22 @@ cc -std=gnu99 -Wall -Wextra tests/thread_detach_safe.out.c \
     -o tests/thread_detach_safe.out -pthread
 ./tests/thread_detach_safe.out
 
+if ./c- tests/bad_thread_global_access_safe.c- > /dev/null \
+    2> tests/bad_thread_global_access_safe.err; then
+    echo "thread entry ordinary global access unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Thread.spawn entry 'worker' accesses ordinary global 'shared_value'" \
+    tests/bad_thread_global_access_safe.err >/dev/null
+
+if ./c- tests/bad_thread_transitive_global_safe.c- > /dev/null \
+    2> tests/bad_thread_transitive_global_safe.err; then
+    echo "transitive thread global access unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Thread.spawn entry 'worker' accesses ordinary global 'shared_value'" \
+    tests/bad_thread_transitive_global_safe.err >/dev/null
+
 if ./c- tests/bad_thread_copy_safe.c- > /dev/null \
     2> tests/bad_thread_copy_safe.err; then
     echo "Thread resource copy unexpectedly succeeded" >&2

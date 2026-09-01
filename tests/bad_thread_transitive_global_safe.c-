@@ -1,0 +1,20 @@
+int shared_value;
+
+void change_shared(void)
+{
+    shared_value = 1;
+}
+
+int worker(void)
+{
+    change_shared();
+    return 0;
+}
+
+int main(void)
+{
+    Thread thread;
+
+    thread = Thread.spawn(worker);
+    return thread.join();
+}
