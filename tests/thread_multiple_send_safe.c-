@@ -1,0 +1,25 @@
+struct LeftWork {
+    int value;
+};
+
+struct RightWork {
+    int value;
+};
+
+int consume_pair(owned Box<LeftWork> left,
+                 owned Box<RightWork> right)
+{
+    return left.value + right.value;
+}
+
+int main(void)
+{
+    Box<LeftWork> left = new LeftWork;
+    Box<RightWork> right = new RightWork;
+    Thread thread;
+
+    left.value = 20;
+    right.value = 22;
+    thread = Thread.spawn(move left, move right, consume_pair);
+    return thread.join() == 42 ? 0 : 1;
+}

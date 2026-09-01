@@ -51,9 +51,10 @@ only `Atomic<T>`, `Mutex`, `Cond`, and compile-time constants cross that global
 boundary. Indirect calls and calls without a visible safe definition are also
 rejected from a thread entry.
 
-The initial `Send` surface supports transferring one exclusive managed heap
-owner with `Thread.spawn(move value, worker)`. The worker must be a visible safe
-function returning `int` and accepting exactly one matching owned parameter.
+The `Send` surface supports transferring one or more exclusive managed heap
+owners with `Thread.spawn(move first, move second, worker)`. The worker must be
+a visible safe function returning `int` and accepting matching owned parameters
+in the same order.
 `Ref`, `Span`, raw/non-owning pointers, runtime resources, and structs storing
 those values are rejected. The source becomes unusable immediately after the
 move, and the worker owns cleanup of the value. `Send` is checked recursively
@@ -61,5 +62,5 @@ through user-struct fields and owned pointees; recursive owning types such as
 `Box<Node>` are supported without weakening the check.
 
 This is intentionally narrower than a full Rust-style structural `Send`/`Sync`
-proof. By-value captures, tuples of captures, user-defined synchronization
-containers, and shared references are not yet part of the safe thread surface.
+proof. By-value captures, user-defined synchronization containers, and shared
+references are not yet part of the safe thread surface.

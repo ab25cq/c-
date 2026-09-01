@@ -1112,13 +1112,19 @@ Box<Work> work = new Work;
 Thread thread = Thread.spawn(move work, consume);
 ```
 
-The worker must be a visible safe `int` function with exactly one matching
-owned parameter. The initial `Send` check accepts managed owners such as
+Multiple values use the same positional form:
+
+```c
+Thread thread = Thread.spawn(move request, move response, consume_pair);
+```
+
+The worker must be a visible safe `int` function with matching owned
+parameters in the same order. The `Send` check accepts managed owners such as
 `Box<T>` and owned strings, while rejecting `Ref`, `Span`, raw/non-owning
 pointers, runtime resources, and structs storing them. The moved source is no
 longer usable. The check recursively follows nested user structs and owned
-pointees, and handles cyclic `Box<Node>`-style types. By-value and multiple
-captures remain unsupported.
+pointees, and handles cyclic `Box<Node>`-style types. Missing `move` and moving
+one variable twice are rejected. By-value captures remain unsupported.
 
 `Thread`, `Mutex`, `Cond`, and `Critical` are non-copyable resources in safe
 mode. Initialize each variable separately and pass an existing resource with

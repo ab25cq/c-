@@ -15686,48 +15686,81 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
         const char *comma = find_parameter_comma(open + 1, close);
 
         if (comma != NULL) {
-            const char *extra = find_parameter_comma(comma + 1, close);
-            char capture_expr[DEFAULT_EXPR_MAX];
-            char worker_expr[DEFAULT_EXPR_MAX];
-            char capture_name[NAME_MAX_LEN];
+            const char *argument_start = open + 1;
+            char argument[MAX_PARAMS + 1][DEFAULT_EXPR_MAX];
+            char capture_name[MAX_PARAMS][NAME_MAX_LEN];
+            struct Symbol *capture[MAX_PARAMS];
             char worker_name[NAME_MAX_LEN];
             char helper_name[NAME_MAX_LEN];
-            struct Symbol *capture;
+            char spawn_name[NAME_MAX_LEN];
+            char context_name[NAME_MAX_LEN];
             struct FunctionParams *worker;
+            int argument_count = 0;
+            int capture_count;
+            int helper_id;
+            int i;
+            int j;
 
-            if (extra != NULL) {
+            while (argument_start < close) {
+                const char *separator =
+                    find_parameter_comma(argument_start, close);
+                const char *argument_end = separator == NULL ? close : separator;
+
+                if (argument_count >= MAX_PARAMS + 1) {
+                    die("too many Thread.spawn arguments");
+                }
+                copy_trimmed(argument[argument_count], DEFAULT_EXPR_MAX,
+                             argument_start, argument_end);
+                argument_count++;
+                if (separator == NULL) {
+                    break;
+                }
+                argument_start = separator + 1;
+            }
+            capture_count = argument_count - 1;
+            if (capture_count <= 0 || capture_count > MAX_PARAMS) {
                 fprintf(stderr,
-                        "c-: type error: Thread.spawn accepts either worker or move value, worker\n");
+                        "c-: type error: Thread.spawn accepts worker or one or more moved values followed by worker\n");
                 exit(1);
             }
-            copy_trimmed(capture_expr, sizeof(capture_expr), open + 1, comma);
-            copy_trimmed(worker_expr, sizeof(worker_expr), comma + 1, close);
-            if (!extract_plain_name_expr(capture_expr, capture_name) ||
-                moved_local_index(capture_name) < 0) {
-                fprintf(stderr,
-                        "c-: ownership error: Thread.spawn(value, worker) requires 'move value' as its first argument\n");
-                exit(1);
-            }
-            if (!extract_plain_name_expr(worker_expr, worker_name)) {
+            if (!extract_plain_name_expr(argument[argument_count - 1],
+                                         worker_name)) {
                 fprintf(stderr,
                         "c-: thread safety error: Thread.spawn requires a directly named worker function\n");
                 exit(1);
             }
-            capture = symbol_find(capture_name);
-            if (capture == NULL) {
-                fprintf(stderr,
-                        "c-: type error: Thread.spawn capture '%s' is not a visible local variable\n",
-                        capture_name);
-                exit(1);
-            }
-
-            if (!type_is_thread_send_capture(capture->type)) {
-                char type_text[NAME_MAX_LEN * 2];
-                type_to_string(capture->type, type_text, sizeof(type_text));
-                fprintf(stderr,
-                        "c-: thread safety error: moved value '%s' of type '%s' is not Send; use an owned Box/string without Ref, Span, raw pointers, or runtime resources\n",
-                        capture_name, type_text);
-                exit(1);
+            for (i = 0; i < capture_count; i++) {
+                if (!extract_plain_name_expr(argument[i], capture_name[i]) ||
+                    moved_local_index(capture_name[i]) < 0) {
+                    fprintf(stderr,
+                            "c-: ownership error: Thread.spawn capture %d requires 'move value'\n",
+                            i + 1);
+                    exit(1);
+                }
+                for (j = 0; j < i; j++) {
+                    if (strcmp(capture_name[j], capture_name[i]) == 0) {
+                        fprintf(stderr,
+                                "c-: ownership error: Thread.spawn cannot move '%s' more than once\n",
+                                capture_name[i]);
+                        exit(1);
+                    }
+                }
+                capture[i] = symbol_find(capture_name[i]);
+                if (capture[i] == NULL) {
+                    fprintf(stderr,
+                            "c-: type error: Thread.spawn capture '%s' is not a visible local variable\n",
+                            capture_name[i]);
+                    exit(1);
+                }
+                if (!type_is_thread_send_capture(capture[i]->type)) {
+                    char type_text[NAME_MAX_LEN * 2];
+                    type_to_string(capture[i]->type, type_text,
+                                   sizeof(type_text));
+                    fprintf(stderr,
+                            "c-: thread safety error: moved value '%s' of type '%s' is not Send; use an owned Box/string without Ref, Span, raw pointers, or runtime resources\n",
+                            capture_name[i], type_text);
+                    exit(1);
+                }
             }
             worker = function_params_find(worker_name);
             if (worker == NULL) {
@@ -15737,40 +15770,149 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                 exit(1);
             }
             if (worker->is_unsafe || worker->ret.kind != TY_INT ||
-                worker->ret.ptr != 0 || worker->count != 1 ||
-                !worker->param[0].owned || worker->param[0].borrowed ||
-                !type_same_unowned(capture->type, worker->param[0].type)) {
+                worker->ret.ptr != 0 || worker->count != capture_count) {
                 fprintf(stderr,
-                        "c-: thread safety error: worker '%s' must be a safe 'int' function with one owned parameter matching moved value '%s'\n",
-                        worker_name, capture_name);
+                        "c-: thread safety error: worker '%s' must be a safe 'int' function with %d owned parameter%s matching the moved values\n",
+                        worker_name, capture_count,
+                        capture_count == 1 ? "" : "s");
                 exit(1);
+            }
+            for (i = 0; i < capture_count; i++) {
+                if (!worker->param[i].owned || worker->param[i].borrowed ||
+                    !type_same_unowned(capture[i]->type,
+                                       worker->param[i].type)) {
+                    fprintf(stderr,
+                            "c-: thread safety error: worker '%s' parameter %d must be owned and match moved value '%s'\n",
+                            worker_name, i + 1, capture_name[i]);
+                    exit(1);
+                }
             }
             if (g_thread_owned_helper_id >= MAX_FUNCS ||
                 g_thread_owned_entry_count >= MAX_FUNCS) {
                 die("too many owned Thread.spawn calls");
             }
+            helper_id = g_thread_owned_helper_id++;
             snprintf(helper_name, sizeof(helper_name),
                      "__cminus_thread_owned_entry_%d",
-                     g_thread_owned_helper_id++);
+                     helper_id);
             text_add(g_defines, "static int ");
             text_add(g_defines, helper_name);
             text_add(g_defines, "(void* __cminus_raw);\n");
-            text_add(g_thread_owned_helpers, "static int ");
-            text_add(g_thread_owned_helpers, helper_name);
-            text_add(g_thread_owned_helpers, "(void* __cminus_raw)\n{\n    return ");
-            text_add(g_thread_owned_helpers, worker_name);
-            text_add(g_thread_owned_helpers, "((");
-            append_c_type(g_thread_owned_helpers, worker->param[0].type);
-            text_add(g_thread_owned_helpers, ")__cminus_raw);\n}\n");
+            if (capture_count == 1) {
+                text_add(g_thread_owned_helpers, "static int ");
+                text_add(g_thread_owned_helpers, helper_name);
+                text_add(g_thread_owned_helpers,
+                         "(void* __cminus_raw)\n{\n    return ");
+                text_add(g_thread_owned_helpers, worker_name);
+                text_add(g_thread_owned_helpers, "((");
+                append_c_type(g_thread_owned_helpers, worker->param[0].type);
+                text_add(g_thread_owned_helpers, ")__cminus_raw);\n}\n");
+            } else {
+                snprintf(spawn_name, sizeof(spawn_name),
+                         "__cminus_thread_owned_spawn_%d", helper_id);
+                snprintf(context_name, sizeof(context_name),
+                         "__CMinusThreadOwnedContext_%d", helper_id);
+                text_add(g_defines, "struct Thread;\nstatic struct Thread ");
+                text_add(g_defines, spawn_name);
+                text_add_ch(g_defines, '(');
+                for (i = 0; i < capture_count; i++) {
+                    if (i > 0) text_add(g_defines, ", ");
+                    text_add(g_defines, "void*");
+                }
+                text_add(g_defines, ");\n");
+
+                text_add(g_thread_owned_helpers, "struct ");
+                text_add(g_thread_owned_helpers, context_name);
+                text_add(g_thread_owned_helpers, " {\n");
+                for (i = 0; i < capture_count; i++) {
+                    char index_text[32];
+                    snprintf(index_text, sizeof(index_text), "%d", i);
+                    text_add(g_thread_owned_helpers, "    void* value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                    text_add(g_thread_owned_helpers, ";\n");
+                }
+                text_add(g_thread_owned_helpers, "};\nstatic int ");
+                text_add(g_thread_owned_helpers, helper_name);
+                text_add(g_thread_owned_helpers,
+                         "(void* __cminus_raw)\n{\n    struct ");
+                text_add(g_thread_owned_helpers, context_name);
+                text_add(g_thread_owned_helpers,
+                         "* __cminus_context = (struct ");
+                text_add(g_thread_owned_helpers, context_name);
+                text_add(g_thread_owned_helpers,
+                         "*)__cminus_raw;\n");
+                for (i = 0; i < capture_count; i++) {
+                    char index_text[32];
+                    snprintf(index_text, sizeof(index_text), "%d", i);
+                    text_add(g_thread_owned_helpers, "    void* __cminus_value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                    text_add(g_thread_owned_helpers,
+                             " = __cminus_context->value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                    text_add(g_thread_owned_helpers, ";\n");
+                }
+                text_add(g_thread_owned_helpers,
+                         "    cminus_gc_free(__cminus_context);\n    return ");
+                text_add(g_thread_owned_helpers, worker_name);
+                text_add_ch(g_thread_owned_helpers, '(');
+                for (i = 0; i < capture_count; i++) {
+                    char index_text[32];
+                    snprintf(index_text, sizeof(index_text), "%d", i);
+                    if (i > 0) text_add(g_thread_owned_helpers, ", ");
+                    text_add(g_thread_owned_helpers, "(");
+                    append_c_type(g_thread_owned_helpers,
+                                  worker->param[i].type);
+                    text_add(g_thread_owned_helpers, ")__cminus_value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                }
+                text_add(g_thread_owned_helpers, ");\n}\nstatic struct Thread ");
+                text_add(g_thread_owned_helpers, spawn_name);
+                text_add_ch(g_thread_owned_helpers, '(');
+                for (i = 0; i < capture_count; i++) {
+                    char index_text[32];
+                    snprintf(index_text, sizeof(index_text), "%d", i);
+                    if (i > 0) text_add(g_thread_owned_helpers, ", ");
+                    text_add(g_thread_owned_helpers, "void* value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                }
+                text_add(g_thread_owned_helpers, ")\n{\n    struct ");
+                text_add(g_thread_owned_helpers, context_name);
+                text_add(g_thread_owned_helpers, "* context = cminus_gc_calloc(1, sizeof(struct ");
+                text_add(g_thread_owned_helpers, context_name);
+                text_add(g_thread_owned_helpers, "));\n");
+                for (i = 0; i < capture_count; i++) {
+                    char index_text[32];
+                    snprintf(index_text, sizeof(index_text), "%d", i);
+                    text_add(g_thread_owned_helpers, "    context->value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                    text_add(g_thread_owned_helpers, " = value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                    text_add(g_thread_owned_helpers, ";\n");
+                }
+                text_add(g_thread_owned_helpers,
+                         "    return Thread_spawn_context(context, ");
+                text_add(g_thread_owned_helpers, helper_name);
+                text_add(g_thread_owned_helpers, ");\n}\n");
+            }
             strncpy(g_thread_owned_entries[g_thread_owned_entry_count],
                     worker_name, NAME_MAX_LEN - 1);
             g_thread_owned_entries[g_thread_owned_entry_count][NAME_MAX_LEN - 1] = '\0';
             g_thread_owned_entry_count++;
 
-            text_add(replacement, "Thread_spawn_context((void*)");
-            text_add(replacement, capture_name);
-            text_add(replacement, ", ");
-            text_add(replacement, helper_name);
+            if (capture_count == 1) {
+                text_add(replacement, "Thread_spawn_context((void*)");
+                text_add(replacement, capture_name[0]);
+                text_add(replacement, ", ");
+                text_add(replacement, helper_name);
+            } else {
+                text_add(replacement, spawn_name);
+                text_add_ch(replacement, '(');
+                for (i = 0; i < capture_count; i++) {
+                    if (i > 0) text_add(replacement, ", ");
+                    text_add(replacement, "(void*)");
+                    text_add(replacement, capture_name[i]);
+                }
+            }
             text_add_ch(replacement, ')');
             *end = close + 1;
             return 1;

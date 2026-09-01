@@ -1155,13 +1155,47 @@ cc -std=gnu99 -Wall -Wextra tests/thread_recursive_send_safe.out.c \
     -o tests/thread_recursive_send_safe.out -pthread
 ./tests/thread_recursive_send_safe.out
 
+./c- tests/thread_multiple_send_safe.c- \
+    > tests/thread_multiple_send_safe.out.c
+grep '__cminus_thread_owned_spawn_' \
+    tests/thread_multiple_send_safe.out.c >/dev/null
+grep 'cminus_gc_free(__cminus_context);' \
+    tests/thread_multiple_send_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_multiple_send_safe.out.c \
+    -o tests/thread_multiple_send_safe.out -pthread
+./tests/thread_multiple_send_safe.out
+
 if ./c- tests/bad_thread_owned_without_move_safe.c- > /dev/null \
     2> tests/bad_thread_owned_without_move_safe.err; then
     echo "owned thread argument without move unexpectedly succeeded" >&2
     exit 1
 fi
-grep "requires 'move value'" \
+grep "capture 1 requires 'move value'" \
     tests/bad_thread_owned_without_move_safe.err >/dev/null
+
+if ./c- tests/bad_thread_multiple_missing_move_safe.c- > /dev/null \
+    2> tests/bad_thread_multiple_missing_move_safe.err; then
+    echo "thread capture without move unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "capture 2 requires 'move value'" \
+    tests/bad_thread_multiple_missing_move_safe.err >/dev/null
+
+if ./c- tests/bad_thread_multiple_duplicate_move_safe.c- > /dev/null \
+    2> tests/bad_thread_multiple_duplicate_move_safe.err; then
+    echo "duplicate thread capture move unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "cannot move 'work' more than once" \
+    tests/bad_thread_multiple_duplicate_move_safe.err >/dev/null
+
+if ./c- tests/bad_thread_multiple_worker_order_safe.c- > /dev/null \
+    2> tests/bad_thread_multiple_worker_order_safe.err; then
+    echo "out-of-order thread worker parameters unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "parameter 1 must be owned and match moved value 'left'" \
+    tests/bad_thread_multiple_worker_order_safe.err >/dev/null
 
 if ./c- tests/bad_thread_non_send_safe.c- > /dev/null \
     2> tests/bad_thread_non_send_safe.err; then
@@ -1191,7 +1225,7 @@ if ./c- tests/bad_thread_owned_worker_type_safe.c- > /dev/null \
     echo "mismatched owned thread worker unexpectedly succeeded" >&2
     exit 1
 fi
-grep "one owned parameter matching moved value 'work'" \
+grep "parameter 1 must be owned and match moved value 'work'" \
     tests/bad_thread_owned_worker_type_safe.err >/dev/null
 
 if ./c- tests/bad_thread_owned_global_access_safe.c- > /dev/null \
