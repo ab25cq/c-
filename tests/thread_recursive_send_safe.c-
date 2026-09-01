@@ -1,0 +1,19 @@
+struct NodeWork {
+    Box<NodeWork> next;
+    int value;
+};
+
+int consume_node(owned Box<NodeWork> node)
+{
+    return node.value;
+}
+
+int main(void)
+{
+    Box<NodeWork> node = new NodeWork;
+    Thread thread;
+
+    node.value = 19;
+    thread = Thread.spawn(move node, consume_node);
+    return thread.join() == 19 ? 0 : 1;
+}

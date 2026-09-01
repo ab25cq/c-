@@ -1,0 +1,22 @@
+struct InnerWork {
+    int value;
+};
+
+struct OuterWork {
+    InnerWork inner;
+};
+
+int consume_nested(owned Box<OuterWork> work)
+{
+    return work.inner.value;
+}
+
+int main(void)
+{
+    Box<OuterWork> work = new OuterWork;
+    Thread thread;
+
+    work.inner.value = 73;
+    thread = Thread.spawn(move work, consume_nested);
+    return thread.join() == 73 ? 0 : 1;
+}

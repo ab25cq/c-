@@ -1144,6 +1144,17 @@ cc -std=gnu99 -Wall -Wextra tests/thread_owned_send_safe.out.c \
     -o tests/thread_owned_send_safe.out -pthread
 ./tests/thread_owned_send_safe.out
 
+./c- tests/thread_nested_send_safe.c- > tests/thread_nested_send_safe.out.c
+cc -std=gnu99 -Wall -Wextra tests/thread_nested_send_safe.out.c \
+    -o tests/thread_nested_send_safe.out -pthread
+./tests/thread_nested_send_safe.out
+
+./c- tests/thread_recursive_send_safe.c- \
+    > tests/thread_recursive_send_safe.out.c
+cc -std=gnu99 -Wall -Wextra tests/thread_recursive_send_safe.out.c \
+    -o tests/thread_recursive_send_safe.out -pthread
+./tests/thread_recursive_send_safe.out
+
 if ./c- tests/bad_thread_owned_without_move_safe.c- > /dev/null \
     2> tests/bad_thread_owned_without_move_safe.err; then
     echo "owned thread argument without move unexpectedly succeeded" >&2
@@ -1158,6 +1169,14 @@ if ./c- tests/bad_thread_non_send_safe.c- > /dev/null \
     exit 1
 fi
 grep "is not Send" tests/bad_thread_non_send_safe.err >/dev/null
+
+if ./c- tests/bad_thread_nested_non_send_safe.c- > /dev/null \
+    2> tests/bad_thread_nested_non_send_safe.err; then
+    echo "nested non-Send thread argument unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "moved value 'work'.*is not Send" \
+    tests/bad_thread_nested_non_send_safe.err >/dev/null
 
 if ./c- tests/bad_thread_owned_use_after_move_safe.c- > /dev/null \
     2> tests/bad_thread_owned_use_after_move_safe.err; then

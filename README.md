@@ -1116,7 +1116,9 @@ The worker must be a visible safe `int` function with exactly one matching
 owned parameter. The initial `Send` check accepts managed owners such as
 `Box<T>` and owned strings, while rejecting `Ref`, `Span`, raw/non-owning
 pointers, runtime resources, and structs storing them. The moved source is no
-longer usable. By-value and multiple captures remain unsupported.
+longer usable. The check recursively follows nested user structs and owned
+pointees, and handles cyclic `Box<Node>`-style types. By-value and multiple
+captures remain unsupported.
 
 `Thread`, `Mutex`, `Cond`, and `Critical` are non-copyable resources in safe
 mode. Initialize each variable separately and pass an existing resource with

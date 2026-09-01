@@ -15539,6 +15539,117 @@ static int try_rewrite_bitmap_static_method(const char *s, const char **end, str
     return 1;
 }
 
+struct ThreadSendContext {
+    char visiting[MAX_FINALIZERS][NAME_MAX_LEN];
+    int count;
+};
+
+static int thread_send_tag_has_reference(const char *tag)
+{
+    return strcmp(tag, "Ref") == 0 || strcmp(tag, "Span") == 0 ||
+        strncmp(tag, "Ref_", 4) == 0 ||
+        strncmp(tag, "Span_", 5) == 0 ||
+        strstr(tag, "_Ref_") != NULL || strstr(tag, "_Span_") != NULL;
+}
+
+static int thread_send_tag_is_intrinsically_local(const char *tag)
+{
+    return strcmp(tag, "FixedVec") == 0 ||
+        strncmp(tag, "FixedVec_", 9) == 0 ||
+        strcmp(tag, "RingBuffer") == 0 ||
+        strncmp(tag, "RingBuffer_", 11) == 0 ||
+        strcmp(tag, "Bitmap") == 0 ||
+        strcmp(tag, "Register") == 0 ||
+        strncmp(tag, "Register_", 9) == 0 ||
+        strcmp(tag, "Volatile") == 0 ||
+        strncmp(tag, "Volatile_", 9) == 0 ||
+        strcmp(tag, "StaticCell") == 0 ||
+        strncmp(tag, "StaticCell_", 11) == 0 ||
+        strcmp(tag, "Critical") == 0 || strcmp(tag, "Thread") == 0 ||
+        strcmp(tag, "Mutex") == 0 || strcmp(tag, "Cond") == 0;
+}
+
+static int thread_send_context_contains(struct ThreadSendContext *context,
+                                        const char *tag)
+{
+    int i;
+
+    for (i = 0; i < context->count; i++) {
+        if (strcmp(context->visiting[i], tag) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int type_is_thread_send_recursive(struct Type type,
+                                         struct ThreadSendContext *context)
+{
+    struct StructFinalizer *fields;
+    struct Type value;
+    int i;
+
+    if (!type_is_known(type) || type.raw_ptr ||
+        type.kind == TY_VOID || type.kind == TY_FUNCTION ||
+        type.kind == TY_UNION || type.kind == TY_GENERIC ||
+        type.kind == TY_TYPEDEF || type.kind == TY_TYPE_CONSTRUCTOR ||
+        type_is_stored_safe_reference(type) ||
+        type_is_heap_container_with_safe_reference(type) ||
+        type_is_runtime_resource_value(type)) {
+        return 0;
+    }
+    if (type.kind == TY_STRUCT &&
+        (thread_send_tag_has_reference(type.tag) ||
+         thread_send_tag_is_intrinsically_local(type.tag))) {
+        return 0;
+    }
+    if (type.ptr > 0) {
+        if (!type.owned) {
+            return 0;
+        }
+        value = type;
+        value.ptr--;
+        value.owned = 0;
+        value.raw_ptr = 0;
+        return type_is_thread_send_recursive(value, context);
+    }
+    if (type.kind != TY_STRUCT) {
+        return 1;
+    }
+    if (thread_send_context_contains(context, type.tag)) {
+        return 1;
+    }
+    if (context->count >= MAX_FINALIZERS) {
+        die("Send type graph is too deep");
+    }
+    strncpy(context->visiting[context->count], type.tag, NAME_MAX_LEN - 1);
+    context->visiting[context->count][NAME_MAX_LEN - 1] = '\0';
+    context->count++;
+    fields = struct_clone_find(type.tag);
+    if (fields != NULL) {
+        for (i = 0; i < fields->count; i++) {
+            if (!type_is_thread_send_recursive(fields->fields[i].type,
+                                               context)) {
+                context->count--;
+                return 0;
+            }
+        }
+    }
+    context->count--;
+    return 1;
+}
+
+static int type_is_thread_send_capture(struct Type type)
+{
+    struct ThreadSendContext context;
+
+    if (type.ptr <= 0 || !type.owned) {
+        return 0;
+    }
+    memset(&context, 0, sizeof(context));
+    return type_is_thread_send_recursive(type, &context);
+}
+
 static int try_rewrite_thread_static_method(const char *s, const char **end, struct Text *replacement)
 {
     const char *dot;
@@ -15583,9 +15694,6 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             char helper_name[NAME_MAX_LEN];
             struct Symbol *capture;
             struct FunctionParams *worker;
-            struct StructFinalizer *fields;
-            int i;
-            int send = 1;
 
             if (extra != NULL) {
                 fprintf(stderr,
@@ -15613,29 +15721,7 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                 exit(1);
             }
 
-            /* The first Send surface is deliberately narrow: an exclusive,
-             * managed heap owner.  Scalars can be copied explicitly and safe
-             * references must never cross a thread boundary. */
-            if (capture->type.ptr <= 0 || !capture->type.owned ||
-                capture->type.raw_ptr ||
-                type_is_stored_safe_reference(capture->type) ||
-                type_is_runtime_resource_value(capture->type)) {
-                send = 0;
-            }
-            fields = capture->type.kind == TY_STRUCT
-                ? struct_clone_find(capture->type.tag) : NULL;
-            if (send && fields != NULL) {
-                for (i = 0; i < fields->count; i++) {
-                    struct Type field = fields->fields[i].type;
-                    if (type_is_stored_safe_reference(field) ||
-                        type_is_runtime_resource_value(field) ||
-                        field.raw_ptr || (field.ptr > 0 && !field.owned)) {
-                        send = 0;
-                        break;
-                    }
-                }
-            }
-            if (!send) {
+            if (!type_is_thread_send_capture(capture->type)) {
                 char type_text[NAME_MAX_LEN * 2];
                 type_to_string(capture->type, type_text, sizeof(type_text));
                 fprintf(stderr,

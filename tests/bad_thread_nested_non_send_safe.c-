@@ -1,0 +1,23 @@
+unsafe {
+struct RawState {
+    int* pointer;
+};
+}
+
+struct OuterWork {
+    RawState state;
+};
+
+int consume_nested(owned Box<OuterWork> work)
+{
+    return 0;
+}
+
+int main(void)
+{
+    Box<OuterWork> work = new OuterWork;
+    Thread thread;
+
+    thread = Thread.spawn(move work, consume_nested);
+    return thread.join();
+}

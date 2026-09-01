@@ -440,8 +440,9 @@ Thread thread = Thread.spawn(move job, worker);
 The worker must return `int` and have one matching owned parameter. The initial
 `Send` predicate accepts owned managed heap values and rejects `Ref`, `Span`,
 raw/non-owning pointers, runtime resources, and structs containing them. The
-moved source cannot be used afterward. By-value and multi-value captures are
-not yet supported.
+moved source cannot be used afterward. User structs and their owned pointees
+are checked recursively, including cyclic `Box<Node>`-style type graphs.
+By-value and multi-value captures are not yet supported.
 
 ## 12. Unsafe boundary
 
