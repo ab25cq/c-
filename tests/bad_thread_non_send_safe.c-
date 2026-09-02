@@ -1,10 +1,12 @@
+unsafe {
 struct Work {
-    int value;
+    int* pointer;
 };
+}
 
-int consume(owned Box<Work> work)
+int consume(owned Work work)
 {
-    return work.value;
+    return 0;
 }
 
 int main(void)
@@ -12,7 +14,6 @@ int main(void)
     Work work;
     Thread thread;
 
-    work.value = 1;
     thread = Thread.spawn(move work, consume);
     return thread.join();
 }

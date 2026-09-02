@@ -443,13 +443,32 @@ Multiple owners are listed before the worker and matched positionally:
 Thread thread = Thread.spawn(move request, move reply, worker);
 ```
 
-The worker must return `int` and have matching owned parameters. The initial
+Stack values use the same syntax; the compiler copies their representation into
+the private startup context while transferring any owned fields:
+
+```c
+State state;
+Thread thread = Thread.spawn(move state, state_worker);
+```
+
+The worker declares the corresponding parameter as `owned State state`.
+Managed owners and stack values can be mixed in one spawn. The worker must
+return `int` and have matching owned parameters. The
 `Send` predicate accepts owned managed heap values and rejects `Ref`, `Span`,
 raw/non-owning pointers, runtime resources, and structs containing them. The
 moved source cannot be used afterward. User structs and their owned pointees
 are checked recursively, including cyclic `Box<Node>`-style type graphs.
-Moving the same variable twice is rejected. By-value captures are not yet
-supported.
+Moving the same variable twice is rejected, and every moved source becomes
+unusable after the spawn expression.
+
+Outside `Thread.spawn`, an `owned` parameter also consumes its argument:
+
+```c
+consume(move message);
+consume(new Job);       // fresh owned rvalues transfer directly
+```
+
+Passing an existing owner without `move` is a compile-time error.
 
 ## 12. Unsafe boundary
 

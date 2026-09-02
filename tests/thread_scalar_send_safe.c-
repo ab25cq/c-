@@ -1,0 +1,13 @@
+int consume_number(owned int value)
+{
+    return value;
+}
+
+int main(void)
+{
+    int value = 42;
+    Thread thread;
+
+    thread = Thread.spawn(move value, consume_number);
+    return thread.join() == 42 ? 0 : 1;
+}

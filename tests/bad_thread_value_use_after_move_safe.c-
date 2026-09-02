@@ -1,0 +1,19 @@
+struct WorkValue {
+    int value;
+};
+
+int consume_value(owned WorkValue work)
+{
+    return work.value;
+}
+
+int main(void)
+{
+    WorkValue work;
+    Thread thread;
+
+    work.value = 1;
+    thread = Thread.spawn(move work, consume_value);
+    work.value = 2;
+    return thread.join();
+}

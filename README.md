@@ -1118,13 +1118,22 @@ Multiple values use the same positional form:
 Thread thread = Thread.spawn(move request, move response, consume_pair);
 ```
 
+Stack value structs and scalars are also supported. Their worker parameters use
+the `owned` marker, and they may be mixed with `Box<T>` or owned strings in the
+same spawn call.
+
 The worker must be a visible safe `int` function with matching owned
 parameters in the same order. The `Send` check accepts managed owners such as
 `Box<T>` and owned strings, while rejecting `Ref`, `Span`, raw/non-owning
 pointers, runtime resources, and structs storing them. The moved source is no
 longer usable. The check recursively follows nested user structs and owned
-pointees, and handles cyclic `Box<Node>`-style types. Missing `move` and moving
-one variable twice are rejected. By-value captures remain unsupported.
+pointees, and handles cyclic `Box<Node>`-style types. Missing `move`, using a
+moved stack value afterward, and moving one variable twice are rejected.
+
+Ordinary calls use the same ownership rule. Existing values passed to owned
+parameters require `move`; fresh `new`, `clone`, owned-return, and `s"..."`
+rvalues transfer directly. This also protects value structs with finalizers
+from accidental by-value duplication.
 
 `Thread`, `Mutex`, `Cond`, and `Critical` are non-copyable resources in safe
 mode. Initialize each variable separately and pass an existing resource with

@@ -1,0 +1,25 @@
+struct HeapWork {
+    int value;
+};
+
+struct ValueWork {
+    int value;
+};
+
+int consume_mixed(owned Box<HeapWork> heap,
+                  owned ValueWork value)
+{
+    return heap.value + value.value;
+}
+
+int main(void)
+{
+    Box<HeapWork> heap = new HeapWork;
+    ValueWork value;
+    Thread thread;
+
+    heap.value = 21;
+    value.value = 21;
+    thread = Thread.spawn(move heap, move value, consume_mixed);
+    return thread.join() == 42 ? 0 : 1;
+}

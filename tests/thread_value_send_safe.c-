@@ -1,0 +1,20 @@
+struct WorkValue {
+    int left;
+    int right;
+};
+
+int consume_value(owned WorkValue work)
+{
+    return work.left + work.right;
+}
+
+int main(void)
+{
+    WorkValue work;
+    Thread thread;
+
+    work.left = 20;
+    work.right = 22;
+    thread = Thread.spawn(move work, consume_value);
+    return thread.join() == 42 ? 0 : 1;
+}

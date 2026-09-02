@@ -1,0 +1,9 @@
+int consume_scalar(owned int value)
+{
+    return value;
+}
+
+int main(void)
+{
+    return consume_scalar(42) == 42 ? 0 : 1;
+}

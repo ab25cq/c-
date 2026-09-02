@@ -304,7 +304,7 @@ void editor_record_undo(mut ref Editor ed)
     editor_clear_string_vec(ed->redo_stack);
 }
 
-void editor_restore_snapshot(mut ref Editor ed, string snap)
+void editor_restore_snapshot(mut ref Editor ed, borrow string snap)
 {
     int start;
     int pos;
@@ -595,7 +595,7 @@ void editor_insert_char(mut ref Editor ed, int ch)
     old_line = List_get<string>(ed->lines, ed->row);
     new_line = str_insert_char(old_line, ed->col, ch);
     editor_record_undo(ed);
-    editor_replace_line(ed, ed->row, new_line);
+    editor_replace_line(ed, ed->row, move new_line);
     ed->col++;
 }
 
@@ -610,7 +610,7 @@ void editor_delete_char(mut ref Editor ed)
     }
     new_line = str_delete_char(old_line, ed->col);
     editor_record_undo(ed);
-    editor_replace_line(ed, ed->row, new_line);
+    editor_replace_line(ed, ed->row, move new_line);
     editor_clamp(ed);
 }
 

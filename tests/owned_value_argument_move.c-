@@ -1,0 +1,16 @@
+struct MessageValue {
+    string text;
+};
+
+int consume_message_value(owned MessageValue message)
+{
+    return message.text.len();
+}
+
+int main(void)
+{
+    MessageValue message;
+
+    message.text = s"transfer";
+    return consume_message_value(move message) == 8 ? 0 : 1;
+}

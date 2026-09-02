@@ -1165,6 +1165,50 @@ cc -std=gnu99 -Wall -Wextra tests/thread_multiple_send_safe.out.c \
     -o tests/thread_multiple_send_safe.out -pthread
 ./tests/thread_multiple_send_safe.out
 
+./c- tests/thread_value_send_safe.c- > tests/thread_value_send_safe.out.c
+grep -F '(void*)&work' tests/thread_value_send_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_value_send_safe.out.c \
+    -o tests/thread_value_send_safe.out -pthread
+./tests/thread_value_send_safe.out
+
+./c- tests/thread_scalar_send_safe.c- > tests/thread_scalar_send_safe.out.c
+cc -std=gnu99 -Wall -Wextra tests/thread_scalar_send_safe.out.c \
+    -o tests/thread_scalar_send_safe.out -pthread
+./tests/thread_scalar_send_safe.out
+
+./c- tests/thread_mixed_send_safe.c- > tests/thread_mixed_send_safe.out.c
+grep -F '(void*)heap, (void*)&value' tests/thread_mixed_send_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_mixed_send_safe.out.c \
+    -o tests/thread_mixed_send_safe.out -pthread
+./tests/thread_mixed_send_safe.out
+
+./c- tests/thread_owning_value_send_safe.c- \
+    > tests/thread_owning_value_send_safe.out.c
+grep 'struct MessageWork __cminus_value_' \
+    tests/thread_owning_value_send_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_owning_value_send_safe.out.c \
+    -o tests/thread_owning_value_send_safe.out -pthread
+./tests/thread_owning_value_send_safe.out
+
+./c- tests/owned_value_argument_move.c- \
+    > tests/owned_value_argument_move.out.c
+cc -std=gnu99 -Wall -Wextra tests/owned_value_argument_move.out.c \
+    -o tests/owned_value_argument_move.out
+./tests/owned_value_argument_move.out
+
+./c- tests/owned_scalar_argument.c- > tests/owned_scalar_argument.out.c
+cc -std=gnu99 -Wall -Wextra tests/owned_scalar_argument.out.c \
+    -o tests/owned_scalar_argument.out
+./tests/owned_scalar_argument.out
+
+if ./c- tests/bad_owned_value_argument_without_move_safe.c- > /dev/null \
+    2> tests/bad_owned_value_argument_without_move_safe.err; then
+    echo "owned value argument without move unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "call to 'consume_message_value' parameter 1 takes ownership" \
+    tests/bad_owned_value_argument_without_move_safe.err >/dev/null
+
 if ./c- tests/bad_thread_owned_without_move_safe.c- > /dev/null \
     2> tests/bad_thread_owned_without_move_safe.err; then
     echo "owned thread argument without move unexpectedly succeeded" >&2
@@ -1219,6 +1263,14 @@ if ./c- tests/bad_thread_owned_use_after_move_safe.c- > /dev/null \
 fi
 grep "use of moved value 'work'" \
     tests/bad_thread_owned_use_after_move_safe.err >/dev/null
+
+if ./c- tests/bad_thread_value_use_after_move_safe.c- > /dev/null \
+    2> tests/bad_thread_value_use_after_move_safe.err; then
+    echo "thread value capture remained usable after move" >&2
+    exit 1
+fi
+grep "use of moved value 'work'" \
+    tests/bad_thread_value_use_after_move_safe.err >/dev/null
 
 if ./c- tests/bad_thread_owned_worker_type_safe.c- > /dev/null \
     2> tests/bad_thread_owned_worker_type_safe.err; then

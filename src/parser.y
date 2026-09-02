@@ -610,6 +610,7 @@ static const char *find_top_level_char(const char *start, const char *end, char 
 static void moved_local_add(const char *name);
 static void moved_local_remove(const char *name);
 static void check_moved_local_use(const char *stmt);
+static void check_owned_call_arguments(const char *stmt);
 static void borrow_link_add(const char *borrower, const char *owner);
 static void borrow_link_remove_borrower(const char *borrower);
 static void borrow_links_invalidate_owner(const char *owner);
@@ -3464,6 +3465,9 @@ static struct Text *rewrite_stack_struct_value_decl(struct Text *in, const char 
     const char *kind = type_kind_name(type.kind);
 
     text_add_n(out, in->text, (size_t)(base_start - in->text));
+    if (has_decl_word_before(in->text, name_pos, "owned")) {
+        text_add(out, "owned ");
+    }
     text_add(out, kind);
     text_add_ch(out, ' ');
     text_add(out, type.tag);
@@ -5317,6 +5321,7 @@ static void check_moved_local_use(const char *stmt)
     if (g_unsafe_depth > 0) {
         return;
     }
+    check_owned_call_arguments(stmt);
     if (extract_move_name(stmt, moved) && moved_local_index(moved) >= 0) {
         fprintf(stderr, "c-: type error: use of moved value '%s' at %s:%d\n",
                 moved, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
@@ -5329,6 +5334,79 @@ static void check_moved_local_use(const char *stmt)
             exit(1);
         }
     }
+}
+
+static void check_owned_call_expression(struct SafetyExprNode *expr)
+{
+    for (; expr != NULL; expr = expr->next) {
+        if (expr->kind == SAFETY_EXPR_CALL) {
+            const struct SafetyExprNode *callee = safety_strip_groups(expr->lhs);
+            struct FunctionParams *fn = NULL;
+
+            while (callee != NULL && callee->kind == SAFETY_EXPR_GENERIC) {
+                callee = safety_strip_groups(callee->lhs);
+            }
+            if (callee != NULL && callee->kind == SAFETY_EXPR_IDENTIFIER) {
+                fn = function_params_find(callee->name);
+            }
+            if (fn != NULL) {
+                const struct SafetyExprNode *argument = expr->child;
+                int index = 0;
+
+                for (; argument != NULL; argument = argument->next, index++) {
+                    const struct SafetyExprNode *value =
+                        safety_strip_groups(argument);
+                    int moved = value != NULL &&
+                        value->kind == SAFETY_EXPR_MOVE;
+                    int owned_rvalue = value != NULL &&
+                        value->kind != SAFETY_EXPR_IDENTIFIER &&
+                        value->kind != SAFETY_EXPR_MEMBER &&
+                        value->kind != SAFETY_EXPR_INDEX &&
+                        value->kind != SAFETY_EXPR_FIXED_INDEX &&
+                        (value->type.ptr == 0 || value->type.owned);
+
+                    if (!owned_rvalue && argument->start != NULL &&
+                        argument->end != NULL && argument->end > argument->start) {
+                        char *argument_text = xstrndup(
+                            argument->start,
+                            (size_t)(argument->end - argument->start));
+                        struct Type produced_type;
+                        const char *argument_value = skip_ws(argument_text);
+
+                        owned_rvalue =
+                            starts_word(argument_value, "new") ||
+                            starts_word(argument_value, "clone") ||
+                            rhs_has_new_expr(argument_text, &produced_type) ||
+                            rhs_has_clone_expr(argument_text, &produced_type) ||
+                            rhs_is_single_owned_return_call(argument_text) ||
+                            text_has_s_string(argument_text);
+                        free(argument_text);
+                    }
+
+                    if (index < fn->count && fn->param[index].owned &&
+                        !moved && !owned_rvalue) {
+                        fprintf(stderr,
+                                "c-: ownership error: call to '%s' parameter %d takes ownership; pass 'move value' at %s:%d\n",
+                                callee->name, index + 1,
+                                g_input_path == NULL ? "<unknown>" : g_input_path,
+                                yylineno);
+                        exit(1);
+                    }
+                }
+            }
+        }
+        check_owned_call_expression(expr->lhs);
+        check_owned_call_expression(expr->rhs);
+        check_owned_call_expression(expr->child);
+    }
+}
+
+static void check_owned_call_arguments(const char *stmt)
+{
+    struct SafetyExprNode *forest = safety_parse_forest(stmt);
+
+    check_owned_call_expression(forest);
+    safety_expr_free(forest);
 }
 
 static int rhs_is_null_literal(const char *rhs)
@@ -13950,7 +14028,7 @@ static int type_is_thread_send_capture(struct Type type)
 {
     struct ThreadSendContext context;
 
-    if (type.ptr <= 0 || !type.owned) {
+    if (type.is_array || (type.ptr > 0 && !type.owned)) {
         return 0;
     }
     memset(&context, 0, sizeof(context));
@@ -14088,9 +14166,18 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                 if (!worker->param[i].owned || worker->param[i].borrowed ||
                     !type_same_unowned(capture[i]->type,
                                        worker->param[i].type)) {
+                    char capture_type_text[NAME_MAX_LEN * 2];
+                    char parameter_type_text[NAME_MAX_LEN * 2];
+                    type_to_string(capture[i]->type, capture_type_text,
+                                   sizeof(capture_type_text));
+                    type_to_string(worker->param[i].type,
+                                   parameter_type_text,
+                                   sizeof(parameter_type_text));
                     fprintf(stderr,
-                            "c-: thread safety error: worker '%s' parameter %d must be owned and match moved value '%s'\n",
-                            worker_name, i + 1, capture_name[i]);
+                            "c-: thread safety error: worker '%s' parameter %d must be owned and match moved value '%s' (capture '%s', parameter '%s', owned %s)\n",
+                            worker_name, i + 1, capture_name[i],
+                            capture_type_text, parameter_type_text,
+                            worker->param[i].owned ? "yes" : "no");
                     exit(1);
                 }
             }
@@ -14105,7 +14192,7 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             text_add(g_defines, "static int ");
             text_add(g_defines, helper_name);
             text_add(g_defines, "(void* __cminus_raw);\n");
-            if (capture_count == 1) {
+            if (capture_count == 1 && capture[0]->type.ptr > 0) {
                 text_add(g_thread_owned_helpers, "static int ");
                 text_add(g_thread_owned_helpers, helper_name);
                 text_add(g_thread_owned_helpers,
@@ -14134,7 +14221,9 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                 for (i = 0; i < capture_count; i++) {
                     char index_text[32];
                     snprintf(index_text, sizeof(index_text), "%d", i);
-                    text_add(g_thread_owned_helpers, "    void* value_");
+                    text_add(g_thread_owned_helpers, "    ");
+                    append_c_type(g_thread_owned_helpers, capture[i]->type);
+                    text_add(g_thread_owned_helpers, " value_");
                     text_add(g_thread_owned_helpers, index_text);
                     text_add(g_thread_owned_helpers, ";\n");
                 }
@@ -14151,7 +14240,9 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                 for (i = 0; i < capture_count; i++) {
                     char index_text[32];
                     snprintf(index_text, sizeof(index_text), "%d", i);
-                    text_add(g_thread_owned_helpers, "    void* __cminus_value_");
+                    text_add(g_thread_owned_helpers, "    ");
+                    append_c_type(g_thread_owned_helpers, capture[i]->type);
+                    text_add(g_thread_owned_helpers, " __cminus_value_");
                     text_add(g_thread_owned_helpers, index_text);
                     text_add(g_thread_owned_helpers,
                              " = __cminus_context->value_");
@@ -14166,10 +14257,7 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                     char index_text[32];
                     snprintf(index_text, sizeof(index_text), "%d", i);
                     if (i > 0) text_add(g_thread_owned_helpers, ", ");
-                    text_add(g_thread_owned_helpers, "(");
-                    append_c_type(g_thread_owned_helpers,
-                                  worker->param[i].type);
-                    text_add(g_thread_owned_helpers, ")__cminus_value_");
+                    text_add(g_thread_owned_helpers, "__cminus_value_");
                     text_add(g_thread_owned_helpers, index_text);
                 }
                 text_add(g_thread_owned_helpers, ");\n}\nstatic struct Thread ");
@@ -14192,7 +14280,17 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                     snprintf(index_text, sizeof(index_text), "%d", i);
                     text_add(g_thread_owned_helpers, "    context->value_");
                     text_add(g_thread_owned_helpers, index_text);
-                    text_add(g_thread_owned_helpers, " = value_");
+                    if (capture[i]->type.ptr > 0) {
+                        text_add(g_thread_owned_helpers, " = (");
+                        append_c_type(g_thread_owned_helpers,
+                                      capture[i]->type);
+                        text_add(g_thread_owned_helpers, ")value_");
+                    } else {
+                        text_add(g_thread_owned_helpers, " = *(");
+                        append_c_type(g_thread_owned_helpers,
+                                      capture[i]->type);
+                        text_add(g_thread_owned_helpers, "*)value_");
+                    }
                     text_add(g_thread_owned_helpers, index_text);
                     text_add(g_thread_owned_helpers, ";\n");
                 }
@@ -14206,7 +14304,7 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             g_thread_owned_entries[g_thread_owned_entry_count][NAME_MAX_LEN - 1] = '\0';
             g_thread_owned_entry_count++;
 
-            if (capture_count == 1) {
+            if (capture_count == 1 && capture[0]->type.ptr > 0) {
                 text_add(replacement, "Thread_spawn_context((void*)");
                 text_add(replacement, capture_name[0]);
                 text_add(replacement, ", ");
@@ -14216,7 +14314,11 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                 text_add_ch(replacement, '(');
                 for (i = 0; i < capture_count; i++) {
                     if (i > 0) text_add(replacement, ", ");
-                    text_add(replacement, "(void*)");
+                    if (capture[i]->type.ptr > 0) {
+                        text_add(replacement, "(void*)");
+                    } else {
+                        text_add(replacement, "(void*)&");
+                    }
                     text_add(replacement, capture_name[i]);
                 }
             }

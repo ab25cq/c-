@@ -1,0 +1,18 @@
+struct MessageWork {
+    string text;
+};
+
+int consume_message(owned MessageWork message)
+{
+    return message.text.len();
+}
+
+int main(void)
+{
+    MessageWork message;
+    Thread thread;
+
+    message.text = s"owned-value";
+    thread = Thread.spawn(move message, consume_message);
+    return thread.join() == 11 ? 0 : 1;
+}
