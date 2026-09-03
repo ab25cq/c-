@@ -1,0 +1,16 @@
+int work(void)
+{
+    return 7;
+}
+
+Thread start_work(void)
+{
+    Thread worker = Thread.spawn(work);
+
+    return worker;
+}
+
+int main(void)
+{
+    return 0;
+}

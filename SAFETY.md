@@ -67,6 +67,17 @@ Hosted `Mutex` uses the pthread error-checking mode. Same-thread recursive lock,
 unlock by a non-owner, and `Cond.wait` without ownership of its mutex are
 converted to language panics instead of deadlock or undefined behavior.
 
+Runtime resources are scope-finalized in safe code. Dropping an unfinished
+`Thread` detaches it and releases the handle-side state reference; local
+`Mutex`/`Cond` values are destroyed. This prevents forgotten cleanup from
+leaking pthread handles while preserving explicit join/detach/destroy methods.
+Safe functions reject runtime-resource return types until cleanup-aware return
+transfer is implemented; this avoids duplicating a native handle across a C
+return boundary.
+Runtime-resource `move` is also rejected for now, ensuring the compiler-added
+cleanup attribute always remains attached to the sole owning binding. Arrays
+of runtime resources are rejected until element-wise finalization is available.
+
 The `Send` surface supports transferring one or more exclusive values with
 `Thread.spawn(move first, move second, worker)`. Captures may be managed owners,
 scalars, or stack value structs, including structs with owned fields. The worker

@@ -1,0 +1,12 @@
+int moved_work(void)
+{
+    return 19;
+}
+
+int main(void)
+{
+    Thread first = Thread.spawn(moved_work);
+    Thread second = move first;
+
+    return second.join() == 19 ? 0 : 1;
+}

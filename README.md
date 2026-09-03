@@ -1098,6 +1098,19 @@ Safe hosted mutex operations also detect same-thread double locking and unlock
 by a non-owner. `Cond.wait(mutex)` requires the calling thread to own `mutex`.
 Violations panic rather than relying on undefined pthread behavior.
 
+Local thread and synchronization handles use RAII cleanup. Leaving scope
+automatically detaches an unjoined `Thread`, destroys local `Mutex`/`Cond`
+resources, and leaves an active `Critical` section. Explicit `join()`,
+`detach()`, `destroy()`, and `leave()` remain available and the automatic
+cleanup becomes a no-op after them.
+
+Safe functions currently cannot return `Thread`, `Mutex`, or `Cond` values;
+their cleanup must remain in the scope that created them. This prevents a
+returned C value copy from being finalized while its caller still uses it.
+Runtime-resource bindings are likewise immovable in safe code, so exactly one
+lexical binding owns each cleanup. Runtime-resource arrays are rejected until
+the compiler supports cleanup of every array element.
+
 Set `threads = true` in `C-.toml` to let `cpm build`, `cpm run`, `cpm val`, and
 `cpm leak` add `-pthread` automatically. Bare builds ignore this flag.
 

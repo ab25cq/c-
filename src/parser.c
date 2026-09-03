@@ -6440,6 +6440,15 @@ static void begin_top_block(struct Text *head)
             } else {
                 g_current_function_ret = type_unknown();
             }
+            if (g_unsafe_depth == 0 &&
+                type_is_runtime_resource_value(g_current_function_ret) &&
+                !function_signature_is_internal(normalized_head->text)) {
+                fprintf(stderr,
+                        "c-: type error: safe functions cannot return runtime resource '%s'; join, detach, or destroy it in the creating scope\n",
+                        g_current_function_ret.tag);
+                text_free(normalized_head);
+                exit(1);
+            }
             register_function_params(normalized_head->text);
             if (head_function_name(normalized_head->text, name) &&
                 !function_signature_is_internal(normalized_head->text)) {
@@ -18008,6 +18017,50 @@ static struct Text *add_zero_initializer(struct Text *in)
     return out;
 }
 
+static struct Text *add_runtime_resource_cleanup(struct Text *in,
+                                                 const char *name,
+                                                 const char *tag)
+{
+    const char *p = in->text;
+    const char *limit = strchr(in->text, '=');
+    const char *name_start = NULL;
+    const char *name_end = NULL;
+    struct Text *out;
+
+    if (limit == NULL) {
+        limit = in->text + strlen(in->text);
+    }
+    while (p < limit) {
+        char word[NAME_MAX_LEN];
+        const char *end;
+
+        if (!is_ident_start((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        end = read_name(p, word);
+        if (strcmp(word, name) == 0) {
+            name_start = p;
+            name_end = end;
+        }
+        p = end;
+    }
+    if (name_start == NULL || name_end == NULL) {
+        return in;
+    }
+    out = text_new();
+    text_add_n(out, in->text, (size_t)(name_end - in->text));
+    text_add(out, " __attribute__((cleanup(");
+    text_add(out, tag);
+    text_add(out, "_finalize)))");
+    text_add(out, name_end);
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(in);
+    return out;
+}
+
 static void append_struct_finalizer_name(struct Text *out, const char *tag)
 {
     text_add(out, tag);
@@ -19266,6 +19319,14 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 borrow_link_add(decl.name, borrow_owner);
             }
             if (extract_direct_move_name(decl.init, moved_name)) {
+                if (g_unsafe_depth == 0 &&
+                    type_is_runtime_resource_value(decl.type)) {
+                    fprintf(stderr,
+                            "c-: type error: runtime resource '%s' cannot be moved to '%s' in safe mode; keep one binding and pass it by ref\n",
+                            moved_name, decl.name);
+                    text_free(all);
+                    exit(1);
+                }
                 if (decl.type.ptr <= 0) {
                     fprintf(stderr, "c-: type error: move result requires a pointer declaration for '%s'\n", decl.name);
                     text_free(all);
@@ -19395,6 +19456,17 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (!decl.has_init) {
             all = add_zero_initializer(all);
             append_zero_clear_after_decl(all, all->text, decl.name);
+        }
+        if (g_unsafe_depth == 0 &&
+            type_is_runtime_resource_value(decl.type)) {
+            if (decl.is_array) {
+                fprintf(stderr,
+                        "c-: type error: runtime resource array '%s' is not allowed in safe mode; declare separate bindings so each resource has one scope cleanup\n",
+                        decl.name);
+                text_free(all);
+                exit(1);
+            }
+            all = add_runtime_resource_cleanup(all, decl.name, decl.type.tag);
         }
         if (post_free) {
             append_free_after_statement(all, all->text, post_free_name, post_free_type);

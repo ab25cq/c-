@@ -1097,6 +1097,11 @@ static __attribute__((unused)) void Critical_leave(struct Critical* self)
     cminus_irq_restore(self->state);
 }
 
+static __attribute__((unused)) void Critical_finalize(struct Critical* self)
+{
+    Critical_leave(self);
+}
+
 generic<T>
 struct Atomic {
     T value;
@@ -1553,6 +1558,19 @@ static __attribute__((unused)) void Thread_detach(struct Thread* self)
     __atomic_store_n(&self->joined, 1, __ATOMIC_RELEASE);
 }
 
+static __attribute__((unused)) void Thread_finalize(struct Thread* self)
+{
+    int state;
+
+    if (self == NULL || !self->started) {
+        return;
+    }
+    state = __atomic_load_n(&self->joined, __ATOMIC_ACQUIRE);
+    if (state == 0) {
+        Thread_detach(self);
+    }
+}
+
 static __attribute__((unused)) void Thread_yield(void)
 {
     sched_yield();
@@ -1714,6 +1732,11 @@ static __attribute__((unused)) void Mutex_destroy(struct Mutex* self)
     __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
 }
 
+static __attribute__((unused)) void Mutex_finalize(struct Mutex* self)
+{
+    Mutex_destroy(self);
+}
+
 static __attribute__((unused)) struct Cond Cond_init(void)
 {
     struct Cond out;
@@ -1778,6 +1801,11 @@ static __attribute__((unused)) void Cond_destroy(struct Cond* self)
         cminus_panic("pthread_cond_destroy failed", __FILE__, __LINE__);
     }
     __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
+}
+
+static __attribute__((unused)) void Cond_finalize(struct Cond* self)
+{
+    Cond_destroy(self);
 }
 #endif
 

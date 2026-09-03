@@ -1,0 +1,12 @@
+int main(void)
+{
+    {
+        Mutex gate = Mutex.init();
+        Cond ready = Cond.init();
+
+        gate.lock();
+        gate.unlock();
+        ready.signal();
+    }
+    return 0;
+}

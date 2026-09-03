@@ -442,6 +442,16 @@ unlocking it from a thread that does not own it, and calling `Cond.wait` without
 owning the supplied mutex panic instead of deadlocking or entering pthread
 undefined behavior.
 
+Local `Thread`, `Mutex`, `Cond`, and `Critical` values are scope-finalized. A thread handle
+that was not joined or detached is detached automatically, matching Rust's
+`JoinHandle` drop behavior. Local mutexes and condition variables are destroyed
+automatically; explicit `destroy()` remains allowed and is idempotent.
+Runtime resources cannot currently be returned from a safe function because
+that would cross the cleanup boundary; complete their operation in the scope
+that created them. Runtime-resource bindings are currently immovable in safe
+code; pass them by `ref`/`mut ref` and keep one cleanup owner. Arrays of runtime
+resources are rejected until element-wise cleanup is supported.
+
 An exclusive managed value can be transferred to a worker:
 
 ```c

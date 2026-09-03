@@ -1145,7 +1145,8 @@ grep 'panic: invalid atomic load memory order' \
     tests/atomic_invalid_order_panic.err >/dev/null
 
 ./c- tests/thread_safe.c- > tests/thread_safe.out.c
-grep 'Thread t1 = {0};' tests/thread_safe.out.c >/dev/null
+grep 'Thread t1 __attribute__((cleanup(Thread_finalize))) = {0};' \
+    tests/thread_safe.out.c >/dev/null
 grep 'Thread_spawn(worker)' tests/thread_safe.out.c >/dev/null
 grep 'Mutex_lock(&gate)' tests/thread_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/thread_safe.out.c -o tests/thread_safe.out -pthread
@@ -1223,6 +1224,48 @@ if timeout 5 ./tests/cond_unlocked_wait_panic.out > /dev/null \
 fi
 grep 'panic: condition wait requires the mutex to be locked by this thread' \
     tests/cond_unlocked_wait_panic.err >/dev/null
+
+./c- tests/thread_scope_auto_detach_safe.c- \
+    > tests/thread_scope_auto_detach_safe.out.c
+grep 'Thread worker __attribute__((cleanup(Thread_finalize)))' \
+    tests/thread_scope_auto_detach_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_scope_auto_detach_safe.out.c \
+    -o tests/thread_scope_auto_detach_safe.out -pthread
+./tests/thread_scope_auto_detach_safe.out
+
+./c- tests/sync_scope_finalize_safe.c- \
+    > tests/sync_scope_finalize_safe.out.c
+grep 'Cond ready __attribute__((cleanup(Cond_finalize)))' \
+    tests/sync_scope_finalize_safe.out.c >/dev/null
+grep 'Mutex gate __attribute__((cleanup(Mutex_finalize)))' \
+    tests/sync_scope_finalize_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/sync_scope_finalize_safe.out.c \
+    -o tests/sync_scope_finalize_safe.out -pthread
+./tests/sync_scope_finalize_safe.out
+
+if ./c- tests/bad_thread_return_safe.c- > /dev/null \
+    2> tests/bad_thread_return_safe.err; then
+    echo "safe Thread return unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "safe functions cannot return runtime resource 'Thread'" \
+    tests/bad_thread_return_safe.err >/dev/null
+
+if ./c- tests/bad_thread_handle_move_safe.c- > /dev/null \
+    2> tests/bad_thread_handle_move_safe.err; then
+    echo "safe Thread handle move unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "runtime resource 'first' cannot be moved to 'second'" \
+    tests/bad_thread_handle_move_safe.err >/dev/null
+
+if ./c- tests/bad_runtime_resource_array_safe.c- > /dev/null \
+    2> tests/bad_runtime_resource_array_safe.err; then
+    echo "safe runtime resource array unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "runtime resource array 'workers' is not allowed in safe mode" \
+    tests/bad_runtime_resource_array_safe.err >/dev/null
 
 ./c- tests/thread_owned_send_safe.c- > tests/thread_owned_send_safe.out.c
 grep 'Thread_spawn_context((void\*)work, __cminus_thread_owned_entry_' \
@@ -1476,7 +1519,7 @@ grep "extern functions must be declared inside unsafe" \
     tests/bad_extern_function_safe.err >/dev/null
 
 ./c- tests/critical_safe.c- > tests/critical_safe.out.c
-grep 'struct Critical guard = Critical_enter();' tests/critical_safe.out.c >/dev/null
+grep 'struct Critical guard __attribute__((cleanup(Critical_finalize))) = Critical_enter();' tests/critical_safe.out.c >/dev/null
 grep 'Critical_leave(&guard)' tests/critical_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/critical_safe.out.c -o tests/critical_safe.out
 ./tests/critical_safe.out
@@ -2197,7 +2240,7 @@ cc -std=gnu99 -Wall -Wextra tests/no_heap_register_ok.out.c -o tests/no_heap_reg
 
 ./c- -no-heap tests/no_heap_atomic_critical_ok.c- > tests/no_heap_atomic_critical_ok.out.c
 grep 'struct Atomic_unsigned_int value = Atomic_init_unsigned_int(0u);' tests/no_heap_atomic_critical_ok.out.c >/dev/null
-grep 'struct Critical guard = Critical_enter();' tests/no_heap_atomic_critical_ok.out.c >/dev/null
+grep 'struct Critical guard __attribute__((cleanup(Critical_finalize))) = Critical_enter();' tests/no_heap_atomic_critical_ok.out.c >/dev/null
 if grep 'cminus_gc_calloc(1, sizeof(struct Atomic_unsigned_int))' tests/no_heap_atomic_critical_ok.out.c >/dev/null; then
     echo "no-heap Atomic metadata unexpectedly allocated managed heap" >&2
     exit 1

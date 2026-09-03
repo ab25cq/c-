@@ -1,0 +1,6 @@
+int main(void)
+{
+    Thread workers[2];
+
+    return 0;
+}
