@@ -1188,6 +1188,42 @@ fi
 grep 'panic: condition variable was destroyed' \
     tests/cond_destroy_panic.err >/dev/null
 
+./c- tests/mutex_double_lock_panic.c- \
+    > tests/mutex_double_lock_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/mutex_double_lock_panic.out.c \
+    -o tests/mutex_double_lock_panic.out -pthread
+if ./tests/mutex_double_lock_panic.out > /dev/null \
+    2> tests/mutex_double_lock_panic.err; then
+    echo "same-thread double Mutex lock unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: mutex is already locked by this thread' \
+    tests/mutex_double_lock_panic.err >/dev/null
+
+./c- tests/mutex_wrong_owner_panic.c- \
+    > tests/mutex_wrong_owner_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/mutex_wrong_owner_panic.out.c \
+    -o tests/mutex_wrong_owner_panic.out -pthread
+if ./tests/mutex_wrong_owner_panic.out > /dev/null \
+    2> tests/mutex_wrong_owner_panic.err; then
+    echo "non-owner Mutex unlock unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: mutex is not locked by this thread' \
+    tests/mutex_wrong_owner_panic.err >/dev/null
+
+./c- tests/cond_unlocked_wait_panic.c- \
+    > tests/cond_unlocked_wait_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/cond_unlocked_wait_panic.out.c \
+    -o tests/cond_unlocked_wait_panic.out -pthread
+if timeout 5 ./tests/cond_unlocked_wait_panic.out > /dev/null \
+    2> tests/cond_unlocked_wait_panic.err; then
+    echo "Cond.wait without owning its Mutex unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: condition wait requires the mutex to be locked by this thread' \
+    tests/cond_unlocked_wait_panic.err >/dev/null
+
 ./c- tests/thread_owned_send_safe.c- > tests/thread_owned_send_safe.out.c
 grep 'Thread_spawn_context((void\*)work, __cminus_thread_owned_entry_' \
     tests/thread_owned_send_safe.out.c >/dev/null

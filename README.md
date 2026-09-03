@@ -1094,6 +1094,10 @@ which prevents a worker from racing with replacement or native-resource
 destruction. Local values may still use `Mutex.init()` / `Cond.init()` and
 `destroy()`; later use panics.
 
+Safe hosted mutex operations also detect same-thread double locking and unlock
+by a non-owner. `Cond.wait(mutex)` requires the calling thread to own `mutex`.
+Violations panic rather than relying on undefined pthread behavior.
+
 Set `threads = true` in `C-.toml` to let `cpm build`, `cpm run`, `cpm val`, and
 `cpm leak` add `-pthread` automatically. Bare builds ignore this flag.
 

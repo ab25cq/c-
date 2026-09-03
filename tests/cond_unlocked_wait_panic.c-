@@ -1,0 +1,8 @@
+int main(void)
+{
+    Mutex gate = Mutex.init();
+    Cond ready = Cond.init();
+
+    ready.wait(gate);
+    return 0;
+}

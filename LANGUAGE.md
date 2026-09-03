@@ -437,6 +437,11 @@ Safe code cannot assign or destroy a global `Mutex`/`Cond`. Local synchronizatio
 resources may still use explicit `init()` and `destroy()`, and access after
 destruction panics.
 
+Hosted mutexes are error-checking mutexes. Locking one twice on the same thread,
+unlocking it from a thread that does not own it, and calling `Cond.wait` without
+owning the supplied mutex panic instead of deadlocking or entering pthread
+undefined behavior.
+
 An exclusive managed value can be transferred to a worker:
 
 ```c

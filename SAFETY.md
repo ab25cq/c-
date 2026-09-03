@@ -63,6 +63,10 @@ and use-after-free races with workers. Local synchronization resources retain
 explicit initialization and destruction; their destroyed state is remembered,
 so subsequent access panics before calling pthreads.
 
+Hosted `Mutex` uses the pthread error-checking mode. Same-thread recursive lock,
+unlock by a non-owner, and `Cond.wait` without ownership of its mutex are
+converted to language panics instead of deadlock or undefined behavior.
+
 The `Send` surface supports transferring one or more exclusive values with
 `Thread.spawn(move first, move second, worker)`. Captures may be managed owners,
 scalars, or stack value structs, including structs with owned fields. The worker

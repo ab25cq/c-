@@ -6720,6 +6720,7 @@ static void safety_resolve_identifier_node(struct SafetyExprNode *node)
         node->type = type_make(TY_FUNCTION, 0, NULL);
         node->type.base = &node->function_return_type;
     } else if (strcmp(node->name, "__LINE__") == 0 ||
+               strcmp(node->name, "PTHREAD_MUTEX_ERRORCHECK") == 0 ||
                strncmp(node->name, "__ATOMIC_", 9) == 0) {
         node->type = type_make(TY_INT, 0, NULL);
     } else if (strcmp(node->name, "__FILE__") == 0 ||
@@ -14719,7 +14720,22 @@ found_method:
         }
     }
     if (close > open + 1) {
+        char argument_name[NAME_MAX_LEN];
+        char argument_text[DEFAULT_EXPR_MAX];
+        struct Symbol *argument_symbol = NULL;
+
         text_add(replacement, ", ");
+        copy_trimmed(argument_text, sizeof(argument_text), open + 1, close);
+        if (strcmp(recv_type.tag, "Cond") == 0 &&
+            strcmp(method, "wait") == 0 &&
+            extract_plain_name_expr(argument_text, argument_name)) {
+            argument_symbol = symbol_find_or_current_param(argument_name);
+            if (argument_symbol != NULL && argument_symbol->type.ptr == 0 &&
+                argument_symbol->type.kind == TY_STRUCT &&
+                strcmp(argument_symbol->type.tag, "Mutex") == 0) {
+                text_add_ch(replacement, '&');
+            }
+        }
         text_add_n(replacement, open + 1, (size_t)(close - open - 1));
     }
     text_add_ch(replacement, ')');
@@ -19188,6 +19204,7 @@ int main(int argc, char **argv)
     g_consumed_directives = NULL;
     g_generated_artifacts = NULL;
     g_template_nodes = NULL;
+    text_add(g_defines, "#ifndef _XOPEN_SOURCE\n#define _XOPEN_SOURCE 700\n#endif\n");
     text_add(g_defines, "void cminus_panic(const char* message, const char* file, int line);\n");
     text_add(g_defines, "int cminus_ptr_classify(void* mem, unsigned long* stack_id_out);\n");
     text_add(g_defines, "void cminus_ptr_require_alive(void* mem, unsigned long kind, unsigned long stack_id, const char* file, int line);\n");
@@ -19203,6 +19220,7 @@ int main(int argc, char **argv)
     typedef_alias_add_opaque("uintptr_t");
     typedef_alias_add_opaque("pthread_t");
     typedef_alias_add_opaque("pthread_mutex_t");
+    typedef_alias_add_opaque("pthread_mutexattr_t");
     typedef_alias_add_opaque("pthread_cond_t");
     typedef_alias_add_opaque("__builtin_va_list");
     typedef_alias_add_opaque("__SIZE_TYPE__");

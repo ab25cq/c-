@@ -1561,8 +1561,11 @@ static __attribute__((unused)) void Thread_yield(void)
 static __attribute__((unused)) pthread_mutex_t* __cminus_mutex_native(
     struct Mutex* self)
 {
+    pthread_mutexattr_t attributes;
     int state;
     int expected;
+    int rc;
+    int attributes_initialized = 0;
 
     if (self == NULL) {
         cminus_panic("mutex is null", __FILE__, __LINE__);
@@ -1577,7 +1580,19 @@ static __attribute__((unused)) pthread_mutex_t* __cminus_mutex_native(
     expected = 0;
     if (__atomic_compare_exchange_n(&self->state, &expected, 1, 0,
                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        if (pthread_mutex_init(&self->native, NULL) != 0) {
+        rc = pthread_mutexattr_init(&attributes);
+        if (rc == 0) {
+            attributes_initialized = 1;
+            rc = pthread_mutexattr_settype(&attributes,
+                                           PTHREAD_MUTEX_ERRORCHECK);
+        }
+        if (rc == 0) {
+            rc = pthread_mutex_init(&self->native, &attributes);
+        }
+        if (attributes_initialized) {
+            pthread_mutexattr_destroy(&attributes);
+        }
+        if (rc != 0) {
             __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
             cminus_panic("pthread_mutex_init failed", __FILE__, __LINE__);
         }
@@ -1652,18 +1667,22 @@ static __attribute__((unused)) struct Mutex Mutex_init(void)
 static __attribute__((unused)) void Mutex_lock(struct Mutex* self)
 {
     pthread_mutex_t* native = __cminus_mutex_native(self);
+    int rc = pthread_mutex_lock(native);
 
-    if (pthread_mutex_lock(native) != 0) {
-        cminus_panic("pthread_mutex_lock failed", __FILE__, __LINE__);
+    if (rc != 0) {
+        cminus_panic("mutex is already locked by this thread",
+                     __FILE__, __LINE__);
     }
 }
 
 static __attribute__((unused)) void Mutex_unlock(struct Mutex* self)
 {
     pthread_mutex_t* native = __cminus_mutex_native(self);
+    int rc = pthread_mutex_unlock(native);
 
-    if (pthread_mutex_unlock(native) != 0) {
-        cminus_panic("pthread_mutex_unlock failed", __FILE__, __LINE__);
+    if (rc != 0) {
+        cminus_panic("mutex is not locked by this thread",
+                     __FILE__, __LINE__);
     }
 }
 
@@ -1707,9 +1726,11 @@ static __attribute__((unused)) void Cond_wait(struct Cond* self, struct Mutex* m
 {
     pthread_cond_t* native = __cminus_cond_native(self);
     pthread_mutex_t* mutex_native = __cminus_mutex_native(mutex);
+    int rc = pthread_cond_wait(native, mutex_native);
 
-    if (pthread_cond_wait(native, mutex_native) != 0) {
-        cminus_panic("pthread_cond_wait failed", __FILE__, __LINE__);
+    if (rc != 0) {
+        cminus_panic("condition wait requires the mutex to be locked by this thread",
+                     __FILE__, __LINE__);
     }
 }
 

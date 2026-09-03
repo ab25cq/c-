@@ -1,0 +1,16 @@
+Mutex gate;
+
+int unlock_from_worker(void)
+{
+    gate.unlock();
+    return 0;
+}
+
+int main(void)
+{
+    Thread thread;
+
+    gate.lock();
+    thread = Thread.spawn(unlock_from_worker);
+    return thread.join();
+}
