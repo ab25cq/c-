@@ -1151,6 +1151,43 @@ grep 'Mutex_lock(&gate)' tests/thread_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/thread_safe.out.c -o tests/thread_safe.out -pthread
 ./tests/thread_safe.out
 
+if ./c- tests/bad_global_mutex_assign_safe.c- > /dev/null \
+    2> tests/bad_global_mutex_assign_safe.err; then
+    echo "shared global Mutex assignment unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "shared global Mutex 'gate' has static lifetime and cannot be assigned" \
+    tests/bad_global_mutex_assign_safe.err >/dev/null
+
+if ./c- tests/bad_global_mutex_destroy_safe.c- > /dev/null \
+    2> tests/bad_global_mutex_destroy_safe.err; then
+    echo "shared global Mutex destroy unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "shared global Mutex 'gate' has static lifetime and cannot be destroyed" \
+    tests/bad_global_mutex_destroy_safe.err >/dev/null
+
+./c- tests/mutex_destroy_panic.c- > tests/mutex_destroy_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/mutex_destroy_panic.out.c \
+    -o tests/mutex_destroy_panic.out -pthread
+if ./tests/mutex_destroy_panic.out > /dev/null \
+    2> tests/mutex_destroy_panic.err; then
+    echo "local Mutex use after destroy unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: mutex was destroyed' tests/mutex_destroy_panic.err >/dev/null
+
+./c- tests/cond_destroy_panic.c- > tests/cond_destroy_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/cond_destroy_panic.out.c \
+    -o tests/cond_destroy_panic.out -pthread
+if ./tests/cond_destroy_panic.out > /dev/null \
+    2> tests/cond_destroy_panic.err; then
+    echo "local Cond use after destroy unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: condition variable was destroyed' \
+    tests/cond_destroy_panic.err >/dev/null
+
 ./c- tests/thread_owned_send_safe.c- > tests/thread_owned_send_safe.out.c
 grep 'Thread_spawn_context((void\*)work, __cminus_thread_owned_entry_' \
     tests/thread_owned_send_safe.out.c >/dev/null

@@ -1082,13 +1082,17 @@ int main(void)
     Thread t;
 
     total = Atomic<int>.init(0);
-    gate = Mutex.init();
     t = Thread.spawn(worker);
     t.join();
-    gate.destroy();
     return total.load() == 1 ? 0 : 1;
 }
 ```
+
+Global `Mutex` and `Cond` values are lazily initialized exactly once from their
+zero-initialized static storage. Safe code cannot reassign or destroy them,
+which prevents a worker from racing with replacement or native-resource
+destruction. Local values may still use `Mutex.init()` / `Cond.init()` and
+`destroy()`; later use panics.
 
 Set `threads = true` in `C-.toml` to let `cpm build`, `cpm run`, `cpm val`, and
 `cpm leak` add `-pthread` automatically. Bare builds ignore this flag.

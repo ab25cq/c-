@@ -1,0 +1,8 @@
+int main(void)
+{
+    Mutex gate = Mutex.init();
+
+    gate.destroy();
+    gate.lock();
+    return 0;
+}

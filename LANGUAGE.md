@@ -430,6 +430,13 @@ not `Sync` atomic payloads. A global `Mutex` does not implicitly protect a
 separate ordinary global; that state remains rejected until C- has an explicit
 lock-coupled shared container.
 
+Global `Mutex` and `Cond` values have static lifetime. Declare them with zero
+initialization (`Mutex gate;`) and use them directly; their native resources are
+initialized once on first use, including when threads race on that first use.
+Safe code cannot assign or destroy a global `Mutex`/`Cond`. Local synchronization
+resources may still use explicit `init()` and `destroy()`, and access after
+destruction panics.
+
 An exclusive managed value can be transferred to a worker:
 
 ```c

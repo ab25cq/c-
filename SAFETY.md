@@ -57,6 +57,12 @@ pointers, floating-point values, structs, and runtime resources are rejected.
 `Mutex` and `Cond` are synchronization resources, but their mere presence does
 not mark adjacent ordinary global storage as protected.
 
+Global `Mutex` and `Cond` resources have static lifetime and thread-safe lazy
+initialization. Safe code cannot assign or destroy them, preventing replacement
+and use-after-free races with workers. Local synchronization resources retain
+explicit initialization and destruction; their destroyed state is remembered,
+so subsequent access panics before calling pthreads.
+
 The `Send` surface supports transferring one or more exclusive values with
 `Thread.spawn(move first, move second, worker)`. Captures may be managed owners,
 scalars, or stack value structs, including structs with owned fields. The worker

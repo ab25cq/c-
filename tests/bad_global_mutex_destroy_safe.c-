@@ -1,0 +1,9 @@
+Mutex gate;
+
+int main(void)
+{
+    gate.lock();
+    gate.unlock();
+    gate.destroy();
+    return 0;
+}

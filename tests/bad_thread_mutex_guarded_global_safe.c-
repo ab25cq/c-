@@ -13,9 +13,7 @@ int main(void)
 {
     Thread thread;
 
-    gate = Mutex.init();
     thread = Thread.spawn(worker);
     thread.join();
-    gate.destroy();
     return 0;
 }

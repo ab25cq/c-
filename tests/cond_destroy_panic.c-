@@ -1,0 +1,8 @@
+int main(void)
+{
+    Cond ready = Cond.init();
+
+    ready.destroy();
+    ready.signal();
+    return 0;
+}

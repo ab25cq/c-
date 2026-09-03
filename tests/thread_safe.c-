@@ -20,13 +20,11 @@ int main(void)
     int r2;
 
     total = Atomic<int>.init(0);
-    gate = Mutex.init();
     guarded_total = Atomic<int>.init(0);
     t1 = Thread.spawn(worker);
     t2 = Thread.spawn(worker);
     r1 = t1.join();
     r2 = t2.join();
-    gate.destroy();
     if (r1 != 11 || r2 != 11) {
         return 1;
     }

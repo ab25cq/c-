@@ -1126,13 +1126,13 @@ struct Thread {
 };
 
 struct Mutex {
-    pthread_mutex_t* native;
-    int initialized;
+    pthread_mutex_t native;
+    int state;
 };
 
 struct Cond {
-    pthread_cond_t* native;
-    int initialized;
+    pthread_cond_t native;
+    int state;
 };
 #endif
 
@@ -1558,57 +1558,141 @@ static __attribute__((unused)) void Thread_yield(void)
     sched_yield();
 }
 
+static __attribute__((unused)) pthread_mutex_t* __cminus_mutex_native(
+    struct Mutex* self)
+{
+    int state;
+    int expected;
+
+    if (self == NULL) {
+        cminus_panic("mutex is null", __FILE__, __LINE__);
+    }
+    state = __atomic_load_n(&self->state, __ATOMIC_ACQUIRE);
+    if (state == 3) {
+        cminus_panic("mutex was destroyed", __FILE__, __LINE__);
+    }
+    if (state == 2) {
+        return &self->native;
+    }
+    expected = 0;
+    if (__atomic_compare_exchange_n(&self->state, &expected, 1, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (pthread_mutex_init(&self->native, NULL) != 0) {
+            __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
+            cminus_panic("pthread_mutex_init failed", __FILE__, __LINE__);
+        }
+        __atomic_store_n(&self->state, 2, __ATOMIC_RELEASE);
+    } else {
+        do {
+            state = __atomic_load_n(&self->state, __ATOMIC_ACQUIRE);
+            if (state == 1) {
+                sched_yield();
+            }
+        } while (state == 1);
+        if (state == 3) {
+            cminus_panic("mutex was destroyed", __FILE__, __LINE__);
+        }
+        if (state != 2) {
+            cminus_panic("mutex initialization failed", __FILE__, __LINE__);
+        }
+    }
+    return &self->native;
+}
+
+static __attribute__((unused)) pthread_cond_t* __cminus_cond_native(
+    struct Cond* self)
+{
+    int state;
+    int expected;
+
+    if (self == NULL) {
+        cminus_panic("condition variable is null", __FILE__, __LINE__);
+    }
+    state = __atomic_load_n(&self->state, __ATOMIC_ACQUIRE);
+    if (state == 3) {
+        cminus_panic("condition variable was destroyed", __FILE__, __LINE__);
+    }
+    if (state == 2) {
+        return &self->native;
+    }
+    expected = 0;
+    if (__atomic_compare_exchange_n(&self->state, &expected, 1, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (pthread_cond_init(&self->native, NULL) != 0) {
+            __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
+            cminus_panic("pthread_cond_init failed", __FILE__, __LINE__);
+        }
+        __atomic_store_n(&self->state, 2, __ATOMIC_RELEASE);
+    } else {
+        do {
+            state = __atomic_load_n(&self->state, __ATOMIC_ACQUIRE);
+            if (state == 1) {
+                sched_yield();
+            }
+        } while (state == 1);
+        if (state == 3) {
+            cminus_panic("condition variable was destroyed", __FILE__, __LINE__);
+        }
+        if (state != 2) {
+            cminus_panic("condition variable initialization failed",
+                         __FILE__, __LINE__);
+        }
+    }
+    return &self->native;
+}
+
 static __attribute__((unused)) struct Mutex Mutex_init(void)
 {
     struct Mutex out;
 
     memset(&out, 0, sizeof(out));
-    out.native = (pthread_mutex_t*)calloc(1, sizeof(pthread_mutex_t));
-    if (out.native == NULL) {
-        cminus_panic("mutex allocation failed", __FILE__, __LINE__);
-    }
-    if (pthread_mutex_init(out.native, NULL) != 0) {
-        free(out.native);
-        cminus_panic("pthread_mutex_init failed", __FILE__, __LINE__);
-    }
-    out.initialized = 1;
     return out;
 }
 
 static __attribute__((unused)) void Mutex_lock(struct Mutex* self)
 {
-    if (self == NULL || !self->initialized || self->native == NULL) {
-        cminus_panic("mutex is uninitialized", __FILE__, __LINE__);
-    }
-    if (pthread_mutex_lock(self->native) != 0) {
+    pthread_mutex_t* native = __cminus_mutex_native(self);
+
+    if (pthread_mutex_lock(native) != 0) {
         cminus_panic("pthread_mutex_lock failed", __FILE__, __LINE__);
     }
 }
 
 static __attribute__((unused)) void Mutex_unlock(struct Mutex* self)
 {
-    if (self == NULL || !self->initialized || self->native == NULL) {
-        cminus_panic("mutex is uninitialized", __FILE__, __LINE__);
-    }
-    if (pthread_mutex_unlock(self->native) != 0) {
+    pthread_mutex_t* native = __cminus_mutex_native(self);
+
+    if (pthread_mutex_unlock(native) != 0) {
         cminus_panic("pthread_mutex_unlock failed", __FILE__, __LINE__);
     }
 }
 
 static __attribute__((unused)) void Mutex_destroy(struct Mutex* self)
 {
-    if (self == NULL || !self->initialized) {
+    int state;
+
+    if (self == NULL) {
         return;
     }
-    if (self->native == NULL) {
-        cminus_panic("mutex is uninitialized", __FILE__, __LINE__);
+    state = __atomic_load_n(&self->state, __ATOMIC_ACQUIRE);
+    if (state == 3) {
+        return;
     }
-    if (pthread_mutex_destroy(self->native) != 0) {
+    if (state == 0) {
+        __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
+        return;
+    }
+    while (state == 1) {
+        sched_yield();
+        state = __atomic_load_n(&self->state, __ATOMIC_ACQUIRE);
+    }
+    if (state == 3) {
+        return;
+    }
+    if (state != 2 || pthread_mutex_destroy(&self->native) != 0) {
         cminus_panic("pthread_mutex_destroy failed", __FILE__, __LINE__);
     }
-    free(self->native);
-    self->native = NULL;
-    self->initialized = 0;
+    __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
 }
 
 static __attribute__((unused)) struct Cond Cond_init(void)
@@ -1616,63 +1700,63 @@ static __attribute__((unused)) struct Cond Cond_init(void)
     struct Cond out;
 
     memset(&out, 0, sizeof(out));
-    out.native = (pthread_cond_t*)calloc(1, sizeof(pthread_cond_t));
-    if (out.native == NULL) {
-        cminus_panic("condition variable allocation failed", __FILE__, __LINE__);
-    }
-    if (pthread_cond_init(out.native, NULL) != 0) {
-        free(out.native);
-        cminus_panic("pthread_cond_init failed", __FILE__, __LINE__);
-    }
-    out.initialized = 1;
     return out;
 }
 
 static __attribute__((unused)) void Cond_wait(struct Cond* self, struct Mutex* mutex)
 {
-    if (self == NULL || !self->initialized || self->native == NULL ||
-        mutex == NULL || !mutex->initialized || mutex->native == NULL) {
-        cminus_panic("condition variable is uninitialized", __FILE__, __LINE__);
-    }
-    if (pthread_cond_wait(self->native, mutex->native) != 0) {
+    pthread_cond_t* native = __cminus_cond_native(self);
+    pthread_mutex_t* mutex_native = __cminus_mutex_native(mutex);
+
+    if (pthread_cond_wait(native, mutex_native) != 0) {
         cminus_panic("pthread_cond_wait failed", __FILE__, __LINE__);
     }
 }
 
 static __attribute__((unused)) void Cond_signal(struct Cond* self)
 {
-    if (self == NULL || !self->initialized || self->native == NULL) {
-        cminus_panic("condition variable is uninitialized", __FILE__, __LINE__);
-    }
-    if (pthread_cond_signal(self->native) != 0) {
+    pthread_cond_t* native = __cminus_cond_native(self);
+
+    if (pthread_cond_signal(native) != 0) {
         cminus_panic("pthread_cond_signal failed", __FILE__, __LINE__);
     }
 }
 
 static __attribute__((unused)) void Cond_broadcast(struct Cond* self)
 {
-    if (self == NULL || !self->initialized || self->native == NULL) {
-        cminus_panic("condition variable is uninitialized", __FILE__, __LINE__);
-    }
-    if (pthread_cond_broadcast(self->native) != 0) {
+    pthread_cond_t* native = __cminus_cond_native(self);
+
+    if (pthread_cond_broadcast(native) != 0) {
         cminus_panic("pthread_cond_broadcast failed", __FILE__, __LINE__);
     }
 }
 
 static __attribute__((unused)) void Cond_destroy(struct Cond* self)
 {
-    if (self == NULL || !self->initialized) {
+    int state;
+
+    if (self == NULL) {
         return;
     }
-    if (self->native == NULL) {
-        cminus_panic("condition variable is uninitialized", __FILE__, __LINE__);
+    state = __atomic_load_n(&self->state, __ATOMIC_ACQUIRE);
+    if (state == 3) {
+        return;
     }
-    if (pthread_cond_destroy(self->native) != 0) {
+    if (state == 0) {
+        __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
+        return;
+    }
+    while (state == 1) {
+        sched_yield();
+        state = __atomic_load_n(&self->state, __ATOMIC_ACQUIRE);
+    }
+    if (state == 3) {
+        return;
+    }
+    if (state != 2 || pthread_cond_destroy(&self->native) != 0) {
         cminus_panic("pthread_cond_destroy failed", __FILE__, __LINE__);
     }
-    free(self->native);
-    self->native = NULL;
-    self->initialized = 0;
+    __atomic_store_n(&self->state, 3, __ATOMIC_RELEASE);
 }
 #endif
 

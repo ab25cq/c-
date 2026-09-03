@@ -2446,6 +2446,9 @@ static int type_compatible(struct Type lhs, struct Type rhs)
     if (lhs.kind == TY_TYPEDEF || rhs.kind == TY_TYPEDEF) {
         return 1;
     }
+    if (rhs.kind == TY_GENERIC && strcmp(rhs.tag, "atomic-value") == 0) {
+        return 1;
+    }
     if (type_same_unowned(lhs, rhs)) {
         return 1;
     }
@@ -14685,6 +14688,16 @@ found_method:
         return 0;
     }
 
+    if (g_unsafe_depth == 0 && !chained && strcmp(method, "destroy") == 0 &&
+        (strcmp(recv_type.tag, "Mutex") == 0 ||
+         strcmp(recv_type.tag, "Cond") == 0) &&
+        sym == symbol_find_in(&g_globals, obj)) {
+        fprintf(stderr,
+                "c-: thread safety error: shared global %s '%s' has static lifetime and cannot be destroyed in safe mode\n",
+                recv_type.tag, obj);
+        exit(1);
+    }
+
     if (generic_method_concrete_name(recv_type.tag, method, generic_func, sizeof(generic_func))) {
         text_add(replacement, generic_func);
     } else {
@@ -17410,6 +17423,22 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 text_free(all);
                 exit(1);
             }
+        }
+    }
+    if (g_unsafe_depth == 0 && g_in_function && eq >= 0 &&
+        extract_lhs_name(all->text, eq, lhs_name)) {
+        struct Symbol *global = symbol_find_in(&g_globals, lhs_name);
+        struct Symbol *local = symbol_find_in(&g_locals, lhs_name);
+
+        if (local == NULL && global != NULL && global->type.ptr == 0 &&
+            global->type.kind == TY_STRUCT &&
+            (strcmp(global->type.tag, "Mutex") == 0 ||
+             strcmp(global->type.tag, "Cond") == 0)) {
+            fprintf(stderr,
+                    "c-: thread safety error: shared global %s '%s' has static lifetime and cannot be assigned in safe mode; declare it without an initializer and use it directly\n",
+                    global->type.tag, lhs_name);
+            text_free(all);
+            exit(1);
         }
     }
     if (!g_in_function) {
