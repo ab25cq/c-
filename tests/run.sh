@@ -1113,6 +1113,22 @@ grep '__atomic_fetch_xor' tests/atomic_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/atomic_safe.out.c -o tests/atomic_safe.out
 ./tests/atomic_safe.out
 
+if ./c- tests/bad_atomic_ref_safe.c- > /dev/null \
+    2> tests/bad_atomic_ref_safe.err; then
+    echo "Atomic<Ref<int>> unexpectedly succeeded in safe mode" >&2
+    exit 1
+fi
+grep "Atomic value 'shared_reference' requires a non-pointer integer, enum, or bitflags payload" \
+    tests/bad_atomic_ref_safe.err >/dev/null
+
+if ./c- tests/bad_atomic_float_safe.c- > /dev/null \
+    2> tests/bad_atomic_float_safe.err; then
+    echo "Atomic<float> unexpectedly succeeded in safe mode" >&2
+    exit 1
+fi
+grep "Atomic value 'value' requires a non-pointer integer, enum, or bitflags payload" \
+    tests/bad_atomic_float_safe.err >/dev/null
+
 ./c- tests/atomic_invalid_order_panic.c- \
     > tests/atomic_invalid_order_panic.out.c
 grep 'cminus_atomic_require_load_order(order)' \
@@ -1307,6 +1323,14 @@ if ./c- tests/bad_thread_global_access_safe.c- > /dev/null \
 fi
 grep "Thread.spawn entry 'worker' accesses ordinary global 'shared_value'" \
     tests/bad_thread_global_access_safe.err >/dev/null
+
+if ./c- tests/bad_thread_mutex_guarded_global_safe.c- > /dev/null \
+    2> tests/bad_thread_mutex_guarded_global_safe.err; then
+    echo "mutex-adjacent ordinary global unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Thread.spawn entry 'worker' accesses ordinary global 'shared_value'" \
+    tests/bad_thread_mutex_guarded_global_safe.err >/dev/null
 
 if ./c- tests/bad_thread_transitive_global_safe.c- > /dev/null \
     2> tests/bad_thread_transitive_global_safe.err; then

@@ -423,7 +423,12 @@ from joining, destroying, or leaving the same runtime resource twice.
 Both safe thread forms perform a transitive typed-AST check of the entry
 function. Ordinary globals, indirect calls, and calls without a visible safe
 definition are rejected. Global `Atomic<T>`, `Mutex`, and `Cond` values are the
-permitted shared synchronization surface.
+permitted shared synchronization surface. In safe mode, `Atomic<T>` accepts
+only non-pointer integer, enum, and bitflags payloads. `Ref<T>`, `Span<T>`,
+owned/raw pointers, floating-point values, structs, and runtime resources are
+not `Sync` atomic payloads. A global `Mutex` does not implicitly protect a
+separate ordinary global; that state remains rejected until C- has an explicit
+lock-coupled shared container.
 
 An exclusive managed value can be transferred to a worker:
 

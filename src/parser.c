@@ -10944,13 +10944,68 @@ struct ThreadSafetyContext {
     int depth;
 };
 
-static int type_is_thread_shared_primitive(struct Type type)
+static int type_is_atomic_value(struct Type type)
 {
-    return type.kind == TY_STRUCT && type.ptr == 0 &&
-        (strcmp(type.tag, "Atomic") == 0 ||
-         strncmp(type.tag, "Atomic_", 7) == 0 ||
-         strcmp(type.tag, "Mutex") == 0 ||
-         strcmp(type.tag, "Cond") == 0);
+    struct GenericInstance *instance = NULL;
+    struct GenericTemplate *template;
+
+    if (type.kind != TY_STRUCT || type.ptr != 0) {
+        return 0;
+    }
+    if (strcmp(type.applied_name, "Atomic") == 0) {
+        return 1;
+    }
+    template = generic_struct_find_by_concrete(type.tag, &instance);
+    return template != NULL && instance != NULL &&
+        strcmp(template->name, "Atomic") == 0;
+}
+
+static int atomic_payload_type(struct Type atomic, struct Type *payload)
+{
+    struct GenericInstance *instance = NULL;
+    struct GenericTemplate *template;
+    const char *argument = NULL;
+    char type_name[NAME_MAX_LEN];
+
+    if (!type_is_atomic_value(atomic)) {
+        return 0;
+    }
+    if (strcmp(atomic.applied_name, "Atomic") == 0 &&
+        atomic.applied_args[0] != '\0') {
+        argument = atomic.applied_args;
+    } else {
+        template = generic_struct_find_by_concrete(atomic.tag, &instance);
+        if (template != NULL && instance != NULL) {
+            argument = instance->arg;
+        }
+    }
+    return argument != NULL &&
+        safety_parse_type_range(argument, argument + strlen(argument),
+                                payload, type_name);
+}
+
+static int type_is_thread_atomic(struct Type type)
+{
+    struct Type payload = type_unknown();
+
+    if (!atomic_payload_type(type, &payload) || payload.ptr != 0 ||
+        payload.raw_ptr || payload.owned || payload.is_array) {
+        return 0;
+    }
+    return payload.kind == TY_CHAR || payload.kind == TY_SHORT ||
+        payload.kind == TY_INT || payload.kind == TY_LONG ||
+        payload.kind == TY_ENUM || payload.kind == TY_BITFLAGS;
+}
+
+static int type_is_thread_sync_global(struct Type type)
+{
+    if (type.kind != TY_STRUCT || type.ptr != 0) {
+        return 0;
+    }
+    if (strcmp(type.tag, "Mutex") == 0 || strcmp(type.tag, "Cond") == 0) {
+        return 1;
+    }
+    return type_is_thread_atomic(type);
 }
 
 static int thread_identifier_is_constant(struct Node *node, const char *name)
@@ -11022,8 +11077,14 @@ static void thread_analyze_expression(struct ThreadSafetyContext *context,
     for (; expr != NULL; expr = expr->next) {
         if (expr->kind == SAFETY_EXPR_IDENTIFIER && expr->symbol_is_global &&
             expr->type.kind != TY_FUNCTION &&
-            !type_is_thread_shared_primitive(expr->type) &&
+            !type_is_thread_sync_global(expr->type) &&
             !thread_identifier_is_constant(context->root, expr->name)) {
+            if (type_is_atomic_value(expr->type)) {
+                fprintf(stderr,
+                        "c-: thread safety error: global Atomic value '%s' has a non-Sync payload; safe Atomic<T> requires a non-pointer integer, enum, or bitflags payload\n",
+                        expr->name);
+                exit(1);
+            }
             fprintf(stderr,
                     "c-: thread safety error: Thread.spawn entry '%s' accesses ordinary global '%s'; use Atomic<T> or move the state into a later Send-capable thread argument\n",
                     context->entry, expr->name);
@@ -18902,6 +18963,13 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
     }
     if (!is_func_sig && parse_decl(all->text, &info) && info.name[0] != '\0' &&
         !info.is_function && !info.is_typedef) {
+        if (g_unsafe_depth == 0 && type_is_atomic_value(info.type) &&
+            !type_is_thread_atomic(info.type)) {
+            fprintf(stderr, "c-: type error: Atomic value '%s' requires a non-pointer integer, enum, or bitflags payload in safe mode at %s:%d\n",
+                    info.name, g_input_path == NULL ? "<unknown>" : g_input_path,
+                    yylineno);
+            exit(1);
+        }
         if (g_unsafe_depth == 0 && type_is_stored_safe_reference(info.type)) {
             fprintf(stderr, "c-: type error: Ref/Span values cannot be stored in safe global '%s' at %s:%d; store owned/static data and create the reference locally\n",
                     info.name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
@@ -19045,6 +19113,14 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (g_in_aggregate_struct && g_current_struct_tag[0] != '\0' &&
             parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' &&
             decl.type.ptr >= 0) {
+            if (g_unsafe_depth == 0 && type_is_atomic_value(decl.type) &&
+                !type_is_thread_atomic(decl.type)) {
+                fprintf(stderr, "c-: type error: Atomic field '%s.%s' requires a non-pointer integer, enum, or bitflags payload in safe mode at %s:%d\n",
+                        g_current_struct_tag, decl.name,
+                        g_input_path == NULL ? "<unknown>" : g_input_path,
+                        yylineno);
+                exit(1);
+            }
             if (g_unsafe_depth == 0 && type_is_stored_safe_reference(decl.type)) {
                 fprintf(stderr, "c-: type error: Ref/Span fields are not allowed in safe structs for field '%s.%s' at %s:%d; keep safe references local or store owned data\n",
                         g_current_struct_tag, decl.name, g_input_path ? g_input_path : "<stdin>", yylineno);
@@ -19072,6 +19148,13 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     }
     check_null_assignment(all->text);
     if (parse_decl(all->text, &decl) && decl.is_decl && decl.name[0] != '\0' && !decl.is_function) {
+        if (g_unsafe_depth == 0 && type_is_atomic_value(decl.type) &&
+            !type_is_thread_atomic(decl.type)) {
+            fprintf(stderr, "c-: type error: Atomic value '%s' requires a non-pointer integer, enum, or bitflags payload in safe mode at %s:%d\n",
+                    decl.name, g_input_path == NULL ? "<unknown>" : g_input_path,
+                    yylineno);
+            exit(1);
+        }
         if (g_unsafe_depth == 0 && decl.is_array && decl.type.array_len <= 0) {
             fprintf(stderr, "c-: type error: variable-length or unsized array '%s' is only allowed inside unsafe at %s:%d; use a fixed array or checked collection\n",
                     decl.name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);

@@ -51,6 +51,12 @@ only `Atomic<T>`, `Mutex`, `Cond`, and compile-time constants cross that global
 boundary. Indirect calls and calls without a visible safe definition are also
 rejected from a thread entry.
 
+The `Sync` check is structural at the atomic boundary: safe `Atomic<T>` permits
+only non-pointer integer, enum, and bitflags payloads. References, raw or owned
+pointers, floating-point values, structs, and runtime resources are rejected.
+`Mutex` and `Cond` are synchronization resources, but their mere presence does
+not mark adjacent ordinary global storage as protected.
+
 The `Send` surface supports transferring one or more exclusive values with
 `Thread.spawn(move first, move second, worker)`. Captures may be managed owners,
 scalars, or stack value structs, including structs with owned fields. The worker

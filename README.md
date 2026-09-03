@@ -1048,8 +1048,10 @@ int read_ticks(void)
 }
 ```
 
-`Atomic<T>` uses compiler atomic builtins and is intended for integer or
-pointer-sized scalar types. It does not require C11 `<stdatomic.h>`; C- emits
+`Atomic<T>` uses compiler atomic builtins. Safe mode restricts `T` to
+non-pointer integer, enum, and bitflags types; references, pointers,
+floating-point values, structs, and runtime resources are rejected. It does not
+require C11 `<stdatomic.h>`; C- emits
 GCC/Clang `__atomic` builtins, so the generated C can stay at C99/gnu99. The
 default methods use sequential consistency. Ordered variants such as
 `load_order`, `store_order`, `exchange_order`, `compare_exchange_order`, and
@@ -1094,7 +1096,9 @@ Set `threads = true` in `C-.toml` to let `cpm build`, `cpm run`, `cpm val`, and
 Safe `Thread.spawn` entries are checked transitively. They cannot read or write
 ordinary globals, call through an indirect function pointer, or call a function
 without a visible safe definition. Shared global state must currently use
-`Atomic<T>`, `Mutex`, or `Cond`.
+`Atomic<T>`, `Mutex`, or `Cond`. A `Mutex` does not make a separate ordinary
+global safe: without an explicit lock-coupled container, the compiler cannot
+prove that every access holds that mutex.
 
 One exclusive managed value can be moved into a thread:
 
