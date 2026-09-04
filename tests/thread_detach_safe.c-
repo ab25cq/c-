@@ -16,7 +16,7 @@ int main(void)
 {
     Thread worker;
 
-    detached_done = Atomic<int>.init(0);
+    detached_done.store(0);
     worker = Thread.spawn(detached_worker);
     worker.detach();
     while (detached_done.load() == 0) {

@@ -19,8 +19,8 @@ int main(void)
     int r1;
     int r2;
 
-    total = Atomic<int>.init(0);
-    guarded_total = Atomic<int>.init(0);
+    total.store(0);
+    guarded_total.store(0);
     t1 = Thread.spawn(worker);
     t2 = Thread.spawn(worker);
     r1 = t1.join();

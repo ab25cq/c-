@@ -10940,6 +10940,15 @@ static void check_safe_raw_field_access(const char *stmt)
             if (*after_field == '(' || *after_field == '<') {
                 break;
             }
+            if (type_is_atomic_value(current) ||
+                type_is_runtime_resource_value(current)) {
+                fprintf(stderr,
+                        "c-: thread safety error: internal field '%s.%s' cannot be accessed in safe mode; use its checked methods instead at %s:%d\n",
+                        current.tag, field,
+                        g_input_path == NULL ? "<unknown>" : g_input_path,
+                        yylineno);
+                exit(1);
+            }
             if (current.kind != TY_STRUCT ||
                 !struct_field_type(current.tag, field, &field_type)) {
                 break;
@@ -17506,6 +17515,14 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             fprintf(stderr,
                     "c-: thread safety error: shared global %s '%s' has static lifetime and cannot be assigned in safe mode; declare it without an initializer and use it directly\n",
                     global->type.tag, lhs_name);
+            text_free(all);
+            exit(1);
+        }
+        if (local == NULL && global != NULL && global->type.ptr == 0 &&
+            type_is_atomic_value(global->type)) {
+            fprintf(stderr,
+                    "c-: thread safety error: shared global Atomic '%s' cannot be assigned in safe mode; use store() or another atomic method\n",
+                    lhs_name);
             text_free(all);
             exit(1);
         }

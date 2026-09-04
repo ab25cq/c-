@@ -1058,6 +1058,11 @@ default methods use sequential consistency. Ordered variants such as
 `fetch_add_order` accept `AtomicRelaxed`, `AtomicAcquire`, `AtomicRelease`,
 `AtomicAcqRel`, or `AtomicSeqCst`.
 
+Safe code cannot access the representation fields of `Atomic` or the thread
+and synchronization resources. A global atomic also cannot be replaced by
+whole-struct assignment; use `store()` or another atomic method so concurrent
+readers never race with a plain C write.
+
 `Critical.enter()` returns a `Critical` value token and `leave()` is idempotent.
 The default runtime hooks are no-ops for hosted tests; a kernel or board layer
 can replace the interrupt save/restore implementation when integrating the

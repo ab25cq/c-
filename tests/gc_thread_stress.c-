@@ -32,7 +32,7 @@ int main(void)
     Thread fourth;
     int result = 0;
 
-    gc_workers_done = Atomic<int>.init(0);
+    gc_workers_done.store(0);
     first = Thread.spawn(gc_stress_worker);
     second = Thread.spawn(gc_stress_worker);
     third = Thread.spawn(gc_stress_worker);

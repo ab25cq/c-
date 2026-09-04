@@ -8,7 +8,7 @@ int background_work(void)
 
 int main(void)
 {
-    completed = Atomic<int>.init(0);
+    completed.store(0);
     {
         Thread worker = Thread.spawn(background_work);
     }

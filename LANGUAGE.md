@@ -430,6 +430,11 @@ not `Sync` atomic payloads. A global `Mutex` does not implicitly protect a
 separate ordinary global; that state remains rejected until C- has an explicit
 lock-coupled shared container.
 
+The representation fields of `Atomic`, `Thread`, `Mutex`, `Cond`, and
+`Critical` are private in safe code; use their checked methods. A shared global
+`Atomic<T>` cannot be replaced by direct struct assignment. Global atomics are
+zero-initialized, and runtime initialization uses `store()`.
+
 Global `Mutex` and `Cond` values have static lifetime. Declare them with zero
 initialization (`Mutex gate;`) and use them directly; their native resources are
 initialized once on first use, including when threads race on that first use.

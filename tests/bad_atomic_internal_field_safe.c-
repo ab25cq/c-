@@ -1,0 +1,7 @@
+Atomic<int> counter;
+
+int main(void)
+{
+    counter.value = 1;
+    return 0;
+}

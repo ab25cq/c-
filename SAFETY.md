@@ -54,6 +54,10 @@ rejected from a thread entry.
 The `Sync` check is structural at the atomic boundary: safe `Atomic<T>` permits
 only non-pointer integer, enum, and bitflags payloads. References, raw or owned
 pointers, floating-point values, structs, and runtime resources are rejected.
+Safe code cannot access `Atomic` or runtime-resource representation fields
+directly. Shared global atomics cannot be replaced with a non-atomic struct
+assignment and must be modified through `store`, `exchange`, or another atomic
+method.
 `Mutex` and `Cond` are synchronization resources, but their mere presence does
 not mark adjacent ordinary global storage as protected.
 

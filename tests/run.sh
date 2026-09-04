@@ -1113,6 +1113,30 @@ grep '__atomic_fetch_xor' tests/atomic_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/atomic_safe.out.c -o tests/atomic_safe.out
 ./tests/atomic_safe.out
 
+if ./c- tests/bad_atomic_internal_field_safe.c- > /dev/null \
+    2> tests/bad_atomic_internal_field_safe.err; then
+    echo "safe Atomic internal-field access unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "internal field 'Atomic_int.value' cannot be accessed in safe mode" \
+    tests/bad_atomic_internal_field_safe.err >/dev/null
+
+if ./c- tests/bad_global_atomic_assign_safe.c- > /dev/null \
+    2> tests/bad_global_atomic_assign_safe.err; then
+    echo "safe global Atomic assignment unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "shared global Atomic 'counter' cannot be assigned in safe mode" \
+    tests/bad_global_atomic_assign_safe.err >/dev/null
+
+if ./c- tests/bad_mutex_internal_field_safe.c- > /dev/null \
+    2> tests/bad_mutex_internal_field_safe.err; then
+    echo "safe Mutex internal-field access unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "internal field 'Mutex.state' cannot be accessed in safe mode" \
+    tests/bad_mutex_internal_field_safe.err >/dev/null
+
 if ./c- tests/bad_atomic_ref_safe.c- > /dev/null \
     2> tests/bad_atomic_ref_safe.err; then
     echo "Atomic<Ref<int>> unexpectedly succeeded in safe mode" >&2
