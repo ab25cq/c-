@@ -1,0 +1,22 @@
+Shared<int> shared_value;
+
+int increment_and_return(void)
+{
+    SharedGuard<int> guard = shared_value.lock();
+    int value = guard.load();
+
+    guard.store(value + 1);
+    return value;
+}
+
+int main(void)
+{
+    shared_value.store(0);
+    if (increment_and_return() != 0) {
+        return 1;
+    }
+    if (increment_and_return() != 1) {
+        return 2;
+    }
+    return shared_value.load() == 2 ? 0 : 3;
+}

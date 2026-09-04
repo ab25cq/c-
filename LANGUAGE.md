@@ -437,7 +437,11 @@ payload explicitly, for example `Shared<struct Pair> state;`. Payloads are
 checked recursively and cannot contain pointers, references, arrays, owned or
 finalizer-bearing fields, or runtime resources. The representation and lock are
 private. `load()` followed later by `store()` is two transactions; use
-`Atomic<T>` for supported read-modify-write operations.
+`Atomic<T>` for supported read-modify-write operations. For a compound update,
+`SharedGuard<struct Pair> guard = state.lock();` keeps the mutex locked across
+the guard's `load()` and `store()` calls. The guard is non-copyable and unlocks
+automatically at scope exit, including early returns. Explicit `unlock()` is
+idempotent; later guard access panics.
 
 The representation fields of `Atomic`, `Thread`, `Mutex`, `Cond`, and
 `Critical` are private in safe code; use their checked methods. A shared global

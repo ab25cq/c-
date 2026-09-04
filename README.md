@@ -1075,7 +1075,10 @@ Shared<struct Status> status;
 ```
 
 Each method call is one lock transaction; a separate load-modify-store sequence
-is not an atomic transaction.
+is not an atomic transaction. Use `SharedGuard<T> guard = status.lock();` when
+a compound update must be one transaction. The guard supports `load()`,
+`store()`, and optional `unlock()`, cannot be copied or moved, and automatically
+unlocks at scope exit and on early return.
 
 `Critical.enter()` returns a `Critical` value token and `leave()` is idempotent.
 The default runtime hooks are no-ops for hosted tests; a kernel or board layer

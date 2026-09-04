@@ -4934,6 +4934,7 @@ static int is_safe_reference_type(struct Type type)
         strcmp(type.tag, "Register") == 0 || strncmp(type.tag, "Register_", 9) == 0 ||
         strcmp(type.tag, "Atomic") == 0 || strncmp(type.tag, "Atomic_", 7) == 0 ||
         strcmp(type.tag, "Shared") == 0 || strncmp(type.tag, "Shared_", 7) == 0 ||
+        strcmp(type.tag, "SharedGuard") == 0 || strncmp(type.tag, "SharedGuard_", 12) == 0 ||
         strcmp(type.tag, "Volatile") == 0 || strncmp(type.tag, "Volatile_", 9) == 0 ||
         strcmp(type.tag, "StaticCell") == 0 || strncmp(type.tag, "StaticCell_", 11) == 0 ||
         strcmp(type.tag, "Bitmap") == 0 ||
@@ -4954,7 +4955,9 @@ static int type_is_runtime_resource_value(struct Type type)
          strcmp(type.tag, "Cond") == 0 ||
          strcmp(type.tag, "Critical") == 0 ||
          strcmp(type.tag, "Shared") == 0 ||
-         strncmp(type.tag, "Shared_", 7) == 0);
+         strncmp(type.tag, "Shared_", 7) == 0 ||
+         strcmp(type.tag, "SharedGuard") == 0 ||
+         strncmp(type.tag, "SharedGuard_", 12) == 0);
 }
 
 static int is_heap_collection_type(struct Type type)
@@ -11188,6 +11191,7 @@ static int thread_call_is_trusted_runtime(const char *name)
         strncmp(name, "Mutex_", 6) == 0 ||
         strncmp(name, "Cond_", 5) == 0 ||
         strncmp(name, "Shared_", 7) == 0 ||
+        strncmp(name, "SharedGuard_", 12) == 0 ||
         strcmp(name, "memset") == 0 || strcmp(name, "memcpy") == 0;
 }
 
@@ -15844,6 +15848,8 @@ static int thread_send_tag_is_intrinsically_local(const char *tag)
         strncmp(tag, "StaticCell_", 11) == 0 ||
         strcmp(tag, "Shared") == 0 ||
         strncmp(tag, "Shared_", 7) == 0 ||
+        strcmp(tag, "SharedGuard") == 0 ||
+        strncmp(tag, "SharedGuard_", 12) == 0 ||
         strcmp(tag, "Critical") == 0 || strcmp(tag, "Thread") == 0 ||
         strcmp(tag, "Mutex") == 0 || strcmp(tag, "Cond") == 0;
 }
@@ -17773,7 +17779,7 @@ static int is_safe_stdlib_function_name(const char *name)
     static const char *prefixes[] = {
         "Vec_", "List_", "Map_", "OwnedVec_", "OwnedList_", "OwnedMap_",
         "Optional_", "Ref_", "Span_", "FixedVec_", "RingBuffer_",
-        "Bitmap_", "Register_", "Volatile_", "StaticCell_", "Atomic_", "Shared_",
+        "Bitmap_", "Register_", "Volatile_", "StaticCell_", "Atomic_", "Shared_", "SharedGuard_",
         "Critical_", "Iterator_", NULL
     };
     int i;
@@ -18178,8 +18184,13 @@ static struct Text *add_runtime_resource_cleanup(struct Text *in,
     out = text_new();
     text_add_n(out, in->text, (size_t)(name_end - in->text));
     text_add(out, " __attribute__((cleanup(");
-    text_add(out, tag);
-    text_add(out, "_finalize)))");
+    if (strncmp(tag, "SharedGuard_", 12) == 0) {
+        text_add(out, "SharedGuard_finalize");
+    } else {
+        text_add(out, tag);
+        text_add(out, "_finalize");
+    }
+    text_add(out, ")))" );
     text_add(out, name_end);
     out->tail_return = in->tail_return;
     out->ast = in->ast;
@@ -18313,6 +18324,7 @@ static int function_signature_is_internal(const char *head)
         "Register_",
         "Atomic_",
         "Shared_",
+        "SharedGuard_",
         "Volatile_",
         "StaticCell_",
         "Bitmap_",
@@ -18352,6 +18364,8 @@ static int type_is_nonowning_value_view(struct Type type)
          strncmp(type.tag, "Atomic_", 7) == 0 ||
          strcmp(type.tag, "Shared") == 0 ||
          strncmp(type.tag, "Shared_", 7) == 0 ||
+         strcmp(type.tag, "SharedGuard") == 0 ||
+         strncmp(type.tag, "SharedGuard_", 12) == 0 ||
          strcmp(type.tag, "Volatile") == 0 ||
          strncmp(type.tag, "Volatile_", 9) == 0 ||
          strcmp(type.tag, "StaticCell") == 0 ||
@@ -18511,6 +18525,7 @@ static int function_needs_stack_guard(const char *name)
         "Register_",
         "Atomic_",
         "Shared_",
+        "SharedGuard_",
         "Volatile_",
         "StaticCell_",
         "Bitmap_",

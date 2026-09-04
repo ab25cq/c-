@@ -1,0 +1,9 @@
+Shared<int> shared_value;
+
+int main(void)
+{
+    SharedGuard<int> first = shared_value.lock();
+    SharedGuard<int> second = first;
+
+    return second.load();
+}

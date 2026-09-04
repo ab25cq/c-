@@ -66,6 +66,9 @@ Its whole-value `load()` and `store()` operations hold that mutex, and safe code
 cannot access or replace its representation. Pointer, reference, array, owned,
 finalizer-bearing, and runtime-resource payloads are rejected. `Shared<T>` is
 currently global-only; separate method calls are separate transactions.
+`Shared.lock()` returns a non-copyable `SharedGuard<T>` for compound updates.
+The guard is scope-finalized, so every normal block exit and early return
+unlocks it. Explicit unlock is idempotent and subsequent access panics.
 
 Global `Mutex` and `Cond` resources have static lifetime and thread-safe lazy
 initialization. Safe code cannot assign or destroy them, preventing replacement

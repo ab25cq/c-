@@ -1,0 +1,10 @@
+Shared<int> shared_value;
+
+int main(void)
+{
+    SharedGuard<int> guard = shared_value.lock();
+
+    guard.store(7);
+    guard.unlock();
+    return guard.load();
+}

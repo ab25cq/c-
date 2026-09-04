@@ -1913,10 +1913,85 @@ __cminus_shared_state_get(void** slot, size_t value_size)
     return expected;
 }
 
+static __attribute__((unused)) void SharedGuard_finalize(void* raw)
+{
+    void* state_value = NULL;
+    struct __CMinusSharedState* state;
+
+    if (raw == NULL) {
+        return;
+    }
+    memcpy(&state_value, raw, sizeof(state_value));
+    if (state_value == NULL) {
+        return;
+    }
+    state = (struct __CMinusSharedState*)state_value;
+    state_value = NULL;
+    memcpy(raw, &state_value, sizeof(state_value));
+    __cminus_mutex_unlock_parts(&state->native, &state->state);
+}
+
 generic<T>
 struct Shared {
     void* state;
 };
+
+generic<T>
+struct SharedGuard {
+    void* state;
+};
+
+generic<T>
+struct SharedGuard<T> Shared_lock(struct Shared<T>* self)
+{
+    struct SharedGuard<T> out;
+    struct __CMinusSharedState* state;
+
+    if (self == NULL) {
+        cminus_panic("shared value is null", __FILE__, __LINE__);
+    }
+    state = __cminus_shared_state_get(&self->state, sizeof(T));
+    __cminus_mutex_lock_parts(&state->native, &state->state);
+    out.state = state;
+    return out;
+}
+
+generic<T>
+T SharedGuard_load(struct SharedGuard<T>* self)
+{
+    struct __CMinusSharedState* state;
+
+    if (self == NULL || self->state == NULL) {
+        cminus_panic("shared guard is not active", __FILE__, __LINE__);
+    }
+    state = (struct __CMinusSharedState*)self->state;
+    return *(T*)state->value;
+}
+
+generic<T>
+void SharedGuard_store(struct SharedGuard<T>* self, T value)
+{
+    struct __CMinusSharedState* state;
+
+    if (self == NULL || self->state == NULL) {
+        cminus_panic("shared guard is not active", __FILE__, __LINE__);
+    }
+    state = (struct __CMinusSharedState*)self->state;
+    *(T*)state->value = value;
+}
+
+generic<T>
+void SharedGuard_unlock(struct SharedGuard<T>* self)
+{
+    struct __CMinusSharedState* state;
+
+    if (self == NULL || self->state == NULL) {
+        return;
+    }
+    state = (struct __CMinusSharedState*)self->state;
+    self->state = NULL;
+    __cminus_mutex_unlock_parts(&state->native, &state->state);
+}
 
 generic<T>
 T Shared_load(struct Shared<T>* self)

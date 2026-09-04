@@ -1179,9 +1179,11 @@ cc -std=gnu99 -Wall -Wextra tests/thread_safe.out.c -o tests/thread_safe.out -pt
 ./c- tests/shared_struct_safe.c- > tests/shared_struct_safe.out.c
 grep 'struct Shared_PairState shared_state;' \
     tests/shared_struct_safe.out.c >/dev/null
-grep 'Shared_store_PairState(&shared_state, next)' \
+grep 'SharedGuard_store_PairState(&guard, next)' \
     tests/shared_struct_safe.out.c >/dev/null
-grep 'Shared_load_PairState(&shared_state)' \
+grep 'SharedGuard_load_PairState(&guard)' \
+    tests/shared_struct_safe.out.c >/dev/null
+grep 'cleanup(SharedGuard_finalize)' \
     tests/shared_struct_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/shared_struct_safe.out.c \
     -o tests/shared_struct_safe.out -pthread
@@ -1210,6 +1212,34 @@ if ./c- tests/bad_shared_internal_field_safe.c- > /dev/null \
 fi
 grep "internal field 'Shared_int.value' cannot be accessed in safe mode" \
     tests/bad_shared_internal_field_safe.err >/dev/null
+
+if ./c- tests/bad_shared_guard_copy_safe.c- > /dev/null \
+    2> tests/bad_shared_guard_copy_safe.err; then
+    echo "SharedGuard copy unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "runtime resource 'first' cannot be copied" \
+    tests/bad_shared_guard_copy_safe.err >/dev/null
+
+./c- tests/shared_guard_use_after_unlock_panic.c- \
+    > tests/shared_guard_use_after_unlock_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/shared_guard_use_after_unlock_panic.out.c \
+    -o tests/shared_guard_use_after_unlock_panic.out -pthread
+if ./tests/shared_guard_use_after_unlock_panic.out > /dev/null \
+    2> tests/shared_guard_use_after_unlock_panic.err; then
+    echo "SharedGuard use after unlock unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: shared guard is not active' \
+    tests/shared_guard_use_after_unlock_panic.err >/dev/null
+
+./c- tests/shared_guard_early_return_safe.c- \
+    > tests/shared_guard_early_return_safe.out.c
+grep 'cleanup(SharedGuard_finalize)' \
+    tests/shared_guard_early_return_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/shared_guard_early_return_safe.out.c \
+    -o tests/shared_guard_early_return_safe.out -pthread
+timeout 5 ./tests/shared_guard_early_return_safe.out
 
 if ./c- tests/bad_global_mutex_assign_safe.c- > /dev/null \
     2> tests/bad_global_mutex_assign_safe.err; then
