@@ -430,6 +430,15 @@ not `Sync` atomic payloads. A global `Mutex` does not implicitly protect a
 separate ordinary global; that state remains rejected until C- has an explicit
 lock-coupled shared container.
 
+`Shared<T>` is the lock-coupled global container for copy-safe structured
+state. Declare it at file scope and use `load()`/`store()`; each operation holds
+its internal mutex for the complete value copy. For a value struct, spell the
+payload explicitly, for example `Shared<struct Pair> state;`. Payloads are
+checked recursively and cannot contain pointers, references, arrays, owned or
+finalizer-bearing fields, or runtime resources. The representation and lock are
+private. `load()` followed later by `store()` is two transactions; use
+`Atomic<T>` for supported read-modify-write operations.
+
 The representation fields of `Atomic`, `Thread`, `Mutex`, `Cond`, and
 `Critical` are private in safe code; use their checked methods. A shared global
 `Atomic<T>` cannot be replaced by direct struct assignment. Global atomics are

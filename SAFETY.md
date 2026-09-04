@@ -61,6 +61,12 @@ method.
 `Mutex` and `Cond` are synchronization resources, but their mere presence does
 not mark adjacent ordinary global storage as protected.
 
+Global `Shared<T>` couples a recursively copy-safe payload to a private mutex.
+Its whole-value `load()` and `store()` operations hold that mutex, and safe code
+cannot access or replace its representation. Pointer, reference, array, owned,
+finalizer-bearing, and runtime-resource payloads are rejected. `Shared<T>` is
+currently global-only; separate method calls are separate transactions.
+
 Global `Mutex` and `Cond` resources have static lifetime and thread-safe lazy
 initialization. Safe code cannot assign or destroy them, preventing replacement
 and use-after-free races with workers. Local synchronization resources retain

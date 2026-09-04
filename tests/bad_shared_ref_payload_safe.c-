@@ -1,0 +1,6 @@
+Shared<Ref<int>> shared_reference;
+
+int main(void)
+{
+    return 0;
+}

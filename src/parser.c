@@ -4933,6 +4933,7 @@ static int is_safe_reference_type(struct Type type)
         strcmp(type.tag, "RingBuffer") == 0 || strncmp(type.tag, "RingBuffer_", 11) == 0 ||
         strcmp(type.tag, "Register") == 0 || strncmp(type.tag, "Register_", 9) == 0 ||
         strcmp(type.tag, "Atomic") == 0 || strncmp(type.tag, "Atomic_", 7) == 0 ||
+        strcmp(type.tag, "Shared") == 0 || strncmp(type.tag, "Shared_", 7) == 0 ||
         strcmp(type.tag, "Volatile") == 0 || strncmp(type.tag, "Volatile_", 9) == 0 ||
         strcmp(type.tag, "StaticCell") == 0 || strncmp(type.tag, "StaticCell_", 11) == 0 ||
         strcmp(type.tag, "Bitmap") == 0 ||
@@ -4951,7 +4952,9 @@ static int type_is_runtime_resource_value(struct Type type)
         (strcmp(type.tag, "Thread") == 0 ||
          strcmp(type.tag, "Mutex") == 0 ||
          strcmp(type.tag, "Cond") == 0 ||
-         strcmp(type.tag, "Critical") == 0);
+         strcmp(type.tag, "Critical") == 0 ||
+         strcmp(type.tag, "Shared") == 0 ||
+         strncmp(type.tag, "Shared_", 7) == 0);
 }
 
 static int is_heap_collection_type(struct Type type)
@@ -11010,6 +11013,112 @@ static int type_is_thread_atomic(struct Type type)
         payload.kind == TY_ENUM || payload.kind == TY_BITFLAGS;
 }
 
+static int type_is_shared_value(struct Type type)
+{
+    struct GenericInstance *instance = NULL;
+    struct GenericTemplate *template;
+
+    if (type.kind != TY_STRUCT || type.ptr != 0) {
+        return 0;
+    }
+    if (strcmp(type.applied_name, "Shared") == 0) {
+        return 1;
+    }
+    template = generic_struct_find_by_concrete(type.tag, &instance);
+    return template != NULL && instance != NULL &&
+        strcmp(template->name, "Shared") == 0;
+}
+
+static int shared_payload_type(struct Type shared, struct Type *payload)
+{
+    struct GenericInstance *instance = NULL;
+    struct GenericTemplate *template;
+    const char *argument = NULL;
+    char type_name[NAME_MAX_LEN];
+
+    if (!type_is_shared_value(shared)) {
+        return 0;
+    }
+    if (strcmp(shared.applied_name, "Shared") == 0 &&
+        shared.applied_args[0] != '\0') {
+        argument = shared.applied_args;
+    } else {
+        template = generic_struct_find_by_concrete(shared.tag, &instance);
+        if (template != NULL && instance != NULL) {
+            argument = instance->arg;
+        }
+    }
+    return argument != NULL &&
+        safety_parse_type_range(argument, argument + strlen(argument),
+                                payload, type_name);
+}
+
+struct SharedPayloadContext {
+    char visiting[MAX_FINALIZERS][NAME_MAX_LEN];
+    int count;
+};
+
+static int shared_payload_is_copy_safe_recursive(
+    struct Type type, struct SharedPayloadContext *context)
+{
+    struct StructFinalizer *fields;
+    int i;
+
+    if (!type_is_known(type) || type.ptr != 0 || type.raw_ptr || type.owned ||
+        type.is_array || type.kind == TY_VOID || type.kind == TY_FUNCTION ||
+        type.kind == TY_UNION || type.kind == TY_GENERIC ||
+        type.kind == TY_TYPE_CONSTRUCTOR ||
+        type_is_stored_safe_reference(type) ||
+        type_is_heap_container_with_safe_reference(type) ||
+        type_is_runtime_resource_value(type) || type_has_finalizer(type)) {
+        return 0;
+    }
+    if (type.kind != TY_STRUCT) {
+        return type.kind == TY_CHAR || type.kind == TY_SHORT ||
+            type.kind == TY_INT || type.kind == TY_LONG ||
+            type.kind == TY_FLOAT || type.kind == TY_DOUBLE ||
+            type.kind == TY_ENUM || type.kind == TY_BITFLAGS;
+    }
+    for (i = 0; i < context->count; i++) {
+        if (strcmp(context->visiting[i], type.tag) == 0) {
+            return 0;
+        }
+    }
+    if (context->count >= MAX_FINALIZERS) {
+        die("Shared payload type graph is too deep");
+    }
+    strncpy(context->visiting[context->count], type.tag, NAME_MAX_LEN - 1);
+    context->visiting[context->count][NAME_MAX_LEN - 1] = '\0';
+    context->count++;
+    fields = struct_clone_find(type.tag);
+    if (fields == NULL) {
+        context->count--;
+        return 0;
+    }
+    for (i = 0; i < fields->count; i++) {
+        if (fields->fields[i].is_array ||
+            !shared_payload_is_copy_safe_recursive(fields->fields[i].type,
+                                                   context)) {
+            context->count--;
+            return 0;
+        }
+    }
+    context->count--;
+    return 1;
+}
+
+static int type_is_thread_shared(struct Type type)
+{
+    struct Type payload = type_unknown();
+    struct SharedPayloadContext context;
+
+    if (!shared_payload_type(type, &payload)) {
+        return 0;
+    }
+    memset(&context, 0, sizeof(context));
+    return shared_payload_is_copy_safe_recursive(payload, &context);
+}
+
 static int type_is_thread_sync_global(struct Type type)
 {
     if (type.kind != TY_STRUCT || type.ptr != 0) {
@@ -11018,7 +11127,7 @@ static int type_is_thread_sync_global(struct Type type)
     if (strcmp(type.tag, "Mutex") == 0 || strcmp(type.tag, "Cond") == 0) {
         return 1;
     }
-    return type_is_thread_atomic(type);
+    return type_is_thread_atomic(type) || type_is_thread_shared(type);
 }
 
 static int thread_identifier_is_constant(struct Node *node, const char *name)
@@ -11078,6 +11187,7 @@ static int thread_call_is_trusted_runtime(const char *name)
         strncmp(name, "Thread_", 7) == 0 ||
         strncmp(name, "Mutex_", 6) == 0 ||
         strncmp(name, "Cond_", 5) == 0 ||
+        strncmp(name, "Shared_", 7) == 0 ||
         strcmp(name, "memset") == 0 || strcmp(name, "memcpy") == 0;
 }
 
@@ -11095,6 +11205,12 @@ static void thread_analyze_expression(struct ThreadSafetyContext *context,
             if (type_is_atomic_value(expr->type)) {
                 fprintf(stderr,
                         "c-: thread safety error: global Atomic value '%s' has a non-Sync payload; safe Atomic<T> requires a non-pointer integer, enum, or bitflags payload\n",
+                        expr->name);
+                exit(1);
+            }
+            if (type_is_shared_value(expr->type)) {
+                fprintf(stderr,
+                        "c-: thread safety error: global Shared value '%s' has a non-copy-safe payload; remove pointers, references, arrays, and owned or finalizer-bearing fields\n",
                         expr->name);
                 exit(1);
             }
@@ -15726,6 +15842,8 @@ static int thread_send_tag_is_intrinsically_local(const char *tag)
         strncmp(tag, "Volatile_", 9) == 0 ||
         strcmp(tag, "StaticCell") == 0 ||
         strncmp(tag, "StaticCell_", 11) == 0 ||
+        strcmp(tag, "Shared") == 0 ||
+        strncmp(tag, "Shared_", 7) == 0 ||
         strcmp(tag, "Critical") == 0 || strcmp(tag, "Thread") == 0 ||
         strcmp(tag, "Mutex") == 0 || strcmp(tag, "Cond") == 0;
 }
@@ -17655,7 +17773,7 @@ static int is_safe_stdlib_function_name(const char *name)
     static const char *prefixes[] = {
         "Vec_", "List_", "Map_", "OwnedVec_", "OwnedList_", "OwnedMap_",
         "Optional_", "Ref_", "Span_", "FixedVec_", "RingBuffer_",
-        "Bitmap_", "Register_", "Volatile_", "StaticCell_", "Atomic_",
+        "Bitmap_", "Register_", "Volatile_", "StaticCell_", "Atomic_", "Shared_",
         "Critical_", "Iterator_", NULL
     };
     int i;
@@ -18194,6 +18312,7 @@ static int function_signature_is_internal(const char *head)
         "RingBuffer_",
         "Register_",
         "Atomic_",
+        "Shared_",
         "Volatile_",
         "StaticCell_",
         "Bitmap_",
@@ -18231,6 +18350,8 @@ static int type_is_nonowning_value_view(struct Type type)
          strncmp(type.tag, "Register_", 9) == 0 ||
          strcmp(type.tag, "Atomic") == 0 ||
          strncmp(type.tag, "Atomic_", 7) == 0 ||
+         strcmp(type.tag, "Shared") == 0 ||
+         strncmp(type.tag, "Shared_", 7) == 0 ||
          strcmp(type.tag, "Volatile") == 0 ||
          strncmp(type.tag, "Volatile_", 9) == 0 ||
          strcmp(type.tag, "StaticCell") == 0 ||
@@ -18389,6 +18510,7 @@ static int function_needs_stack_guard(const char *name)
         "RingBuffer_",
         "Register_",
         "Atomic_",
+        "Shared_",
         "Volatile_",
         "StaticCell_",
         "Bitmap_",
@@ -19061,6 +19183,13 @@ static struct Text *process_external_decl(struct Text *decl, struct Text *semi)
                     yylineno);
             exit(1);
         }
+        if (g_unsafe_depth == 0 && type_is_shared_value(info.type) &&
+            !type_is_thread_shared(info.type)) {
+            fprintf(stderr, "c-: type error: Shared value '%s' requires a recursively copy-safe payload without pointers, references, arrays, ownership, finalizers, or runtime resources at %s:%d\n",
+                    info.name, g_input_path == NULL ? "<unknown>" : g_input_path,
+                    yylineno);
+            exit(1);
+        }
         if (g_unsafe_depth == 0 && type_is_stored_safe_reference(info.type)) {
             fprintf(stderr, "c-: type error: Ref/Span values cannot be stored in safe global '%s' at %s:%d; store owned/static data and create the reference locally\n",
                     info.name, g_input_path == NULL ? "<unknown>" : g_input_path, yylineno);
@@ -19204,7 +19333,8 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         if (local == NULL && global != NULL && global->type.ptr == 0 &&
             global->type.kind == TY_STRUCT &&
             (strcmp(global->type.tag, "Mutex") == 0 ||
-             strcmp(global->type.tag, "Cond") == 0)) {
+             strcmp(global->type.tag, "Cond") == 0 ||
+             type_is_shared_value(global->type))) {
             fprintf(stderr,
                     "c-: thread safety error: shared global %s '%s' has static lifetime and cannot be assigned in safe mode; declare it without an initializer and use it directly\n",
                     global->type.tag, lhs_name);
@@ -19268,6 +19398,11 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
             fprintf(stderr, "c-: type error: Atomic value '%s' requires a non-pointer integer, enum, or bitflags payload in safe mode at %s:%d\n",
                     decl.name, g_input_path == NULL ? "<unknown>" : g_input_path,
                     yylineno);
+            exit(1);
+        }
+        if (g_unsafe_depth == 0 && type_is_shared_value(decl.type)) {
+            fprintf(stderr, "c-: thread safety error: Shared value '%s' must have global static lifetime in safe mode; declare it at file scope\n",
+                    decl.name);
             exit(1);
         }
         if (g_unsafe_depth == 0 && decl.is_array && decl.type.array_len <= 0) {

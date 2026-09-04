@@ -1063,6 +1063,20 @@ and synchronization resources. A global atomic also cannot be replaced by
 whole-struct assignment; use `store()` or another atomic method so concurrent
 readers never race with a plain C write.
 
+For structured shared snapshots, safe hosted code provides global-only
+`Shared<T>`. Its `load()` and `store()` methods copy the entire value while an
+internal mutex is held, so the lock cannot accidentally be separated from the
+data. Payloads must be recursively copy-safe: no pointers, references, arrays,
+ownership, finalizers, or runtime resources. For example:
+
+```c
+struct Status { int code; int generation; };
+Shared<struct Status> status;
+```
+
+Each method call is one lock transaction; a separate load-modify-store sequence
+is not an atomic transaction.
+
 `Critical.enter()` returns a `Critical` value token and `leave()` is idempotent.
 The default runtime hooks are no-ops for hosted tests; a kernel or board layer
 can replace the interrupt save/restore implementation when integrating the

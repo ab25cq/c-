@@ -1674,6 +1674,71 @@ static __attribute__((unused)) pthread_cond_t* __cminus_cond_native(
     return &self->native;
 }
 
+static __attribute__((unused)) pthread_mutex_t* __cminus_mutex_native_parts(
+    pthread_mutex_t* native, int* state_slot)
+{
+    pthread_mutexattr_t attributes;
+    int state = __atomic_load_n(state_slot, __ATOMIC_ACQUIRE);
+    int expected;
+    int rc;
+    int attributes_initialized = 0;
+
+    if (state == 3) {
+        cminus_panic("shared mutex was destroyed", __FILE__, __LINE__);
+    }
+    if (state == 2) {
+        return native;
+    }
+    expected = 0;
+    if (__atomic_compare_exchange_n(state_slot, &expected, 1, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        rc = pthread_mutexattr_init(&attributes);
+        if (rc == 0) {
+            attributes_initialized = 1;
+            rc = pthread_mutexattr_settype(&attributes,
+                                           PTHREAD_MUTEX_ERRORCHECK);
+        }
+        if (rc == 0) {
+            rc = pthread_mutex_init(native, &attributes);
+        }
+        if (attributes_initialized) {
+            pthread_mutexattr_destroy(&attributes);
+        }
+        if (rc != 0) {
+            __atomic_store_n(state_slot, 3, __ATOMIC_RELEASE);
+            cminus_panic("shared mutex initialization failed", __FILE__, __LINE__);
+        }
+        __atomic_store_n(state_slot, 2, __ATOMIC_RELEASE);
+    } else {
+        do {
+            state = __atomic_load_n(state_slot, __ATOMIC_ACQUIRE);
+            if (state == 1) {
+                sched_yield();
+            }
+        } while (state == 1);
+        if (state != 2) {
+            cminus_panic("shared mutex initialization failed", __FILE__, __LINE__);
+        }
+    }
+    return native;
+}
+
+static __attribute__((unused)) void __cminus_mutex_lock_parts(
+    pthread_mutex_t* native, int* state_slot)
+{
+    if (pthread_mutex_lock(__cminus_mutex_native_parts(native, state_slot)) != 0) {
+        cminus_panic("shared mutex is already locked by this thread", __FILE__, __LINE__);
+    }
+}
+
+static __attribute__((unused)) void __cminus_mutex_unlock_parts(
+    pthread_mutex_t* native, int* state_slot)
+{
+    if (pthread_mutex_unlock(__cminus_mutex_native_parts(native, state_slot)) != 0) {
+        cminus_panic("shared mutex is not locked by this thread", __FILE__, __LINE__);
+    }
+}
+
 static __attribute__((unused)) struct Mutex Mutex_init(void)
 {
     struct Mutex out;
@@ -1806,6 +1871,81 @@ static __attribute__((unused)) void Cond_destroy(struct Cond* self)
 static __attribute__((unused)) void Cond_finalize(struct Cond* self)
 {
     Cond_destroy(self);
+}
+
+struct __CMinusSharedState {
+    pthread_mutex_t native;
+    int state;
+    void* value;
+};
+
+static __attribute__((unused)) struct __CMinusSharedState*
+__cminus_shared_state_get(void** slot, size_t value_size)
+{
+    struct __CMinusSharedState* state =
+        __atomic_load_n((struct __CMinusSharedState**)slot, __ATOMIC_ACQUIRE);
+    struct __CMinusSharedState* candidate;
+    struct __CMinusSharedState* expected;
+
+    if (state != NULL) {
+        return state;
+    }
+    if (value_size == 0 || value_size > (size_t)CMINUS_MAX_ALLOCATION) {
+        cminus_panic("invalid shared value size", __FILE__, __LINE__);
+    }
+    candidate = calloc(1, sizeof(*candidate));
+    if (candidate == NULL) {
+        cminus_panic("shared state allocation failed", __FILE__, __LINE__);
+    }
+    candidate->value = calloc(1, value_size);
+    if (candidate->value == NULL) {
+        free(candidate);
+        cminus_panic("shared value allocation failed", __FILE__, __LINE__);
+    }
+    expected = NULL;
+    if (__atomic_compare_exchange_n((struct __CMinusSharedState**)slot,
+                                    &expected, candidate, 0,
+                                    __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
+        return candidate;
+    }
+    free(candidate->value);
+    free(candidate);
+    return expected;
+}
+
+generic<T>
+struct Shared {
+    void* state;
+};
+
+generic<T>
+T Shared_load(struct Shared<T>* self)
+{
+    struct __CMinusSharedState* state;
+    T out;
+
+    if (self == NULL) {
+        cminus_panic("shared value is null", __FILE__, __LINE__);
+    }
+    state = __cminus_shared_state_get(&self->state, sizeof(T));
+    __cminus_mutex_lock_parts(&state->native, &state->state);
+    out = *(T*)state->value;
+    __cminus_mutex_unlock_parts(&state->native, &state->state);
+    return out;
+}
+
+generic<T>
+void Shared_store(struct Shared<T>* self, T value)
+{
+    struct __CMinusSharedState* state;
+
+    if (self == NULL) {
+        cminus_panic("shared value is null", __FILE__, __LINE__);
+    }
+    state = __cminus_shared_state_get(&self->state, sizeof(T));
+    __cminus_mutex_lock_parts(&state->native, &state->state);
+    *(T*)state->value = value;
+    __cminus_mutex_unlock_parts(&state->native, &state->state);
 }
 #endif
 

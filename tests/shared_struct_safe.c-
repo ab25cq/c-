@@ -1,0 +1,48 @@
+struct PairState {
+    int value;
+    int check;
+};
+
+Shared<struct PairState> shared_state;
+Atomic<int> shared_failed;
+
+int shared_worker(void)
+{
+    int i;
+
+    for (i = 1; i <= 2000; i++) {
+        PairState next;
+        PairState seen;
+
+        next.value = i;
+        next.check = i ^ 0x55aa;
+        shared_state.store(next);
+        seen = shared_state.load();
+        if (seen.check != (seen.value ^ 0x55aa)) {
+            shared_failed.store(1);
+        }
+    }
+    return 0;
+}
+
+int main(void)
+{
+    PairState initial;
+    PairState result;
+    Thread first;
+    Thread second;
+
+    initial.value = 0;
+    initial.check = 0x55aa;
+    shared_state.store(initial);
+    shared_failed.store(0);
+    first = Thread.spawn(shared_worker);
+    second = Thread.spawn(shared_worker);
+    first.join();
+    second.join();
+    result = shared_state.load();
+    if (shared_failed.load() != 0) {
+        return 1;
+    }
+    return result.check == (result.value ^ 0x55aa) ? 0 : 2;
+}
