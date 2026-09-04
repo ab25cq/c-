@@ -1739,6 +1739,37 @@ static __attribute__((unused)) void __cminus_mutex_unlock_parts(
     }
 }
 
+static __attribute__((unused)) pthread_cond_t* __cminus_cond_native_parts(
+    pthread_cond_t* native, int* state_slot)
+{
+    int state = __atomic_load_n(state_slot, __ATOMIC_ACQUIRE);
+    int expected;
+
+    if (state == 2) {
+        return native;
+    }
+    expected = 0;
+    if (__atomic_compare_exchange_n(state_slot, &expected, 1, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (pthread_cond_init(native, NULL) != 0) {
+            __atomic_store_n(state_slot, 3, __ATOMIC_RELEASE);
+            cminus_panic("shared condition initialization failed", __FILE__, __LINE__);
+        }
+        __atomic_store_n(state_slot, 2, __ATOMIC_RELEASE);
+    } else {
+        do {
+            state = __atomic_load_n(state_slot, __ATOMIC_ACQUIRE);
+            if (state == 1) {
+                sched_yield();
+            }
+        } while (state == 1);
+        if (state != 2) {
+            cminus_panic("shared condition initialization failed", __FILE__, __LINE__);
+        }
+    }
+    return native;
+}
+
 static __attribute__((unused)) struct Mutex Mutex_init(void)
 {
     struct Mutex out;
@@ -1876,6 +1907,8 @@ static __attribute__((unused)) void Cond_finalize(struct Cond* self)
 struct __CMinusSharedState {
     pthread_mutex_t native;
     int state;
+    pthread_cond_t condition;
+    int condition_state;
     void* value;
 };
 
@@ -1978,6 +2011,53 @@ void SharedGuard_store(struct SharedGuard<T>* self, T value)
     }
     state = (struct __CMinusSharedState*)self->state;
     *(T*)state->value = value;
+}
+
+generic<T>
+void SharedGuard_wait(struct SharedGuard<T>* self)
+{
+    struct __CMinusSharedState* state;
+    pthread_cond_t* condition;
+
+    if (self == NULL || self->state == NULL) {
+        cminus_panic("shared guard is not active", __FILE__, __LINE__);
+    }
+    state = (struct __CMinusSharedState*)self->state;
+    condition = __cminus_cond_native_parts(&state->condition,
+                                            &state->condition_state);
+    if (pthread_cond_wait(condition, &state->native) != 0) {
+        cminus_panic("shared condition wait failed", __FILE__, __LINE__);
+    }
+}
+
+generic<T>
+void SharedGuard_notify_one(struct SharedGuard<T>* self)
+{
+    struct __CMinusSharedState* state;
+
+    if (self == NULL || self->state == NULL) {
+        cminus_panic("shared guard is not active", __FILE__, __LINE__);
+    }
+    state = (struct __CMinusSharedState*)self->state;
+    if (pthread_cond_signal(__cminus_cond_native_parts(
+            &state->condition, &state->condition_state)) != 0) {
+        cminus_panic("shared condition signal failed", __FILE__, __LINE__);
+    }
+}
+
+generic<T>
+void SharedGuard_notify_all(struct SharedGuard<T>* self)
+{
+    struct __CMinusSharedState* state;
+
+    if (self == NULL || self->state == NULL) {
+        cminus_panic("shared guard is not active", __FILE__, __LINE__);
+    }
+    state = (struct __CMinusSharedState*)self->state;
+    if (pthread_cond_broadcast(__cminus_cond_native_parts(
+            &state->condition, &state->condition_state)) != 0) {
+        cminus_panic("shared condition broadcast failed", __FILE__, __LINE__);
+    }
 }
 
 generic<T>

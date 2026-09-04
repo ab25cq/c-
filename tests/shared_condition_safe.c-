@@ -1,0 +1,72 @@
+struct ReadyState {
+    int ready;
+    int value;
+};
+
+Shared<struct ReadyState> ready_state;
+Atomic<int> waiting_workers;
+
+int wait_for_ready(void)
+{
+    SharedGuard<struct ReadyState> guard = ready_state.lock();
+    ReadyState current = guard.load();
+
+    waiting_workers.fetch_add(1);
+    while (!current.ready) {
+        guard.wait();
+        current = guard.load();
+    }
+    return current.value;
+}
+
+int main(void)
+{
+    ReadyState initial;
+    ReadyState ready;
+    Thread first;
+    Thread second;
+    Thread third;
+    int left;
+    int right;
+    int single;
+
+    initial.ready = 0;
+    initial.value = 0;
+    ready_state.store(initial);
+    waiting_workers.store(0);
+    first = Thread.spawn(wait_for_ready);
+    second = Thread.spawn(wait_for_ready);
+    while (waiting_workers.load() != 2) {
+        Thread.yield();
+    }
+    {
+        SharedGuard<struct ReadyState> guard = ready_state.lock();
+
+        ready.ready = 1;
+        ready.value = 73;
+        guard.store(ready);
+        guard.notify_all();
+    }
+    left = first.join();
+    right = second.join();
+    if (left != 73 || right != 73) {
+        return 1;
+    }
+
+    ready_state.store(initial);
+    waiting_workers.store(0);
+    third = Thread.spawn(wait_for_ready);
+    while (waiting_workers.load() != 1) {
+        Thread.yield();
+    }
+    {
+        SharedGuard<struct ReadyState> guard = ready_state.lock();
+
+        ready.ready = 1;
+        ready.value = 91;
+        guard.store(ready);
+        guard.notify_one();
+    }
+    single = third.join();
+    return single == 91 ? 0 : 2;
+}

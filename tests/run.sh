@@ -1241,6 +1241,17 @@ cc -std=gnu99 -Wall -Wextra tests/shared_guard_early_return_safe.out.c \
     -o tests/shared_guard_early_return_safe.out -pthread
 timeout 5 ./tests/shared_guard_early_return_safe.out
 
+./c- tests/shared_condition_safe.c- > tests/shared_condition_safe.out.c
+grep 'SharedGuard_wait_ReadyState(&guard)' \
+    tests/shared_condition_safe.out.c >/dev/null
+grep 'SharedGuard_notify_all_ReadyState(&guard)' \
+    tests/shared_condition_safe.out.c >/dev/null
+grep 'SharedGuard_notify_one_ReadyState(&guard)' \
+    tests/shared_condition_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/shared_condition_safe.out.c \
+    -o tests/shared_condition_safe.out -pthread
+timeout 10 ./tests/shared_condition_safe.out
+
 if ./c- tests/bad_global_mutex_assign_safe.c- > /dev/null \
     2> tests/bad_global_mutex_assign_safe.err; then
     echo "shared global Mutex assignment unexpectedly succeeded" >&2

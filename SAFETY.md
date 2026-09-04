@@ -69,6 +69,10 @@ currently global-only; separate method calls are separate transactions.
 `Shared.lock()` returns a non-copyable `SharedGuard<T>` for compound updates.
 The guard is scope-finalized, so every normal block exit and early return
 unlocks it. Explicit unlock is idempotent and subsequent access panics.
+Condition waiting and notification are also guard operations. The condition,
+mutex, and predicate payload therefore belong to one `Shared<T>` state, and
+`wait()` returns only after reacquiring that mutex. Programs must recheck their
+predicate after every wakeup.
 
 Global `Mutex` and `Cond` resources have static lifetime and thread-safe lazy
 initialization. Safe code cannot assign or destroy them, preventing replacement

@@ -1080,6 +1080,12 @@ a compound update must be one transaction. The guard supports `load()`,
 `store()`, and optional `unlock()`, cannot be copied or moved, and automatically
 unlocks at scope exit and on early return.
 
+The same guard provides `wait()`, `notify_one()`, and `notify_all()`. Waiting
+uses the `Shared` object's internal condition variable and atomically releases
+and reacquires its internal mutex. This prevents accidentally pairing a
+condition with the wrong lock or predicate storage. Predicates must still be
+checked in a loop to handle spurious wakeups.
+
 `Critical.enter()` returns a `Critical` value token and `leave()` is idempotent.
 The default runtime hooks are no-ops for hosted tests; a kernel or board layer
 can replace the interrupt save/restore implementation when integrating the

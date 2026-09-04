@@ -441,7 +441,11 @@ private. `load()` followed later by `store()` is two transactions; use
 `SharedGuard<struct Pair> guard = state.lock();` keeps the mutex locked across
 the guard's `load()` and `store()` calls. The guard is non-copyable and unlocks
 automatically at scope exit, including early returns. Explicit `unlock()` is
-idempotent; later guard access panics.
+idempotent; later guard access panics. `wait()` atomically releases the same
+internal mutex and reacquires it before returning. `notify_one()` and
+`notify_all()` are guard methods, keeping the condition variable, predicate
+data, and mutex inseparable. Always recheck the predicate in a loop because
+condition waits may wake spuriously.
 
 The representation fields of `Atomic`, `Thread`, `Mutex`, `Cond`, and
 `Critical` are private in safe code; use their checked methods. A shared global
