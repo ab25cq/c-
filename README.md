@@ -1086,6 +1086,11 @@ and reacquires its internal mutex. This prevents accidentally pairing a
 condition with the wrong lock or predicate storage. Predicates must still be
 checked in a loop to handle spurious wakeups.
 
+To prevent lock-order cycles, safe runtime synchronization allows one held lock
+per thread. A nested Mutex/Shared lock or `Thread.join()` while locked panics
+instead of potentially deadlocking. Condition waits verify that their own lock
+is the sole lock held by the calling thread.
+
 `Critical.enter()` returns a `Critical` value token and `leave()` is idempotent.
 The default runtime hooks are no-ops for hosted tests; a kernel or board layer
 can replace the interrupt save/restore implementation when integrating the

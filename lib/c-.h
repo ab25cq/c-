@@ -128,6 +128,8 @@ uniq CMINUS_THREAD_LOCAL struct __CMinusStackFrame* __cminus_stack_head = NULL;
 uniq CMINUS_THREAD_LOCAL size_t __cminus_stack_next_id = 1;
 uniq CMINUS_THREAD_LOCAL size_t __cminus_stack_depth = 0;
 uniq CMINUS_THREAD_LOCAL size_t __cminus_stack_root_anchor = 0;
+uniq CMINUS_THREAD_LOCAL int __cminus_sync_lock_depth = 0;
+uniq CMINUS_THREAD_LOCAL void* __cminus_sync_lock_identity = NULL;
 #ifdef CMINUS_BARE_H
 uniq struct __CMinusStackFrame __cminus_stack_frames[256];
 uniq int __cminus_stack_frame_used[256];
@@ -1514,6 +1516,9 @@ static __attribute__((unused)) int Thread_join(struct Thread* self)
     int result;
     int expected = 0;
 
+    if (__cminus_sync_lock_depth != 0) {
+        cminus_panic("cannot join a thread while holding a synchronization lock", __FILE__, __LINE__);
+    }
     if (self == NULL || !self->started) {
         cminus_panic("thread is not started", __FILE__, __LINE__);
     }
@@ -1726,17 +1731,30 @@ static __attribute__((unused)) pthread_mutex_t* __cminus_mutex_native_parts(
 static __attribute__((unused)) void __cminus_mutex_lock_parts(
     pthread_mutex_t* native, int* state_slot)
 {
+    if (__cminus_sync_lock_depth != 0) {
+        cminus_panic(__cminus_sync_lock_identity == (void*)native
+            ? "shared mutex is already locked by this thread"
+            : "nested synchronization locks are not allowed in safe mode",
+            __FILE__, __LINE__);
+    }
     if (pthread_mutex_lock(__cminus_mutex_native_parts(native, state_slot)) != 0) {
         cminus_panic("shared mutex is already locked by this thread", __FILE__, __LINE__);
     }
+    __cminus_sync_lock_depth = 1;
+    __cminus_sync_lock_identity = (void*)native;
 }
 
 static __attribute__((unused)) void __cminus_mutex_unlock_parts(
     pthread_mutex_t* native, int* state_slot)
 {
+    if (__cminus_sync_lock_depth != 1) {
+        cminus_panic("synchronization lock depth is invalid", __FILE__, __LINE__);
+    }
     if (pthread_mutex_unlock(__cminus_mutex_native_parts(native, state_slot)) != 0) {
         cminus_panic("shared mutex is not locked by this thread", __FILE__, __LINE__);
     }
+    __cminus_sync_lock_depth = 0;
+    __cminus_sync_lock_identity = NULL;
 }
 
 static __attribute__((unused)) pthread_cond_t* __cminus_cond_native_parts(
@@ -1781,12 +1799,21 @@ static __attribute__((unused)) struct Mutex Mutex_init(void)
 static __attribute__((unused)) void Mutex_lock(struct Mutex* self)
 {
     pthread_mutex_t* native = __cminus_mutex_native(self);
-    int rc = pthread_mutex_lock(native);
+    int rc;
 
+    if (__cminus_sync_lock_depth != 0) {
+        cminus_panic(__cminus_sync_lock_identity == (void*)native
+            ? "mutex is already locked by this thread"
+            : "nested synchronization locks are not allowed in safe mode",
+            __FILE__, __LINE__);
+    }
+    rc = pthread_mutex_lock(native);
     if (rc != 0) {
         cminus_panic("mutex is already locked by this thread",
                      __FILE__, __LINE__);
     }
+    __cminus_sync_lock_depth = 1;
+    __cminus_sync_lock_identity = (void*)native;
 }
 
 static __attribute__((unused)) void Mutex_unlock(struct Mutex* self)
@@ -1798,6 +1825,11 @@ static __attribute__((unused)) void Mutex_unlock(struct Mutex* self)
         cminus_panic("mutex is not locked by this thread",
                      __FILE__, __LINE__);
     }
+    if (__cminus_sync_lock_depth != 1) {
+        cminus_panic("synchronization lock depth is invalid", __FILE__, __LINE__);
+    }
+    __cminus_sync_lock_depth = 0;
+    __cminus_sync_lock_identity = NULL;
 }
 
 static __attribute__((unused)) void Mutex_destroy(struct Mutex* self)
@@ -1845,7 +1877,13 @@ static __attribute__((unused)) void Cond_wait(struct Cond* self, struct Mutex* m
 {
     pthread_cond_t* native = __cminus_cond_native(self);
     pthread_mutex_t* mutex_native = __cminus_mutex_native(mutex);
-    int rc = pthread_cond_wait(native, mutex_native);
+    int rc;
+
+    if (__cminus_sync_lock_depth != 1 ||
+        __cminus_sync_lock_identity != (void*)mutex_native) {
+        cminus_panic("condition wait requires the mutex to be locked by this thread", __FILE__, __LINE__);
+    }
+    rc = pthread_cond_wait(native, mutex_native);
 
     if (rc != 0) {
         cminus_panic("condition wait requires the mutex to be locked by this thread",
@@ -2023,6 +2061,10 @@ void SharedGuard_wait(struct SharedGuard<T>* self)
         cminus_panic("shared guard is not active", __FILE__, __LINE__);
     }
     state = (struct __CMinusSharedState*)self->state;
+    if (__cminus_sync_lock_depth != 1 ||
+        __cminus_sync_lock_identity != (void*)&state->native) {
+        cminus_panic("shared condition wait requires exactly one held synchronization lock", __FILE__, __LINE__);
+    }
     condition = __cminus_cond_native_parts(&state->condition,
                                             &state->condition_state);
     if (pthread_cond_wait(condition, &state->native) != 0) {

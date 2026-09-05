@@ -12,5 +12,8 @@ int main(void)
 
     gate.lock();
     thread = Thread.spawn(unlock_from_worker);
-    return thread.join();
+    while (1) {
+        Thread.yield();
+    }
+    return 0;
 }

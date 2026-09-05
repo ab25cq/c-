@@ -74,6 +74,12 @@ mutex, and predicate payload therefore belong to one `Shared<T>` state, and
 `wait()` returns only after reacquiring that mutex. Programs must recheck their
 predicate after every wakeup.
 
+The safe runtime enforces a single-held-lock rule per thread. Nested lock
+acquisition, joining a thread while locked, and waiting on a condition while a
+different/additional lock is held panic before the blocking operation. This
+prevents multi-lock ordering cycles in the supported safe synchronization
+surface.
+
 Global `Mutex` and `Cond` resources have static lifetime and thread-safe lazy
 initialization. Safe code cannot assign or destroy them, preventing replacement
 and use-after-free races with workers. Local synchronization resources retain

@@ -1,0 +1,14 @@
+Mutex join_gate;
+
+int join_worker(void)
+{
+    return 17;
+}
+
+int main(void)
+{
+    Thread worker = Thread.spawn(join_worker);
+
+    join_gate.lock();
+    return worker.join();
+}

@@ -1,0 +1,9 @@
+Mutex first_lock;
+Mutex second_lock;
+
+int main(void)
+{
+    first_lock.lock();
+    second_lock.lock();
+    return 0;
+}

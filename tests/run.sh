@@ -1325,6 +1325,28 @@ fi
 grep 'panic: condition wait requires the mutex to be locked by this thread' \
     tests/cond_unlocked_wait_panic.err >/dev/null
 
+./c- tests/nested_lock_panic.c- > tests/nested_lock_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/nested_lock_panic.out.c \
+    -o tests/nested_lock_panic.out -pthread
+if timeout 5 ./tests/nested_lock_panic.out > /dev/null \
+    2> tests/nested_lock_panic.err; then
+    echo "nested synchronization locks unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: nested synchronization locks are not allowed in safe mode' \
+    tests/nested_lock_panic.err >/dev/null
+
+./c- tests/join_while_locked_panic.c- > tests/join_while_locked_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/join_while_locked_panic.out.c \
+    -o tests/join_while_locked_panic.out -pthread
+if timeout 5 ./tests/join_while_locked_panic.out > /dev/null \
+    2> tests/join_while_locked_panic.err; then
+    echo "Thread.join while locked unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: cannot join a thread while holding a synchronization lock' \
+    tests/join_while_locked_panic.err >/dev/null
+
 ./c- tests/thread_scope_auto_detach_safe.c- \
     > tests/thread_scope_auto_detach_safe.out.c
 grep 'Thread worker __attribute__((cleanup(Thread_finalize)))' \

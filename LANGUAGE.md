@@ -447,6 +447,14 @@ internal mutex and reacquires it before returning. `notify_one()` and
 data, and mutex inseparable. Always recheck the predicate in a loop because
 condition waits may wake spuriously.
 
+Safe synchronization deliberately permits only one held mutex or
+`SharedGuard` per thread. Acquiring a second lock, or calling `Thread.join()`
+while a lock is held, panics before blocking. `Cond.wait()` and
+`SharedGuard.wait()` likewise require that their own lock is the sole held
+lock. This conservative rule removes lock-order cycles from the safe surface;
+combine related state into one `Shared<T>` when an operation needs consistency
+across multiple fields.
+
 The representation fields of `Atomic`, `Thread`, `Mutex`, `Cond`, and
 `Critical` are private in safe code; use their checked methods. A shared global
 `Atomic<T>` cannot be replaced by direct struct assignment. Global atomics are
