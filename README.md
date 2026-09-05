@@ -1153,6 +1153,8 @@ without a visible safe definition. Shared global state must currently use
 `Atomic<T>`, `Mutex`, or `Cond`. A `Mutex` does not make a separate ordinary
 global safe: without an explicit lock-coupled container, the compiler cannot
 prove that every access holds that mutex.
+Visible user functions cannot bypass this analysis by using runtime-style
+names such as `Mutex_*`, including when the call appears directly in `return`.
 
 One exclusive managed value can be moved into a thread:
 

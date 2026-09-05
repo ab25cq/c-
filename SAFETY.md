@@ -49,7 +49,9 @@ are the supported synchronization primitives. A `Thread.spawn` entry and its
 transitive user-function calls cannot access ordinary globals in safe mode;
 only `Atomic<T>`, `Mutex`, `Cond`, and compile-time constants cross that global
 boundary. Indirect calls and calls without a visible safe definition are also
-rejected from a thread entry.
+rejected from a thread entry. Visible user functions are analyzed regardless
+of whether their names resemble trusted runtime helpers, and rewritten return
+expressions retain their original typed call tree for this transitive check.
 
 The `Sync` check is structural at the atomic boundary: safe `Atomic<T>` permits
 only non-pointer integer, enum, and bitflags payloads. References, raw or owned

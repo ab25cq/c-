@@ -688,7 +688,7 @@ grep '^          argument identifier name=stderr type=FILE\* raw$' \
     tests/generics_foreach.ast >/dev/null
 grep '^            rhs identifier name=__CMINUS_GC_MAGIC type=long$' \
     tests/generics_foreach.ast >/dev/null
-grep '^          expr identifier name=__cminus_return0 type=struct Optional_FILE_ptr$' \
+grep '^          callee identifier name=Optional_FILE_ptr_Some type=fn()->struct Optional_FILE_ptr$' \
     tests/generics_foreach.ast >/dev/null
 if grep -E 'type=unknown reason=(unresolved-member-type|unresolved-call-return|unresolved-statement-result|unknown-operand-type)' \
     tests/generics_foreach.ast >/dev/null; then
@@ -1577,6 +1577,14 @@ if ./c- tests/bad_thread_transitive_global_safe.c- > /dev/null \
 fi
 grep "Thread.spawn entry 'worker' accesses ordinary global 'shared_value'" \
     tests/bad_thread_transitive_global_safe.err >/dev/null
+
+if ./c- tests/bad_thread_runtime_prefix_spoof_safe.c- > /dev/null \
+    2> tests/bad_thread_runtime_prefix_spoof_safe.err; then
+    echo "runtime-prefix thread safety spoof unexpectedly succeeded" >&2
+    exit 1
+fi
+grep "Thread.spawn entry 'worker' accesses ordinary global 'ordinary_global'" \
+    tests/bad_thread_runtime_prefix_spoof_safe.err >/dev/null
 
 if ./c- tests/bad_thread_copy_safe.c- > /dev/null \
     2> tests/bad_thread_copy_safe.err; then
@@ -2714,8 +2722,9 @@ grep '^          argument identifier name=TYPED_SYMBOL_ONE type=enum TypedSymbol
     tests/typed_symbol_resolution_ast.ast >/dev/null
 grep '^          callee identifier name=cminus_checked_int_add type=fn()->int$' \
     tests/typed_symbol_resolution_ast.ast >/dev/null
-grep '^        expr identifier name=__cminus_return[0-9][0-9]* type=int$' \
-    tests/typed_symbol_resolution_ast.ast >/dev/null
+grep -A5 '^    function cminus_typed_symbol_call$' \
+    tests/typed_symbol_resolution_ast.ast \
+    | grep '^      return expression=call$' >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/typed_symbol_resolution_ast.out.c \
     -o tests/typed_symbol_resolution_ast.out
 ./tests/typed_symbol_resolution_ast.out

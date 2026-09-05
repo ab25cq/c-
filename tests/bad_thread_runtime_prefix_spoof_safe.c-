@@ -1,0 +1,18 @@
+int ordinary_global;
+
+int Mutex_spoof(void)
+{
+    ordinary_global++;
+    return ordinary_global;
+}
+
+int worker(void)
+{
+    return Mutex_spoof();
+}
+
+int main(void)
+{
+    Thread thread = Thread.spawn(worker);
+    return thread.join();
+}

@@ -95,6 +95,7 @@ struct PendingSemantics {
     char target[NAME_MAX_LEN];
     char owner[NAME_MAX_LEN];
     char move_source[NAME_MAX_LEN];
+    char *return_expr;
 };
 
 struct OwnedField {
@@ -248,6 +249,7 @@ struct Node {
     char *body_tok;
     char *close_tok;
     char *tok;
+    char *expr_tok;
     int stack_owner;
     int caller_owner;
     int dead;
@@ -255,6 +257,7 @@ struct Node {
     int array_len;
     long enum_value;
     int has_enum_value;
+    int runtime_internal;
 };
 
 struct AggregateAst {
@@ -7900,6 +7903,16 @@ static struct Text *finalize_typed_statement(struct Text *in, enum NodeKind fall
         return in;
     }
     node = ast_typed_output(fallback, in->text);
+    if (fallback == ND_RETURN && node->kind == ND_RETURN &&
+        g_pending_semantics.return_expr != NULL) {
+        safety_expr_free(node->expr);
+        node->expr_tok = xstrdup(g_pending_semantics.return_expr);
+        node->expr = safety_parse_range(
+            node->expr_tok, node->expr_tok + strlen(node->expr_tok));
+        if (node->expr != NULL) {
+            node->ty = type_copy(node->expr->type);
+        }
+    }
     validate_safe_typed_ast(node);
     pending_semantics_clear();
     out = text_new();
@@ -7939,6 +7952,7 @@ static struct Node *ast_function(const char *head, struct Node *body)
     char name[NAME_MAX_LEN];
 
     node->body = body;
+    node->runtime_internal = cminus_include_depth() > 0;
     if (parse_function_signature(normalized->text, name, &ret)) {
         struct Symbol *symbol = symbol_find(name);
 
@@ -9532,6 +9546,7 @@ static void thread_analyze_expression(struct ThreadSafetyContext *context,
         }
         if (expr->kind == SAFETY_EXPR_CALL) {
             struct SafetyExprNode *callee = expr->lhs;
+            struct Node *called;
 
             if (callee == NULL || callee->kind != SAFETY_EXPR_IDENTIFIER) {
                 fprintf(stderr,
@@ -9539,17 +9554,15 @@ static void thread_analyze_expression(struct ThreadSafetyContext *context,
                         context->entry);
                 exit(1);
             }
-            if (!thread_call_is_trusted_runtime(callee->name)) {
-                struct Node *called =
-                    thread_find_function(context->root, callee->name);
-
-                if (called == NULL) {
-                    fprintf(stderr,
-                            "c-: thread safety error: Thread.spawn entry '%s' calls '%s' without a visible safe definition\n",
-                            context->entry, callee->name);
-                    exit(1);
-                }
+            called = thread_find_function(context->root, callee->name);
+            if (called != NULL && !called->runtime_internal) {
                 thread_analyze_function(context, called);
+            } else if (called == NULL &&
+                       !thread_call_is_trusted_runtime(callee->name)) {
+                fprintf(stderr,
+                        "c-: thread safety error: Thread.spawn entry '%s' calls '%s' without a visible safe definition\n",
+                        context->entry, callee->name);
+                exit(1);
             }
         }
         thread_analyze_expression(context, expr->lhs);
@@ -11231,6 +11244,7 @@ static int decl_has_borrow(const char *s)
 
 static void pending_semantics_clear(void)
 {
+    free(g_pending_semantics.return_expr);
     memset(&g_pending_semantics, 0, sizeof(g_pending_semantics));
 }
 
@@ -18338,6 +18352,8 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     check_null_arguments(all->text);
     all = rewrite_division_checks(all);
     all = remove_percent(strip_attributes(all));
+    free(g_pending_semantics.return_expr);
+    g_pending_semantics.return_expr = extract_return_value_expr(all->text);
     {
         int detached_return_owner = detach_plain_return_owner(all->text);
 
@@ -18782,6 +18798,7 @@ static struct Node *clone_concrete_generic_ast(const struct Node *source,
             strncpy(node->type_name, source->type_name, NAME_MAX_LEN - 1);
             node->type_name[NAME_MAX_LEN - 1] = '\0';
         }
+        node->runtime_internal = source->runtime_internal;
         if (g_in_function && node->kind == ND_DECL && node->ty != NULL &&
             node->name[0] != '\0') {
             symbol_add_to(&g_locals, node->name, *node->ty);

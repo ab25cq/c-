@@ -422,7 +422,10 @@ from joining, destroying, or leaving the same runtime resource twice.
 
 Both safe thread forms perform a transitive typed-AST check of the entry
 function. Ordinary globals, indirect calls, and calls without a visible safe
-definition are rejected. Global `Atomic<T>`, `Mutex`, and `Cond` values are the
+definition are rejected. A visible user definition is always checked even when
+its name has a runtime-style prefix such as `Mutex_` or `Thread_`; lowered
+return expressions retain their original typed call tree for this analysis.
+Global `Atomic<T>`, `Mutex`, and `Cond` values are the
 permitted shared synchronization surface. In safe mode, `Atomic<T>` accepts
 only non-pointer integer, enum, and bitflags payloads. `Ref<T>`, `Span<T>`,
 owned/raw pointers, floating-point values, structs, and runtime resources are
