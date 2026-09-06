@@ -520,6 +520,8 @@ moved source cannot be used afterward. User structs and their owned pointees
 are checked recursively, including cyclic `Box<Node>`-style type graphs.
 Moving the same variable twice is rejected, and every moved source becomes
 unusable after the spawn expression.
+If native thread creation fails after the move, a generated type-directed drop
+callback finalizes all captures and releases the context before panicking.
 
 Outside `Thread.spawn`, an `owned` parameter also consumes its argument:
 

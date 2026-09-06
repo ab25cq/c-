@@ -113,6 +113,10 @@ those values are rejected. The source becomes unusable immediately after the
 move, and the worker owns cleanup of the value. `Send` is checked recursively
 through user-struct fields and owned pointees; recursive owning types such as
 `Box<Node>` are supported without weakening the check.
+Generated spawn contexts carry a type-directed drop callback. If allocating the
+runtime thread state or starting the native thread fails, every already-moved
+capture and the context itself are finalized before the runtime panics;
+successful starts transfer the same values exactly once to the worker.
 
 The same transfer rule applies to ordinary function calls: an `owned`
 parameter requires `move local` or a fresh owned rvalue such as `new`, `clone`,

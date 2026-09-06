@@ -1,0 +1,18 @@
+struct FailedWork {
+    int value;
+};
+
+int consume_failed(owned Box<FailedWork> work)
+{
+    return work.value;
+}
+
+int main(void)
+{
+    Box<FailedWork> work = new FailedWork;
+    Thread thread;
+
+    work.value = 42;
+    thread = Thread.spawn(move work, consume_failed);
+    return thread.join();
+}

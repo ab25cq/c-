@@ -1112,6 +1112,7 @@ struct Atomic {
 #ifndef CMINUS_BARE_H
 typedef int (*CMinusThreadMain)(void);
 typedef int (*CMinusThreadContextMain)(void*);
+typedef void (*CMinusThreadContextDrop)(void*);
 
 typedef struct Thread Thread;
 typedef struct Mutex Mutex;
@@ -1476,24 +1477,36 @@ static __attribute__((unused)) struct Thread Thread_spawn(CMinusThreadMain fn)
 }
 
 static __attribute__((unused)) struct Thread Thread_spawn_context(
-    void* context, CMinusThreadContextMain fn)
+    void* context, CMinusThreadContextMain fn, CMinusThreadContextDrop drop)
 {
     struct Thread out;
     pthread_t handle;
     int rc;
 
     if (context == NULL) {
+        if (drop != NULL) {
+            drop(context);
+        }
         cminus_panic("thread context is null", __FILE__, __LINE__);
     }
     if (fn == NULL) {
+        if (drop != NULL) {
+            drop(context);
+        }
         cminus_panic("thread context function is null", __FILE__, __LINE__);
     }
     if (sizeof(pthread_t) > sizeof(out.handle_bits)) {
+        if (drop != NULL) {
+            drop(context);
+        }
         cminus_panic("pthread_t is too large", __FILE__, __LINE__);
     }
     memset(&out, 0, sizeof(out));
     out.state = (struct __CMinusThreadState*)calloc(1, sizeof(struct __CMinusThreadState));
     if (out.state == NULL) {
+        if (drop != NULL) {
+            drop(context);
+        }
         cminus_panic("thread allocation failed", __FILE__, __LINE__);
     }
     out.state->context_fn = fn;
@@ -1502,6 +1515,9 @@ static __attribute__((unused)) struct Thread Thread_spawn_context(
     rc = pthread_create(&handle, NULL, __cminus_thread_entry, out.state);
     if (rc != 0) {
         free(out.state);
+        if (drop != NULL) {
+            drop(context);
+        }
         cminus_panic("pthread_create failed", __FILE__, __LINE__);
     }
     memcpy(&out.handle_bits, &handle, sizeof(handle));

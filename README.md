@@ -1181,6 +1181,9 @@ Thread thread = Thread.spawn(move request, move response, consume_pair);
 Stack value structs and scalars are also supported. Their worker parameters use
 the `owned` marker, and they may be mixed with `Box<T>` or owned strings in the
 same spawn call.
+The generated context includes a drop callback, so failure to allocate the
+runtime thread state or start the native thread finalizes every moved value
+before reporting the panic.
 
 The worker must be a visible safe `int` function with matching owned
 parameters in the same order. The `Send` check accepts managed owners such as

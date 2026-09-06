@@ -1398,6 +1398,25 @@ cc -std=gnu99 -Wall -Wextra tests/thread_owned_send_safe.out.c \
     -o tests/thread_owned_send_safe.out -pthread
 ./tests/thread_owned_send_safe.out
 
+./c- tests/thread_spawn_failure_cleanup.c- \
+    > tests/thread_spawn_failure_cleanup.out.c
+grep 'Thread_spawn_context((void\*)work, __cminus_thread_owned_entry_.*, __cminus_thread_owned_drop_' \
+    tests/thread_spawn_failure_cleanup.out.c >/dev/null
+grep 'drop(context);' \
+    tests/thread_spawn_failure_cleanup.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra \
+    -Dpthread_create=cminus_test_pthread_create \
+    tests/thread_spawn_failure_cleanup.out.c \
+    tests/thread_create_failure_stub.c \
+    -o tests/thread_spawn_failure_cleanup.out -pthread
+if ./tests/thread_spawn_failure_cleanup.out > /dev/null \
+    2> tests/thread_spawn_failure_cleanup.err; then
+    echo "forced Thread.spawn failure unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: pthread_create failed' \
+    tests/thread_spawn_failure_cleanup.err >/dev/null
+
 ./c- tests/thread_nested_send_safe.c- > tests/thread_nested_send_safe.out.c
 cc -std=gnu99 -Wall -Wextra tests/thread_nested_send_safe.out.c \
     -o tests/thread_nested_send_safe.out -pthread
@@ -1412,6 +1431,12 @@ cc -std=gnu99 -Wall -Wextra tests/thread_recursive_send_safe.out.c \
 ./c- tests/thread_multiple_send_safe.c- \
     > tests/thread_multiple_send_safe.out.c
 grep '__cminus_thread_owned_spawn_' \
+    tests/thread_multiple_send_safe.out.c >/dev/null
+grep '__cminus_thread_owned_drop_' \
+    tests/thread_multiple_send_safe.out.c >/dev/null
+grep 'cminus_gc_free(__cminus_context->value_0);' \
+    tests/thread_multiple_send_safe.out.c >/dev/null
+grep 'cminus_gc_free(__cminus_context->value_1);' \
     tests/thread_multiple_send_safe.out.c >/dev/null
 grep 'cminus_gc_free(__cminus_context);' \
     tests/thread_multiple_send_safe.out.c >/dev/null

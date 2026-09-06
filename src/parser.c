@@ -15991,6 +15991,7 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             struct Symbol *capture[MAX_PARAMS];
             char worker_name[NAME_MAX_LEN];
             char helper_name[NAME_MAX_LEN];
+            char drop_name[NAME_MAX_LEN];
             char spawn_name[NAME_MAX_LEN];
             char context_name[NAME_MAX_LEN];
             struct FunctionParams *worker;
@@ -16103,10 +16104,23 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             snprintf(helper_name, sizeof(helper_name),
                      "__cminus_thread_owned_entry_%d",
                      helper_id);
+            snprintf(drop_name, sizeof(drop_name),
+                     "__cminus_thread_owned_drop_%d",
+                     helper_id);
             text_add(g_defines, "static int ");
             text_add(g_defines, helper_name);
             text_add(g_defines, "(void* __cminus_raw);\n");
+            text_add(g_defines, "static void ");
+            text_add(g_defines, drop_name);
+            text_add(g_defines, "(void* __cminus_raw);\n");
             if (capture_count == 1 && capture[0]->type.ptr > 0) {
+                text_add(g_thread_owned_helpers, "static void ");
+                text_add(g_thread_owned_helpers, drop_name);
+                text_add(g_thread_owned_helpers,
+                         "(void* __cminus_raw)\n{\n");
+                append_release_pointer(g_thread_owned_helpers, "    ",
+                                       "__cminus_raw", capture[0]->type);
+                text_add(g_thread_owned_helpers, "}\n");
                 text_add(g_thread_owned_helpers, "static int ");
                 text_add(g_thread_owned_helpers, helper_name);
                 text_add(g_thread_owned_helpers,
@@ -16141,7 +16155,31 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                     text_add(g_thread_owned_helpers, index_text);
                     text_add(g_thread_owned_helpers, ";\n");
                 }
-                text_add(g_thread_owned_helpers, "};\nstatic int ");
+                text_add(g_thread_owned_helpers, "};\nstatic void ");
+                text_add(g_thread_owned_helpers, drop_name);
+                text_add(g_thread_owned_helpers,
+                         "(void* __cminus_raw)\n{\n    struct ");
+                text_add(g_thread_owned_helpers, context_name);
+                text_add(g_thread_owned_helpers,
+                         "* __cminus_context = (struct ");
+                text_add(g_thread_owned_helpers, context_name);
+                text_add(g_thread_owned_helpers,
+                         "*)__cminus_raw;\n    if (__cminus_context == NULL) { return; }\n");
+                for (i = 0; i < capture_count; i++) {
+                    char field_expr[64];
+
+                    snprintf(field_expr, sizeof(field_expr),
+                             "__cminus_context->value_%d", i);
+                    if (capture[i]->type.ptr > 0) {
+                        append_release_pointer(g_thread_owned_helpers, "    ",
+                                               field_expr, capture[i]->type);
+                    } else {
+                        append_finalize_for_type(g_thread_owned_helpers, "    ",
+                                                 field_expr, capture[i]->type);
+                    }
+                }
+                text_add(g_thread_owned_helpers,
+                         "    cminus_gc_free(__cminus_context);\n}\nstatic int ");
                 text_add(g_thread_owned_helpers, helper_name);
                 text_add(g_thread_owned_helpers,
                          "(void* __cminus_raw)\n{\n    struct ");
@@ -16211,6 +16249,8 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                 text_add(g_thread_owned_helpers,
                          "    return Thread_spawn_context(context, ");
                 text_add(g_thread_owned_helpers, helper_name);
+                text_add(g_thread_owned_helpers, ", ");
+                text_add(g_thread_owned_helpers, drop_name);
                 text_add(g_thread_owned_helpers, ");\n}\n");
             }
             strncpy(g_thread_owned_entries[g_thread_owned_entry_count],
@@ -16223,6 +16263,8 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                 text_add(replacement, capture_name[0]);
                 text_add(replacement, ", ");
                 text_add(replacement, helper_name);
+                text_add(replacement, ", ");
+                text_add(replacement, drop_name);
             } else {
                 text_add(replacement, spawn_name);
                 text_add_ch(replacement, '(');
