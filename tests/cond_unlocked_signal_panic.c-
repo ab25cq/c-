@@ -1,0 +1,7 @@
+Cond ready;
+
+int main(void)
+{
+    ready.signal();
+    return 0;
+}

@@ -91,6 +91,10 @@ so subsequent access panics before calling pthreads.
 Hosted `Mutex` uses the pthread error-checking mode. Same-thread recursive lock,
 unlock by a non-owner, and `Cond.wait` without ownership of its mutex are
 converted to language panics instead of deadlock or undefined behavior.
+Each `Cond` is atomically bound to the mutex used by its first wait or
+notification. Waiting through another mutex, or notifying without holding the
+bound mutex, panics before entering pthreads. This prevents mismatched-lock and
+lost-wakeup protocols from being accepted by the safe API.
 
 Runtime resources are scope-finalized in safe code. Dropping an unfinished
 `Thread` detaches it and releases the handle-side state reference; local

@@ -1,0 +1,26 @@
+Mutex gate;
+Cond ready;
+Atomic<int> ready_flag;
+
+int signal_worker(void)
+{
+    gate.lock();
+    ready_flag.store(1);
+    ready.signal();
+    gate.unlock();
+    return 23;
+}
+
+int main(void)
+{
+    Thread worker;
+
+    ready_flag.store(0);
+    gate.lock();
+    worker = Thread.spawn(signal_worker);
+    while (ready_flag.load() == 0) {
+        ready.wait(gate);
+    }
+    gate.unlock();
+    return worker.join() == 23 ? 0 : 1;
+}

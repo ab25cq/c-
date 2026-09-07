@@ -1129,7 +1129,9 @@ destruction. Local values may still use `Mutex.init()` / `Cond.init()` and
 
 Safe hosted mutex operations also detect same-thread double locking and unlock
 by a non-owner. `Cond.wait(mutex)` requires the calling thread to own `mutex`.
-Violations panic rather than relying on undefined pthread behavior.
+The first wait or notification permanently binds each `Cond` to that mutex;
+`signal()` and `broadcast()` also require it to be locked by the caller.
+Violations panic rather than permitting a mismatched predicate/lock protocol.
 
 Local thread and synchronization handles use RAII cleanup. Leaving scope
 automatically detaches an unjoined `Thread`, destroys local `Mutex`/`Cond`

@@ -474,6 +474,10 @@ Hosted mutexes are error-checking mutexes. Locking one twice on the same thread,
 unlocking it from a thread that does not own it, and calling `Cond.wait` without
 owning the supplied mutex panic instead of deadlocking or entering pthread
 undefined behavior.
+The first `wait`, `signal`, or `broadcast` binds a `Cond` to the currently held
+mutex. Later operations must use that same mutex, and notifications without
+holding it panic. This keeps the condition, mutex, and predicate protocol from
+being accidentally separated.
 
 Local `Thread`, `Mutex`, `Cond`, and `Critical` values are scope-finalized. A thread handle
 that was not joined or detached is detached automatically, matching Rust's

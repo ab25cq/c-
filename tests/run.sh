@@ -1325,6 +1325,34 @@ fi
 grep 'panic: condition wait requires the mutex to be locked by this thread' \
     tests/cond_unlocked_wait_panic.err >/dev/null
 
+./c- tests/cond_bound_safe.c- > tests/cond_bound_safe.out.c
+cc -std=gnu99 -Wall -Wextra tests/cond_bound_safe.out.c \
+    -o tests/cond_bound_safe.out -pthread
+timeout 10 ./tests/cond_bound_safe.out
+
+./c- tests/cond_unlocked_signal_panic.c- \
+    > tests/cond_unlocked_signal_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/cond_unlocked_signal_panic.out.c \
+    -o tests/cond_unlocked_signal_panic.out -pthread
+if ./tests/cond_unlocked_signal_panic.out > /dev/null \
+    2> tests/cond_unlocked_signal_panic.err; then
+    echo "unlocked condition notification unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: condition notification requires a locked mutex' \
+    tests/cond_unlocked_signal_panic.err >/dev/null
+
+./c- tests/cond_wrong_mutex_panic.c- > tests/cond_wrong_mutex_panic.out.c
+cc -std=gnu99 -Wall -Wextra tests/cond_wrong_mutex_panic.out.c \
+    -o tests/cond_wrong_mutex_panic.out -pthread
+if ./tests/cond_wrong_mutex_panic.out > /dev/null \
+    2> tests/cond_wrong_mutex_panic.err; then
+    echo "condition reuse with a different mutex unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'panic: condition variable is bound to a different mutex' \
+    tests/cond_wrong_mutex_panic.err >/dev/null
+
 ./c- tests/nested_lock_panic.c- > tests/nested_lock_panic.out.c
 cc -std=gnu99 -Wall -Wextra tests/nested_lock_panic.out.c \
     -o tests/nested_lock_panic.out -pthread

@@ -5,8 +5,8 @@ int main(void)
         Cond ready = Cond.init();
 
         gate.lock();
-        gate.unlock();
         ready.signal();
+        gate.unlock();
     }
     return 0;
 }

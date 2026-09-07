@@ -1141,6 +1141,7 @@ struct Mutex {
 struct Cond {
     pthread_cond_t native;
     int state;
+    void* mutex_identity;
 };
 #endif
 
@@ -1889,6 +1890,26 @@ static __attribute__((unused)) struct Cond Cond_init(void)
     return out;
 }
 
+static __attribute__((unused)) void __cminus_cond_bind_mutex(
+    struct Cond* self, pthread_mutex_t* mutex_native)
+{
+    void* expected = NULL;
+    void* bound = __atomic_load_n(&self->mutex_identity, __ATOMIC_ACQUIRE);
+
+    if (bound == NULL &&
+        __atomic_compare_exchange_n(&self->mutex_identity, &expected,
+                                    (void*)mutex_native, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        bound = (void*)mutex_native;
+    } else if (bound == NULL) {
+        bound = expected;
+    }
+    if (bound != (void*)mutex_native) {
+        cminus_panic("condition variable is bound to a different mutex",
+                     __FILE__, __LINE__);
+    }
+}
+
 static __attribute__((unused)) void Cond_wait(struct Cond* self, struct Mutex* mutex)
 {
     pthread_cond_t* native = __cminus_cond_native(self);
@@ -1899,6 +1920,7 @@ static __attribute__((unused)) void Cond_wait(struct Cond* self, struct Mutex* m
         __cminus_sync_lock_identity != (void*)mutex_native) {
         cminus_panic("condition wait requires the mutex to be locked by this thread", __FILE__, __LINE__);
     }
+    __cminus_cond_bind_mutex(self, mutex_native);
     rc = pthread_cond_wait(native, mutex_native);
 
     if (rc != 0) {
@@ -1911,6 +1933,13 @@ static __attribute__((unused)) void Cond_signal(struct Cond* self)
 {
     pthread_cond_t* native = __cminus_cond_native(self);
 
+    if (__cminus_sync_lock_depth != 1 ||
+        __cminus_sync_lock_identity == NULL) {
+        cminus_panic("condition notification requires a locked mutex",
+                     __FILE__, __LINE__);
+    }
+    __cminus_cond_bind_mutex(
+        self, (pthread_mutex_t*)__cminus_sync_lock_identity);
     if (pthread_cond_signal(native) != 0) {
         cminus_panic("pthread_cond_signal failed", __FILE__, __LINE__);
     }
@@ -1920,6 +1949,13 @@ static __attribute__((unused)) void Cond_broadcast(struct Cond* self)
 {
     pthread_cond_t* native = __cminus_cond_native(self);
 
+    if (__cminus_sync_lock_depth != 1 ||
+        __cminus_sync_lock_identity == NULL) {
+        cminus_panic("condition notification requires a locked mutex",
+                     __FILE__, __LINE__);
+    }
+    __cminus_cond_bind_mutex(
+        self, (pthread_mutex_t*)__cminus_sync_lock_identity);
     if (pthread_cond_broadcast(native) != 0) {
         cminus_panic("pthread_cond_broadcast failed", __FILE__, __LINE__);
     }

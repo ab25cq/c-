@@ -1,0 +1,14 @@
+Mutex first_gate;
+Mutex second_gate;
+Cond ready;
+
+int main(void)
+{
+    first_gate.lock();
+    ready.signal();
+    first_gate.unlock();
+
+    second_gate.lock();
+    ready.broadcast();
+    return 0;
+}
