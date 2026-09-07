@@ -1187,6 +1187,13 @@ The generated context includes a drop callback, so failure to allocate the
 runtime thread state or start the native thread finalizes every moved value
 before reporting the panic.
 
+A hosted worker panic is isolated to that worker until `join()`, which
+re-raises the original panic. The panic path releases thread bookkeeping,
+tracked stack metadata, and the worker's held safe synchronization lock, so a
+detached failing worker does not strand a mutex or abort unrelated threads.
+Full panic-time cleanup of owned worker values is still in progress; those
+values can currently leak on this exceptional path.
+
 The worker must be a visible safe `int` function with matching owned
 parameters in the same order. The `Send` check accepts managed owners such as
 `Box<T>` and owned strings, while rejecting `Ref`, `Span`, raw/non-owning

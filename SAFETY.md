@@ -122,6 +122,20 @@ runtime thread state or starting the native thread fails, every already-moved
 capture and the context itself are finalized before the runtime panics;
 successful starts transfer the same values exactly once to the worker.
 
+A hosted worker panic is recorded in its reference-counted thread state. The
+panicking worker releases that reference, discards its tracked-stack metadata,
+and unlocks its sole held synchronization mutex before exiting. `Thread.join()`
+re-raises the recorded message at its original source location; an already
+detached worker instead exits without aborting unrelated threads. Panic text is
+copied into bounded state-owned buffers so a message backed by worker storage
+cannot dangle before a later join.
+
+This does not yet unwind generated ownership cleanup in abandoned worker stack
+frames. Owned captures, parameters, or locals can therefore leak when their
+worker panics, although they cannot be accessed again by safe code. Complete
+type-directed panic cleanup remains required before worker panic has Rust-like
+resource-unwinding semantics.
+
 The same transfer rule applies to ordinary function calls: an `owned`
 parameter requires `move local` or a fresh owned rvalue such as `new`, `clone`,
 an owned return value, or an `s"..."` string. This prevents by-value owning

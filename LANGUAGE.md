@@ -527,6 +527,21 @@ unusable after the spawn expression.
 If native thread creation fails after the move, a generated type-directed drop
 callback finalizes all captures and releases the context before panicking.
 
+A panic raised by a hosted worker terminates that worker rather than aborting
+the process immediately. The runtime records a bounded copy of the original
+message and source location, releases the worker's thread-state reference and
+tracked stack metadata, and unlocks the sole synchronization lock if the panic
+occurred while it was held. `join()` then raises the same panic in the joining
+thread. A detached worker panic releases its runtime state and does not abort
+unrelated threads.
+
+This is the first stage of panic propagation, not yet general stack unwinding.
+Owned parameters and owned locals whose normal generated cleanup was bypassed
+by a worker panic are not yet finalized, so such a panic can currently leak
+their allocations. Safe code does not regain access to those values, but code
+that requires panic-time resource cleanup should not panic while owning them
+until cleanup-aware ownership unwinding is implemented.
+
 Outside `Thread.spawn`, an `owned` parameter also consumes its argument:
 
 ```c

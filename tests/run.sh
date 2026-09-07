@@ -1176,6 +1176,28 @@ grep 'Mutex_lock(&gate)' tests/thread_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/thread_safe.out.c -o tests/thread_safe.out -pthread
 ./tests/thread_safe.out
 
+./c- tests/thread_join_panic_safe.c- > tests/thread_join_panic_safe.out.c
+grep '__atomic_store_n(&state->panicked, 1, __ATOMIC_RELEASE)' \
+    tests/thread_join_panic_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_join_panic_safe.out.c \
+    -o tests/thread_join_panic_safe.out -pthread
+if timeout 5 ./tests/thread_join_panic_safe.out > /dev/null \
+    2> tests/thread_join_panic_safe.err; then
+    echo "worker panic unexpectedly returned from Thread.join" >&2
+    exit 1
+fi
+grep 'panic: mutex is not locked by this thread' \
+    tests/thread_join_panic_safe.err >/dev/null
+
+./c- tests/thread_detached_panic_unlock_safe.c- \
+    > tests/thread_detached_panic_unlock_safe.out.c
+grep 'pthread_mutex_unlock' \
+    tests/thread_detached_panic_unlock_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra \
+    tests/thread_detached_panic_unlock_safe.out.c \
+    -o tests/thread_detached_panic_unlock_safe.out -pthread
+timeout 5 ./tests/thread_detached_panic_unlock_safe.out
+
 ./c- tests/shared_struct_safe.c- > tests/shared_struct_safe.out.c
 grep 'struct Shared_PairState shared_state;' \
     tests/shared_struct_safe.out.c >/dev/null

@@ -23,11 +23,21 @@
 #define CMINUS_MAX_STACK_BYTES (2UL * 1024UL * 1024UL)
 #endif
 
+#ifndef CMINUS_BARE_H
+uniq int cminus_capture_thread_panic(const char* message, const char* file,
+                                     int line);
+#endif
+
 uniq void cminus_panic(const char* message, const char* file, int line)
 {
     void* frames[64];
     int count;
 
+#ifndef CMINUS_BARE_H
+    if (cminus_capture_thread_panic(message, file, line)) {
+        return;
+    }
+#endif
     fprintf(stderr, "panic: %s at %s:%d\n", message, file, line);
     count = backtrace(frames, 64);
     backtrace_symbols_fd(frames, count, 2);
@@ -1124,6 +1134,10 @@ struct __CMinusThreadState {
     void* context;
     int result;
     int references;
+    char panic_message[256];
+    char panic_file[256];
+    int panic_line;
+    int panicked;
 };
 
 struct Thread {
@@ -1143,6 +1157,9 @@ struct Cond {
     int state;
     void* mutex_identity;
 };
+
+uniq CMINUS_THREAD_LOCAL struct __CMinusThreadState*
+    __cminus_current_thread_state = NULL;
 #endif
 
 generic<T>
@@ -1434,16 +1451,72 @@ static __attribute__((unused)) void __cminus_thread_state_release(
     }
 }
 
+static __attribute__((unused)) void __cminus_copy_thread_panic_text(
+    char* target, const char* source, const char* fallback)
+{
+    size_t i = 0;
+
+    if (source == NULL) {
+        source = fallback;
+    }
+    while (i + 1 < 256 && source[i] != '\0') {
+        target[i] = source[i];
+        i++;
+    }
+    target[i] = '\0';
+}
+
+uniq int cminus_capture_thread_panic(const char* message, const char* file,
+                                     int line)
+{
+    struct __CMinusThreadState* state = __cminus_current_thread_state;
+    struct __CMinusStackFrame* frame;
+
+    if (state == NULL) {
+        return 0;
+    }
+    __cminus_copy_thread_panic_text(state->panic_message, message,
+                                    "worker thread panicked");
+    __cminus_copy_thread_panic_text(state->panic_file, file, "<worker>");
+    state->panic_line = line;
+    __atomic_store_n(&state->panicked, 1, __ATOMIC_RELEASE);
+
+    if (__cminus_sync_lock_depth == 1 &&
+        __cminus_sync_lock_identity != NULL) {
+        if (pthread_mutex_unlock(
+                (pthread_mutex_t*)__cminus_sync_lock_identity) != 0) {
+            fprintf(stderr,
+                    "panic: failed to release worker synchronization lock\n");
+            abort();
+        }
+    }
+    __cminus_sync_lock_depth = 0;
+    __cminus_sync_lock_identity = NULL;
+    while (__cminus_stack_head != NULL) {
+        frame = __cminus_stack_head;
+        __cminus_stack_head = frame->prev;
+        free(frame);
+    }
+    __cminus_stack_depth = 0;
+    __cminus_stack_root_anchor = 0;
+    __cminus_current_thread_state = NULL;
+    __cminus_thread_state_release(state);
+    pthread_exit((void*)0);
+    return 1;
+}
+
 static __attribute__((unused)) void* __cminus_thread_entry(void* raw)
 {
     struct __CMinusThreadState* state = (struct __CMinusThreadState*)raw;
 
+    __cminus_current_thread_state = state;
     if (state->context_fn != NULL) {
         state->result = (*(state->context_fn))(state->context);
     }
     else {
         state->result = (*(state->fn))();
     }
+    __cminus_current_thread_state = NULL;
     __cminus_thread_state_release(state);
     return NULL;
 }
@@ -1532,6 +1605,10 @@ static __attribute__((unused)) int Thread_join(struct Thread* self)
     int rc;
     int result;
     int expected = 0;
+    char panic_message[256] = {0};
+    char panic_file[256] = {0};
+    int panic_line;
+    int panicked;
 
     if (__cminus_sync_lock_depth != 0) {
         cminus_panic("cannot join a thread while holding a synchronization lock", __FILE__, __LINE__);
@@ -1550,9 +1627,22 @@ static __attribute__((unused)) int Thread_join(struct Thread* self)
         cminus_panic("pthread_join failed", __FILE__, __LINE__);
     }
     result = self->state != NULL ? self->state->result : 0;
+    panicked = self->state != NULL ?
+        __atomic_load_n(&self->state->panicked, __ATOMIC_ACQUIRE) : 0;
+    if (panicked) {
+        memcpy(panic_message, self->state->panic_message,
+               sizeof(panic_message));
+        memcpy(panic_file, self->state->panic_file, sizeof(panic_file));
+    }
+    panic_line = panicked ? self->state->panic_line : 0;
     __cminus_thread_state_release(self->state);
     self->state = NULL;
     __atomic_store_n(&self->joined, 1, __ATOMIC_RELEASE);
+    if (panicked) {
+        cminus_panic(panic_message[0] != '\0' ? panic_message : "worker thread panicked",
+                     panic_file[0] != '\0' ? panic_file : __FILE__,
+                     panic_line);
+    }
     return result;
 }
 

@@ -1,0 +1,25 @@
+Atomic<int> entered;
+Mutex gate;
+
+int panic_while_locked(void)
+{
+    gate.lock();
+    entered.store(1);
+    gate.lock();
+    return 0;
+}
+
+int main(void)
+{
+    Thread worker;
+
+    entered.store(0);
+    worker = Thread.spawn(panic_while_locked);
+    worker.detach();
+    while (entered.load() == 0) {
+        Thread.yield();
+    }
+    gate.lock();
+    gate.unlock();
+    return 0;
+}
