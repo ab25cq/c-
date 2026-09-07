@@ -1440,9 +1440,11 @@ grep "runtime resource array 'workers' is not allowed in safe mode" \
     tests/bad_runtime_resource_array_safe.err >/dev/null
 
 ./c- tests/thread_owned_send_safe.c- > tests/thread_owned_send_safe.out.c
-grep 'Thread_spawn_context((void\*)work, __cminus_thread_owned_entry_' \
+grep '__cminus_thread_owned_spawn_.*((void\*)&work)' \
     tests/thread_owned_send_safe.out.c >/dev/null
-grep 'return consume((struct Work\*)__cminus_raw);' \
+grep 'memset(value_0, 0, sizeof(struct Work\*));' \
+    tests/thread_owned_send_safe.out.c >/dev/null
+grep 'return consume(__cminus_value_0);' \
     tests/thread_owned_send_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/thread_owned_send_safe.out.c \
     -o tests/thread_owned_send_safe.out -pthread
@@ -1450,7 +1452,9 @@ cc -std=gnu99 -Wall -Wextra tests/thread_owned_send_safe.out.c \
 
 ./c- tests/thread_spawn_failure_cleanup.c- \
     > tests/thread_spawn_failure_cleanup.out.c
-grep 'Thread_spawn_context((void\*)work, __cminus_thread_owned_entry_.*, __cminus_thread_owned_drop_' \
+grep '__cminus_thread_owned_spawn_.*((void\*)&work)' \
+    tests/thread_spawn_failure_cleanup.out.c >/dev/null
+grep 'Thread_spawn_context(context, __cminus_thread_owned_entry_.*, __cminus_thread_owned_drop_' \
     tests/thread_spawn_failure_cleanup.out.c >/dev/null
 grep 'drop(context);' \
     tests/thread_spawn_failure_cleanup.out.c >/dev/null
@@ -1466,6 +1470,18 @@ if ./tests/thread_spawn_failure_cleanup.out > /dev/null \
 fi
 grep 'panic: pthread_create failed' \
     tests/thread_spawn_failure_cleanup.err >/dev/null
+
+./c- tests/thread_panic_owned_cleanup_safe.c- \
+    > tests/thread_panic_owned_cleanup_safe.out.c
+grep 'cminus_panic_cleanup_push(&__cminus_panic_cleanup_.*, __cminus_panic_drop_.*, (void\*)&local);' \
+    tests/thread_panic_owned_cleanup_safe.out.c >/dev/null
+grep 'input = (__typeof__(input)){0}' \
+    tests/thread_panic_owned_cleanup_safe.out.c >/dev/null
+grep 'memset(value_0, 0, sizeof(char\*));' \
+    tests/thread_panic_owned_cleanup_safe.out.c >/dev/null
+cc -std=gnu99 -Wall -Wextra tests/thread_panic_owned_cleanup_safe.out.c \
+    -o tests/thread_panic_owned_cleanup_safe.out -pthread
+timeout 5 ./tests/thread_panic_owned_cleanup_safe.out
 
 ./c- tests/thread_nested_send_safe.c- > tests/thread_nested_send_safe.out.c
 cc -std=gnu99 -Wall -Wextra tests/thread_nested_send_safe.out.c \
@@ -1506,7 +1522,7 @@ cc -std=gnu99 -Wall -Wextra tests/thread_scalar_send_safe.out.c \
 ./tests/thread_scalar_send_safe.out
 
 ./c- tests/thread_mixed_send_safe.c- > tests/thread_mixed_send_safe.out.c
-grep -F '(void*)heap, (void*)&value' tests/thread_mixed_send_safe.out.c >/dev/null
+grep -F '(void*)&heap, (void*)&value' tests/thread_mixed_send_safe.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/thread_mixed_send_safe.out.c \
     -o tests/thread_mixed_send_safe.out -pthread
 ./tests/thread_mixed_send_safe.out
@@ -2173,7 +2189,8 @@ cc -std=c99 -Wall -Wextra -pedantic tests/method_calls.out.c -o tests/method_cal
 
 ./c- tests/dot_pointer_field.c- > tests/dot_pointer_field.out.c
 grep 'child->value = 11;' tests/dot_pointer_field.out.c >/dev/null
-grep 'parent->child = child;' tests/dot_pointer_field.out.c >/dev/null
+grep 'parent->child = ({ __typeof__(child) __cminus_move.*child = (__typeof__(child)){0};' \
+    tests/dot_pointer_field.out.c >/dev/null
 grep 'parent->count = child_value(parent->child) + 1;' tests/dot_pointer_field.out.c >/dev/null
 grep 'parent->child->value != 11' tests/dot_pointer_field.out.c >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/dot_pointer_field.out.c -o tests/dot_pointer_field.out
@@ -2602,7 +2619,7 @@ grep -A4 '^      declaration view expression=identifier$' tests/typed_ownership_
 grep -A5 '^      declaration reference expression=statement-expression$' \
     tests/typed_ownership_ast.ast \
     | grep '^        lifetime owner=value storage=stack state=live runtime-check=yes$' >/dev/null
-grep -A4 '^      declaration destination expression=identifier$' tests/typed_ownership_ast.ast \
+grep -A4 '^      declaration destination expression=move$' tests/typed_ownership_ast.ast \
     | grep '^        move-transfer source=source$' >/dev/null
 cc -std=gnu99 -Wall -Wextra tests/typed_ownership_ast.out.c -o tests/typed_ownership_ast.out
 ./tests/typed_ownership_ast.out

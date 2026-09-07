@@ -1191,8 +1191,12 @@ A hosted worker panic is isolated to that worker until `join()`, which
 re-raises the original panic. The panic path releases thread bookkeeping,
 tracked stack metadata, and the worker's held safe synchronization lock, so a
 detached failing worker does not strand a mutex or abort unrelated threads.
-Full panic-time cleanup of owned worker values is still in progress; those
-values can currently leak on this exceptional path.
+Generated non-generic safe functions also maintain a thread-local LIFO cleanup
+chain for owned parameters and owned/finalizable locals. The worker panic path
+runs it, so moved captures and worker-local strings, boxes, and owning structs
+are finalized exactly once. Move lowering zeroes the source binding after the
+transfer, keeping later scope cleanup harmless. Type-specific panic cleanup for
+concrete generic instantiations remains to be implemented.
 
 The worker must be a visible safe `int` function with matching owned
 parameters in the same order. The `Send` check accepts managed owners such as

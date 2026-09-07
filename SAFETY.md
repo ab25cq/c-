@@ -121,6 +121,9 @@ Generated spawn contexts carry a type-directed drop callback. If allocating the
 runtime thread state or starting the native thread fails, every already-moved
 capture and the context itself are finalized before the runtime panics;
 successful starts transfer the same values exactly once to the worker.
+The generated move expression copies the value and immediately zeroes the
+source binding. This makes both its normal scope cleanup and panic cleanup
+idempotent after ownership has changed hands.
 
 A hosted worker panic is recorded in its reference-counted thread state. The
 panicking worker releases that reference, discards its tracked-stack metadata,
@@ -128,13 +131,15 @@ and unlocks its sole held synchronization mutex before exiting. `Thread.join()`
 re-raises the recorded message at its original source location; an already
 detached worker instead exits without aborting unrelated threads. Panic text is
 copied into bounded state-owned buffers so a message backed by worker storage
-cannot dangle before a later join.
+cannot dangle before a later join. Each non-generic safe function registers its
+owned parameters and owned/finalizable locals in a thread-local LIFO cleanup
+chain. A worker panic runs that chain, so moved captures, parameters, strings,
+boxes, and owning value structs are finalized exactly once even though C stack
+unwinding is not available. A panic raised by a finalizer during panic cleanup
+is treated as an unrecoverable double panic and aborts the process.
 
-This does not yet unwind generated ownership cleanup in abandoned worker stack
-frames. Owned captures, parameters, or locals can therefore leak when their
-worker panics, although they cannot be accessed again by safe code. Complete
-type-directed panic cleanup remains required before worker panic has Rust-like
-resource-unwinding semantics.
+Generic template bodies do not yet emit the type-specific panic cleanup chain;
+adding cleanup during concrete generic instantiation remains outstanding.
 
 The same transfer rule applies to ordinary function calls: an `owned`
 parameter requires `move local` or a fresh owned rvalue such as `new`, `clone`,

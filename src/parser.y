@@ -71,6 +71,13 @@ struct Owned {
     int count;
 };
 
+struct PanicCleanupBindings {
+    char name[MAX_OWNED][NAME_MAX_LEN];
+    char node[MAX_OWNED][NAME_MAX_LEN];
+    char helper[MAX_OWNED][NAME_MAX_LEN];
+    int count;
+};
+
 struct MovedLocals {
     char name[MAX_OWNED][NAME_MAX_LEN];
     int count;
@@ -444,8 +451,11 @@ static struct Text *g_thread_owned_helpers;
 static char g_thread_owned_entries[MAX_FUNCS][NAME_MAX_LEN];
 static int g_thread_owned_entry_count;
 static int g_thread_owned_helper_id;
+static int g_panic_cleanup_helper_id;
+static int g_panic_cleanup_parameter_count;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
+static struct PanicCleanupBindings g_panic_cleanup_bindings;
 static struct MovedLocals g_moved_locals;
 static struct BorrowLinks g_borrow_links;
 static struct PendingSemantics g_pending_semantics;
@@ -568,6 +578,10 @@ struct DeclInfo;
 static void register_function_params(const char *s);
 static void register_function_param_symbols(const char *s);
 static void register_owned_parameter_cleanup(const char *function_name);
+static int panic_cleanup_binding_add(const char *name, struct Type type);
+static void emit_panic_cleanup_parameter_prologue(struct Text *out);
+static struct Text *add_panic_cleanup_registration(struct Text *in,
+                                                   int index);
 static void begin_function(void);
 static void begin_top_block(struct Text *head);
 static int source_has_cminus_include(FILE *fp);
@@ -4647,6 +4661,8 @@ static void begin_function(void)
 {
     g_owned.count = 0;
     g_finalized_locals.count = 0;
+    g_panic_cleanup_bindings.count = 0;
+    g_panic_cleanup_parameter_count = 0;
     g_moved_locals.count = 0;
     g_borrow_links.count = 0;
     g_locals.count = 0;
@@ -6822,19 +6838,59 @@ static struct SafetyExprNode *safety_parse_primary(struct SafetyExprParser *pars
             return safety_expr_new(SAFETY_EXPR_LITERAL, start, parser->cursor);
         }
         node = safety_expr_new(SAFETY_EXPR_STATEMENT, start, close_paren + 1);
-        node->child = safety_parse_forest_range(open_brace + 1, close_brace);
-        safety_statement_bind_declarations(node->child, open_brace + 1,
-                                           close_brace);
         {
-            const char *result_start;
-            const char *result_end;
-            struct SafetyExprNode *result;
+            const char *body = safety_skip_trivia(parser, open_brace + 1);
+            const char *name_start = starts_word(body, "__typeof__") ?
+                safety_skip_trivia(parser, body + strlen("__typeof__")) : NULL;
+            char move_name[NAME_MAX_LEN] = "";
+            int generated_move = 0;
 
-            safety_statement_result_bounds(open_brace + 1, close_brace,
-                                           &result_start, &result_end);
-            result = result_start == NULL ? NULL :
-                safety_mark_statement_result(node->child, result_start, result_end);
-            if (result != NULL) node->type = result->type;
+            if (name_start != NULL && name_start < close_brace &&
+                *name_start == '(') {
+                const char *name_end = safety_skip_trivia(parser, name_start + 1);
+                const char *after_name;
+
+                name_start = name_end;
+                if (is_ident_start((unsigned char)*name_start)) {
+                    const char *move_marker;
+
+                    after_name = read_name(name_start, move_name);
+                    after_name = safety_skip_trivia(parser, after_name);
+                    move_marker = strstr(after_name, "__cminus_move");
+                    generated_move = after_name < close_brace &&
+                        *after_name == ')' &&
+                        move_marker != NULL && move_marker < close_brace;
+                }
+            }
+            if (generated_move) {
+                struct SafetyExprNode *value = safety_expr_new(
+                    SAFETY_EXPR_IDENTIFIER, name_start,
+                    name_start + strlen(move_name));
+
+                strncpy(value->name, move_name, NAME_MAX_LEN - 1);
+                value->name[NAME_MAX_LEN - 1] = '\0';
+                safety_resolve_identifier_node(value);
+                node->kind = SAFETY_EXPR_MOVE;
+                strcpy(node->op, "move");
+                node->lhs = value;
+                node->type = value->type;
+                node->type.owned = 1;
+            } else {
+                const char *result_start;
+                const char *result_end;
+                struct SafetyExprNode *result;
+
+                node->child = safety_parse_forest_range(open_brace + 1,
+                                                        close_brace);
+                safety_statement_bind_declarations(node->child, open_brace + 1,
+                                                   close_brace);
+                safety_statement_result_bounds(open_brace + 1, close_brace,
+                                               &result_start, &result_end);
+                result = result_start == NULL ? NULL :
+                    safety_mark_statement_result(node->child, result_start,
+                                                 result_end);
+                if (result != NULL) node->type = result->type;
+            }
         }
         parser->cursor = close_paren + 1;
     } else if (*start == '(') {
@@ -7773,9 +7829,21 @@ static struct Node *ast_typed_output(enum NodeKind fallback, const char *text)
     int count = 0;
     struct Node *parent;
     struct Node *body = NULL;
+    const char *panic_cleanup;
 
     if (fallback == ND_RETURN) {
         return ast_typed_statement(fallback, text);
+    }
+    panic_cleanup = strstr(
+        text, "struct __CMinusPanicCleanup __cminus_panic_cleanup_");
+    if (panic_cleanup != NULL) {
+        char *user_text = xstrndup(
+            text, (size_t)(panic_cleanup - text));
+        struct Node *user_node = ast_typed_output(fallback, user_text);
+        struct Node *cleanup_node = ast_new(ND_CLEANUP, panic_cleanup);
+
+        free(user_text);
+        return ast_append(user_node, cleanup_node);
     }
     p = text;
     while (*p != '\0') {
@@ -7918,7 +7986,7 @@ static struct Text *finalize_typed_statement(struct Text *in, enum NodeKind fall
     out = text_new();
     out->tail_return = in->tail_return;
     out->ast = node;
-    ast_emit_statement(out, node);
+    ast_emit_node(out, node);
     in->ast = NULL;
     text_free(in);
     return out;
@@ -11757,11 +11825,135 @@ static void register_owned_parameter_cleanup(const char *function_name)
         }
         if (fn->param[i].type.ptr > 0) {
             owned_add(fn->param[i].name, fn->param[i].type);
+            panic_cleanup_binding_add(fn->param[i].name,
+                                      fn->param[i].type);
         } else if (type_has_finalizer(fn->param[i].type)) {
             finalized_local_add(fn->param[i].name, fn->param[i].type);
+            panic_cleanup_binding_add(fn->param[i].name,
+                                      fn->param[i].type);
         }
     }
+    g_panic_cleanup_parameter_count = g_panic_cleanup_bindings.count;
 }
+
+static int panic_cleanup_binding_index(const char *name)
+{
+    int i;
+
+    for (i = 0; i < g_panic_cleanup_bindings.count; i++) {
+        if (strcmp(g_panic_cleanup_bindings.name[i], name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int panic_cleanup_binding_add(const char *name, struct Type type)
+{
+    struct PanicCleanupBindings *bindings = &g_panic_cleanup_bindings;
+    struct Text *helper_body;
+    char slot_expr[NAME_MAX_LEN * 2];
+    int index;
+    int helper_id;
+
+    if (g_bare_metal || g_current_generic_kind != 0 ||
+        name == NULL || name[0] == '\0' ||
+        panic_cleanup_binding_index(name) >= 0) {
+        return -1;
+    }
+    if (bindings->count >= MAX_OWNED) {
+        die("too many panic cleanup bindings in one function");
+    }
+    index = bindings->count++;
+    helper_id = g_panic_cleanup_helper_id++;
+    strncpy(bindings->name[index], name, NAME_MAX_LEN - 1);
+    bindings->name[index][NAME_MAX_LEN - 1] = '\0';
+    snprintf(bindings->node[index], NAME_MAX_LEN,
+             "__cminus_panic_cleanup_%d", helper_id);
+    snprintf(bindings->helper[index], NAME_MAX_LEN,
+             "__cminus_panic_drop_%d", helper_id);
+
+    text_add(g_defines, "static void ");
+    text_add(g_defines, bindings->helper[index]);
+    text_add(g_defines, "(void* __cminus_raw);\n");
+
+    helper_body = g_thread_owned_helpers;
+    text_add(helper_body, "static void ");
+    text_add(helper_body, bindings->helper[index]);
+    text_add(helper_body, "(void* __cminus_raw)\n{\n    ");
+    append_c_type(helper_body, type);
+    text_add(helper_body, "* __cminus_slot = (");
+    append_c_type(helper_body, type);
+    text_add(helper_body,
+             "*)__cminus_raw;\n    if (__cminus_slot == NULL) { return; }\n");
+    snprintf(slot_expr, sizeof(slot_expr), "(*__cminus_slot)");
+    if (type.ptr > 0) {
+        append_release_pointer(helper_body, "    ", slot_expr, type);
+        text_add(helper_body, "    *__cminus_slot = NULL;\n");
+    } else {
+        append_finalize_for_type(helper_body, "    ", slot_expr, type);
+        text_add(helper_body,
+                 "    memset(__cminus_slot, 0, sizeof(*__cminus_slot));\n");
+    }
+    text_add(helper_body, "}\n");
+    return index;
+}
+
+static void emit_panic_cleanup_parameter_prologue(struct Text *out)
+{
+    int i;
+
+    for (i = 0; i < g_panic_cleanup_parameter_count; i++) {
+        text_add(out, "    struct __CMinusPanicCleanup ");
+        text_add(out, g_panic_cleanup_bindings.node[i]);
+        text_add(out,
+                 " __attribute__((cleanup(cminus_panic_cleanup_scope_leave))) = {0};\n");
+        text_add(out, "    cminus_panic_cleanup_push(&");
+        text_add(out, g_panic_cleanup_bindings.node[i]);
+        text_add(out, ", ");
+        text_add(out, g_panic_cleanup_bindings.helper[i]);
+        text_add(out, ", (void*)&");
+        text_add(out, g_panic_cleanup_bindings.name[i]);
+        text_add(out, ");\n");
+    }
+}
+
+static struct Text *add_panic_cleanup_registration(struct Text *in, int index)
+{
+    struct Text *out;
+    struct Text *indent;
+
+    if (index < 0 || index >= g_panic_cleanup_bindings.count) {
+        return in;
+    }
+    out = text_new();
+    indent = text_new();
+    append_indent_from(in->text, indent);
+    text_add(out, in->text);
+    if (out->len == 0 || out->text[out->len - 1] != '\n') {
+        text_add_ch(out, '\n');
+    }
+    text_add(out, indent->text);
+    text_add(out, "struct __CMinusPanicCleanup ");
+    text_add(out, g_panic_cleanup_bindings.node[index]);
+    text_add(out,
+             " __attribute__((cleanup(cminus_panic_cleanup_scope_leave))) = {0};\n");
+    text_add(out, indent->text);
+    text_add(out, "cminus_panic_cleanup_push(&");
+    text_add(out, g_panic_cleanup_bindings.node[index]);
+    text_add(out, ", ");
+    text_add(out, g_panic_cleanup_bindings.helper[index]);
+    text_add(out, ", (void*)&");
+    text_add(out, g_panic_cleanup_bindings.name[index]);
+    text_add(out, ");");
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(indent);
+    text_free(in);
+    return out;
+}
+
 
 static const char *unsafe_matching_brace(const char *open)
 {
@@ -14420,23 +14612,7 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             text_add(g_defines, "static void ");
             text_add(g_defines, drop_name);
             text_add(g_defines, "(void* __cminus_raw);\n");
-            if (capture_count == 1 && capture[0]->type.ptr > 0) {
-                text_add(g_thread_owned_helpers, "static void ");
-                text_add(g_thread_owned_helpers, drop_name);
-                text_add(g_thread_owned_helpers,
-                         "(void* __cminus_raw)\n{\n");
-                append_release_pointer(g_thread_owned_helpers, "    ",
-                                       "__cminus_raw", capture[0]->type);
-                text_add(g_thread_owned_helpers, "}\n");
-                text_add(g_thread_owned_helpers, "static int ");
-                text_add(g_thread_owned_helpers, helper_name);
-                text_add(g_thread_owned_helpers,
-                         "(void* __cminus_raw)\n{\n    return ");
-                text_add(g_thread_owned_helpers, worker_name);
-                text_add(g_thread_owned_helpers, "((");
-                append_c_type(g_thread_owned_helpers, worker->param[0].type);
-                text_add(g_thread_owned_helpers, ")__cminus_raw);\n}\n");
-            } else {
+            {
                 snprintf(spawn_name, sizeof(spawn_name),
                          "__cminus_thread_owned_spawn_%d", helper_id);
                 snprintf(context_name, sizeof(context_name),
@@ -14539,19 +14715,21 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                     snprintf(index_text, sizeof(index_text), "%d", i);
                     text_add(g_thread_owned_helpers, "    context->value_");
                     text_add(g_thread_owned_helpers, index_text);
-                    if (capture[i]->type.ptr > 0) {
-                        text_add(g_thread_owned_helpers, " = (");
-                        append_c_type(g_thread_owned_helpers,
-                                      capture[i]->type);
-                        text_add(g_thread_owned_helpers, ")value_");
-                    } else {
-                        text_add(g_thread_owned_helpers, " = *(");
-                        append_c_type(g_thread_owned_helpers,
-                                      capture[i]->type);
-                        text_add(g_thread_owned_helpers, "*)value_");
-                    }
+                    text_add(g_thread_owned_helpers, " = *(");
+                    append_c_type(g_thread_owned_helpers,
+                                  capture[i]->type);
+                    text_add(g_thread_owned_helpers, "*)value_");
                     text_add(g_thread_owned_helpers, index_text);
                     text_add(g_thread_owned_helpers, ";\n");
+                }
+                for (i = 0; i < capture_count; i++) {
+                    char index_text[32];
+                    snprintf(index_text, sizeof(index_text), "%d", i);
+                    text_add(g_thread_owned_helpers, "    memset(value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                    text_add(g_thread_owned_helpers, ", 0, sizeof(");
+                    append_c_type(g_thread_owned_helpers, capture[i]->type);
+                    text_add(g_thread_owned_helpers, "));\n");
                 }
                 text_add(g_thread_owned_helpers,
                          "    return Thread_spawn_context(context, ");
@@ -14565,25 +14743,12 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             g_thread_owned_entries[g_thread_owned_entry_count][NAME_MAX_LEN - 1] = '\0';
             g_thread_owned_entry_count++;
 
-            if (capture_count == 1 && capture[0]->type.ptr > 0) {
-                text_add(replacement, "Thread_spawn_context((void*)");
-                text_add(replacement, capture_name[0]);
-                text_add(replacement, ", ");
-                text_add(replacement, helper_name);
-                text_add(replacement, ", ");
-                text_add(replacement, drop_name);
-            } else {
-                text_add(replacement, spawn_name);
-                text_add_ch(replacement, '(');
-                for (i = 0; i < capture_count; i++) {
-                    if (i > 0) text_add(replacement, ", ");
-                    if (capture[i]->type.ptr > 0) {
-                        text_add(replacement, "(void*)");
-                    } else {
-                        text_add(replacement, "(void*)&");
-                    }
-                    text_add(replacement, capture_name[i]);
-                }
+            text_add(replacement, spawn_name);
+            text_add_ch(replacement, '(');
+            for (i = 0; i < capture_count; i++) {
+                if (i > 0) text_add(replacement, ", ");
+                text_add(replacement, "(void*)&");
+                text_add(replacement, capture_name[i]);
             }
             text_add_ch(replacement, ')');
             *end = close + 1;
@@ -16463,16 +16628,56 @@ static struct Text *remove_percent(struct Text *in)
             }
             continue;
         }
+        if (strncmp(in->text + i, "move", 4) == 0 &&
+            (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
+            !is_ident((unsigned char)in->text[i + 4])) {
+            size_t name_start = i + 4;
+            size_t name_end;
+
+            while (name_start < in->len &&
+                   isspace((unsigned char)in->text[name_start])) {
+                name_start++;
+            }
+            name_end = name_start;
+            while (name_end < in->len &&
+                   is_ident((unsigned char)in->text[name_end])) {
+                name_end++;
+            }
+            if (strstr(in->text, "Thread.spawn") == NULL &&
+                name_end > name_start) {
+                char tmp[64];
+                char *name = xstrndup(in->text + name_start,
+                                      name_end - name_start);
+
+                snprintf(tmp, sizeof(tmp), "__cminus_move%d",
+                         g_right_value_id++);
+                text_add(out, "({ __typeof__(");
+                text_add(out, name);
+                text_add(out, ") ");
+                text_add(out, tmp);
+                text_add(out, " = ");
+                text_add(out, name);
+                text_add(out, "; ");
+                text_add(out, name);
+                text_add(out, " = (__typeof__(");
+                text_add(out, name);
+                text_add(out, ")){0}; ");
+                text_add(out, tmp);
+                text_add(out, "; })");
+                free(name);
+                i = name_end - 1;
+                continue;
+            }
+            i = name_start - 1;
+            continue;
+        }
         if ((strncmp(in->text + i, "borrow", 6) == 0 &&
              (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
              !is_ident((unsigned char)in->text[i + 6])) ||
             (strncmp(in->text + i, "owned", 5) == 0 &&
              (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
-             !is_ident((unsigned char)in->text[i + 5])) ||
-            (strncmp(in->text + i, "move", 4) == 0 &&
-             (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
-             !is_ident((unsigned char)in->text[i + 4]))) {
-            size_t n = in->text[i] == 'b' ? 6 : (in->text[i] == 'o' ? 5 : 4);
+             !is_ident((unsigned char)in->text[i + 5]))) {
+            size_t n = in->text[i] == 'b' ? 6 : 5;
             i += n;
             while (i < in->len && isspace((unsigned char)in->text[i])) {
                 i++;
@@ -17497,9 +17702,18 @@ static void emit_frees(struct Text *out, const char *indent)
     int i;
     for (i = g_finalized_locals.count - 1; i >= 0; i--) {
         append_finalize_for_type(out, indent, g_finalized_locals.name[i], g_finalized_locals.type[i]);
+        text_add(out, indent);
+        text_add(out, "memset(&");
+        text_add(out, g_finalized_locals.name[i]);
+        text_add(out, ", 0, sizeof(");
+        text_add(out, g_finalized_locals.name[i]);
+        text_add(out, "));\n");
     }
     for (i = g_owned.count - 1; i >= 0; i--) {
         append_release_pointer(out, indent, g_owned.name[i], g_owned.type[i]);
+        text_add(out, indent);
+        text_add(out, g_owned.name[i]);
+        text_add(out, " = NULL;\n");
         text_add_ch(out, '\n');
     }
 }
@@ -17893,6 +18107,10 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 if (post_free) {
                     append_free_after_statement(out, all->text, post_free_name, post_free_type);
                 }
+                if (g_unsafe_depth == 0) {
+                    out = add_panic_cleanup_registration(
+                        out, panic_cleanup_binding_add(decl.name, decl.type));
+                }
                 out->ast = ast_raw(ND_S_STRING, out->text);
                 text_free(all);
                 return out;
@@ -18000,6 +18218,12 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         }
         if (post_free) {
             append_free_after_statement(all, all->text, post_free_name, post_free_type);
+        }
+        if (g_unsafe_depth == 0 &&
+            (owned_index_in(&g_owned, decl.name) >= 0 ||
+             owned_index_in(&g_finalized_locals, decl.name) >= 0)) {
+            all = add_panic_cleanup_registration(
+                all, panic_cleanup_binding_add(decl.name, decl.type));
         }
         return all;
     }
@@ -18316,6 +18540,7 @@ static char *extract_return_value_expr(const char *stmt)
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi)
 {
     struct Text *all = text_join3(ret, expr, semi);
+    char detached_return_name[NAME_MAX_LEN] = "";
     pending_semantics_capture_return(all->text);
     all->ast = ast_raw(ND_RETURN, all->text);
     if (g_current_generic_kind != 0 || g_current_payload_enum) {
@@ -18397,7 +18622,20 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     free(g_pending_semantics.return_expr);
     g_pending_semantics.return_expr = extract_return_value_expr(all->text);
     {
-        int detached_return_owner = detach_plain_return_owner(all->text);
+        char *return_expr = extract_return_value_expr(all->text);
+        char return_name[NAME_MAX_LEN];
+        int detached_return_owner;
+
+        if (return_expr != NULL &&
+            (extract_plain_name_expr(return_expr, return_name) ||
+             extract_move_name(return_expr, return_name)) &&
+            (owned_index_in(&g_owned, return_name) >= 0 ||
+             owned_index_in(&g_finalized_locals, return_name) >= 0)) {
+            strncpy(detached_return_name, return_name, NAME_MAX_LEN - 1);
+            detached_return_name[NAME_MAX_LEN - 1] = '\0';
+        }
+        free(return_expr);
+        detached_return_owner = detach_plain_return_owner(all->text);
 
         if (g_unsafe_depth == 0 && g_current_function_ret.ptr == 0 &&
             type_has_finalizer(g_current_function_ret) &&
@@ -18426,6 +18664,13 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
             text_add(out, " = (");
             text_add(out, return_expr);
             text_add(out, ");\n");
+            if (detached_return_name[0] != '\0') {
+                text_add(out, indent->text);
+                text_add(out, detached_return_name);
+                text_add(out, " = (__typeof__(");
+                text_add(out, detached_return_name);
+                text_add(out, ")){0};\n");
+            }
             emit_frees(out, indent->text);
             if (g_current_function_stack_guard) {
                 append_stack_leave(out, indent->text);
@@ -18473,6 +18718,13 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
             text_add(out, " = (");
             text_add(out, return_expr);
             text_add(out, ");\n");
+            if (detached_return_name[0] != '\0') {
+                text_add(out, indent->text);
+                text_add(out, detached_return_name);
+                text_add(out, " = (__typeof__(");
+                text_add(out, detached_return_name);
+                text_add(out, ")){0};\n");
+            }
             append_stack_leave(out, indent->text);
             text_add(out, indent->text);
             text_add(out, "return ");
@@ -18721,6 +18973,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         struct Text *prologue = text_new();
         struct Node *function_ast = ast_function(head->text, body_ast);
         int body_tail_return = body->tail_return;
+        emit_panic_cleanup_parameter_prologue(prologue);
         if (g_current_function_stack_guard) {
             append_stack_enter(prologue, "    ");
         }

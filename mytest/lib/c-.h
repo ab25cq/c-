@@ -1123,10 +1123,18 @@ struct Atomic {
 typedef int (*CMinusThreadMain)(void);
 typedef int (*CMinusThreadContextMain)(void*);
 typedef void (*CMinusThreadContextDrop)(void*);
+typedef void (*CMinusPanicCleanupFn)(void*);
 
 typedef struct Thread Thread;
 typedef struct Mutex Mutex;
 typedef struct Cond Cond;
+
+struct __CMinusPanicCleanup {
+    CMinusPanicCleanupFn fn;
+    void* context;
+    struct __CMinusPanicCleanup* prev;
+    int active;
+};
 
 struct __CMinusThreadState {
     CMinusThreadMain fn;
@@ -1160,6 +1168,9 @@ struct Cond {
 
 uniq CMINUS_THREAD_LOCAL struct __CMinusThreadState*
     __cminus_current_thread_state = NULL;
+uniq CMINUS_THREAD_LOCAL struct __CMinusPanicCleanup*
+    __cminus_panic_cleanup_head = NULL;
+uniq CMINUS_THREAD_LOCAL int __cminus_panic_in_progress = 0;
 #endif
 
 generic<T>
@@ -1466,6 +1477,63 @@ static __attribute__((unused)) void __cminus_copy_thread_panic_text(
     target[i] = '\0';
 }
 
+static __attribute__((unused)) void cminus_panic_cleanup_push(
+    struct __CMinusPanicCleanup* cleanup, CMinusPanicCleanupFn fn,
+    void* context)
+{
+    if (cleanup == NULL || fn == NULL) {
+        cminus_panic("invalid panic cleanup", __FILE__, __LINE__);
+    }
+    cleanup->fn = fn;
+    cleanup->context = context;
+    cleanup->prev = __cminus_panic_cleanup_head;
+    cleanup->active = 1;
+    __cminus_panic_cleanup_head = cleanup;
+}
+
+static __attribute__((unused)) void cminus_panic_cleanup_disarm(
+    struct __CMinusPanicCleanup* cleanup)
+{
+    if (cleanup != NULL) {
+        cleanup->active = 0;
+    }
+}
+
+static __attribute__((unused)) void cminus_panic_cleanup_scope_leave(void* raw)
+{
+    struct __CMinusPanicCleanup* cleanup =
+        (struct __CMinusPanicCleanup*)raw;
+    struct __CMinusPanicCleanup** link = &__cminus_panic_cleanup_head;
+
+    if (cleanup == NULL) {
+        return;
+    }
+    while (*link != NULL && *link != cleanup) {
+        link = &(*link)->prev;
+    }
+    if (*link == cleanup) {
+        *link = cleanup->prev;
+    }
+    if (cleanup->active && cleanup->fn != NULL) {
+        cleanup->active = 0;
+        (*(cleanup->fn))(cleanup->context);
+    }
+}
+
+static __attribute__((unused)) void __cminus_panic_cleanup_run(void)
+{
+    while (__cminus_panic_cleanup_head != NULL) {
+        struct __CMinusPanicCleanup* cleanup =
+            __cminus_panic_cleanup_head;
+
+        __cminus_panic_cleanup_head = cleanup->prev;
+        if (cleanup->active && cleanup->fn != NULL) {
+            cleanup->active = 0;
+            (*(cleanup->fn))(cleanup->context);
+        }
+    }
+}
+
 uniq int cminus_capture_thread_panic(const char* message, const char* file,
                                      int line)
 {
@@ -1475,6 +1543,11 @@ uniq int cminus_capture_thread_panic(const char* message, const char* file,
     if (state == NULL) {
         return 0;
     }
+    if (__cminus_panic_in_progress) {
+        fprintf(stderr, "panic: panic during worker cleanup\n");
+        abort();
+    }
+    __cminus_panic_in_progress = 1;
     __cminus_copy_thread_panic_text(state->panic_message, message,
                                     "worker thread panicked");
     __cminus_copy_thread_panic_text(state->panic_file, file, "<worker>");
@@ -1492,6 +1565,7 @@ uniq int cminus_capture_thread_panic(const char* message, const char* file,
     }
     __cminus_sync_lock_depth = 0;
     __cminus_sync_lock_identity = NULL;
+    __cminus_panic_cleanup_run();
     while (__cminus_stack_head != NULL) {
         frame = __cminus_stack_head;
         __cminus_stack_head = frame->prev;
@@ -1509,6 +1583,8 @@ static __attribute__((unused)) void* __cminus_thread_entry(void* raw)
 {
     struct __CMinusThreadState* state = (struct __CMinusThreadState*)raw;
 
+    __cminus_panic_cleanup_head = NULL;
+    __cminus_panic_in_progress = 0;
     __cminus_current_thread_state = state;
     if (state->context_fn != NULL) {
         state->result = (*(state->context_fn))(state->context);
@@ -1516,6 +1592,8 @@ static __attribute__((unused)) void* __cminus_thread_entry(void* raw)
     else {
         state->result = (*(state->fn))();
     }
+    __cminus_panic_cleanup_head = NULL;
+    __cminus_panic_in_progress = 0;
     __cminus_current_thread_state = NULL;
     __cminus_thread_state_release(state);
     return NULL;
@@ -2141,6 +2219,9 @@ static __attribute__((unused)) void SharedGuard_finalize(void* raw)
     state = (struct __CMinusSharedState*)state_value;
     state_value = NULL;
     memcpy(raw, &state_value, sizeof(state_value));
+    if (__cminus_panic_in_progress) {
+        return;
+    }
     __cminus_mutex_unlock_parts(&state->native, &state->state);
 }
 

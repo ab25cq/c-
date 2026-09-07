@@ -141,6 +141,13 @@ struct Owned {
     int count;
 };
 
+struct PanicCleanupBindings {
+    char name[MAX_OWNED][NAME_MAX_LEN];
+    char node[MAX_OWNED][NAME_MAX_LEN];
+    char helper[MAX_OWNED][NAME_MAX_LEN];
+    int count;
+};
+
 struct MovedLocals {
     char name[MAX_OWNED][NAME_MAX_LEN];
     int count;
@@ -514,8 +521,11 @@ static struct Text *g_thread_owned_helpers;
 static char g_thread_owned_entries[MAX_FUNCS][NAME_MAX_LEN];
 static int g_thread_owned_entry_count;
 static int g_thread_owned_helper_id;
+static int g_panic_cleanup_helper_id;
+static int g_panic_cleanup_parameter_count;
 static struct Owned g_owned;
 static struct Owned g_finalized_locals;
+static struct PanicCleanupBindings g_panic_cleanup_bindings;
 static struct MovedLocals g_moved_locals;
 static struct BorrowLinks g_borrow_links;
 static struct PendingSemantics g_pending_semantics;
@@ -638,6 +648,10 @@ struct DeclInfo;
 static void register_function_params(const char *s);
 static void register_function_param_symbols(const char *s);
 static void register_owned_parameter_cleanup(const char *function_name);
+static int panic_cleanup_binding_add(const char *name, struct Type type);
+static void emit_panic_cleanup_parameter_prologue(struct Text *out);
+static struct Text *add_panic_cleanup_registration(struct Text *in,
+                                                   int index);
 static void begin_function(void);
 static void begin_top_block(struct Text *head);
 static int source_has_cminus_include(FILE *fp);
@@ -794,7 +808,7 @@ static void append_zero_clear_after_decl(struct Text *stmt, const char *original
 static int starts_word(const char *s, const char *word);
 static const char *skip_ws(const char *s);
 
-#line 795 "src/parser.c"
+#line 812 "src/parser.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -1260,15 +1274,15 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   748,   748,   749,   754,   756,   758,   760,   763,   762,
-     769,   771,   776,   778,   780,   782,   788,   789,   794,   796,
-     798,   800,   802,   804,   806,   808,   810,   813,   812,   819,
-     821,   826,   828,   833,   835,   837,   839,   844,   850,   851,
-     856,   858,   860,   862,   864,   869,   875,   876,   881,   883,
-     885,   887,   889,   894,   900,   901,   906,   908,   910,   912,
-     914,   919,   921,   923,   925,   927,   929,   931,   933,   935,
-     937,   939,   941,   943,   948,   950,   952,   954,   956,   958,
-     960,   962,   964,   966,   968,   970
+       0,   765,   765,   766,   771,   773,   775,   777,   780,   779,
+     786,   788,   793,   795,   797,   799,   805,   806,   811,   813,
+     815,   817,   819,   821,   823,   825,   827,   830,   829,   836,
+     838,   843,   845,   850,   852,   854,   856,   861,   867,   868,
+     873,   875,   877,   879,   881,   886,   892,   893,   898,   900,
+     902,   904,   906,   911,   917,   918,   923,   925,   927,   929,
+     931,   936,   938,   940,   942,   944,   946,   948,   950,   952,
+     954,   956,   958,   960,   965,   967,   969,   971,   973,   975,
+     977,   979,   981,   983,   985,   987
 };
 #endif
 
@@ -1969,511 +1983,511 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* translation_unit: %empty  */
-#line 748 "src/parser.y"
+#line 765 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 1972 "src/parser.c"
+#line 1989 "src/parser.c"
     break;
 
   case 3: /* translation_unit: translation_unit external_item  */
-#line 750 "src/parser.y"
+#line 767 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); g_output = (yyval.node); }
-#line 1978 "src/parser.c"
+#line 1995 "src/parser.c"
     break;
 
   case 4: /* external_item: PP_LINE  */
-#line 755 "src/parser.y"
+#line 772 "src/parser.y"
         { (yyval.node) = finalize_typed_raw(process_pp_line((yyvsp[0].node)), ND_PP); }
-#line 1984 "src/parser.c"
+#line 2001 "src/parser.c"
     break;
 
   case 5: /* external_item: SEMI  */
-#line 757 "src/parser.y"
+#line 774 "src/parser.y"
         { (yyval.node) = process_standalone_semi((yyvsp[0].node)); }
-#line 1990 "src/parser.c"
+#line 2007 "src/parser.c"
     break;
 
   case 6: /* external_item: top_seq SEMI  */
-#line 759 "src/parser.y"
+#line 776 "src/parser.y"
         { (yyval.node) = finalize_typed_statement(process_external_decl((yyvsp[-1].node), (yyvsp[0].node)), ND_DECL); }
-#line 1996 "src/parser.c"
+#line 2013 "src/parser.c"
     break;
 
   case 7: /* external_item: top_seq LBRACE compound_items RBRACE top_seq SEMI  */
-#line 761 "src/parser.y"
+#line 778 "src/parser.y"
         { (yyval.node) = finish_c_compat_braced_decl((yyvsp[-5].node), (yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2002 "src/parser.c"
+#line 2019 "src/parser.c"
     break;
 
   case 8: /* $@1: %empty  */
-#line 763 "src/parser.y"
+#line 780 "src/parser.y"
         { begin_top_block((yyvsp[-1].node)); }
-#line 2008 "src/parser.c"
+#line 2025 "src/parser.c"
     break;
 
   case 9: /* external_item: top_seq LBRACE $@1 compound_items RBRACE  */
-#line 765 "src/parser.y"
+#line 782 "src/parser.y"
         { (yyval.node) = finish_top_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2014 "src/parser.c"
+#line 2031 "src/parser.c"
     break;
 
   case 10: /* top_seq: top_part  */
-#line 770 "src/parser.y"
+#line 787 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2020 "src/parser.c"
+#line 2037 "src/parser.c"
     break;
 
   case 11: /* top_seq: top_seq top_part  */
-#line 772 "src/parser.y"
+#line 789 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2026 "src/parser.c"
+#line 2043 "src/parser.c"
     break;
 
   case 12: /* top_part: token_no_comma  */
-#line 777 "src/parser.y"
+#line 794 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2032 "src/parser.c"
+#line 2049 "src/parser.c"
     break;
 
   case 13: /* top_part: paren_group  */
-#line 779 "src/parser.y"
+#line 796 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2038 "src/parser.c"
+#line 2055 "src/parser.c"
     break;
 
   case 14: /* top_part: bracket_group  */
-#line 781 "src/parser.y"
+#line 798 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2044 "src/parser.c"
+#line 2061 "src/parser.c"
     break;
 
   case 15: /* top_part: angle_group  */
-#line 783 "src/parser.y"
+#line 800 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2050 "src/parser.c"
+#line 2067 "src/parser.c"
     break;
 
   case 16: /* compound_items: %empty  */
-#line 788 "src/parser.y"
+#line 805 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 2056 "src/parser.c"
+#line 2073 "src/parser.c"
     break;
 
   case 17: /* compound_items: compound_items compound_item  */
-#line 790 "src/parser.y"
+#line 807 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2062 "src/parser.c"
+#line 2079 "src/parser.c"
     break;
 
   case 18: /* compound_item: PP_LINE  */
-#line 795 "src/parser.y"
+#line 812 "src/parser.y"
         { (yyval.node) = finalize_typed_raw(process_pp_line((yyvsp[0].node)), ND_PP); }
-#line 2068 "src/parser.c"
+#line 2085 "src/parser.c"
     break;
 
   case 19: /* compound_item: SEMI  */
-#line 797 "src/parser.y"
+#line 814 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2074 "src/parser.c"
+#line 2091 "src/parser.c"
     break;
 
   case 20: /* compound_item: return_statement  */
-#line 799 "src/parser.y"
+#line 816 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2080 "src/parser.c"
+#line 2097 "src/parser.c"
     break;
 
   case 21: /* compound_item: stmt_seq SEMI  */
-#line 801 "src/parser.y"
+#line 818 "src/parser.y"
         { (yyval.node) = finalize_typed_statement(process_statement((yyvsp[-1].node), (yyvsp[0].node)), ND_EXPR_STMT); }
-#line 2086 "src/parser.c"
+#line 2103 "src/parser.c"
     break;
 
   case 22: /* compound_item: stmt_seq COMMA  */
-#line 803 "src/parser.y"
+#line 820 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 2092 "src/parser.c"
+#line 2109 "src/parser.c"
     break;
 
   case 23: /* compound_item: IDENT COLON  */
-#line 805 "src/parser.y"
+#line 822 "src/parser.y"
         { (yyval.node) = finalize_typed_label(text_join((yyvsp[-1].node), (yyvsp[0].node)), ND_LABEL); (yyval.node)->tail_return = 0; }
-#line 2098 "src/parser.c"
+#line 2115 "src/parser.c"
     break;
 
   case 24: /* compound_item: DEFAULT COLON  */
-#line 807 "src/parser.y"
+#line 824 "src/parser.y"
         { (yyval.node) = finalize_typed_label(text_join((yyvsp[-1].node), (yyvsp[0].node)), ND_DEFAULT); (yyval.node)->tail_return = 0; }
-#line 2104 "src/parser.c"
+#line 2121 "src/parser.c"
     break;
 
   case 25: /* compound_item: CASE stmt_seq COLON  */
-#line 809 "src/parser.y"
+#line 826 "src/parser.y"
         { (yyval.node) = finalize_typed_label(text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)), ND_CASE); (yyval.node)->tail_return = 0; }
-#line 2110 "src/parser.c"
+#line 2127 "src/parser.c"
     break;
 
   case 26: /* compound_item: LBRACE compound_items RBRACE  */
-#line 811 "src/parser.y"
+#line 828 "src/parser.y"
         { (yyval.node) = finalize_typed_block((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 2116 "src/parser.c"
+#line 2133 "src/parser.c"
     break;
 
   case 27: /* $@2: %empty  */
-#line 813 "src/parser.y"
+#line 830 "src/parser.y"
         { begin_stmt_block((yyvsp[-1].node)); }
-#line 2122 "src/parser.c"
+#line 2139 "src/parser.c"
     break;
 
   case 28: /* compound_item: stmt_seq LBRACE $@2 compound_items RBRACE  */
-#line 815 "src/parser.y"
+#line 832 "src/parser.y"
         { (yyval.node) = finish_stmt_block((yyvsp[-4].node), (yyvsp[-3].node), (yyvsp[-1].node), (yyvsp[0].node)); (yyval.node)->tail_return = 0; }
-#line 2128 "src/parser.c"
+#line 2145 "src/parser.c"
     break;
 
   case 29: /* return_statement: RETURN SEMI  */
-#line 820 "src/parser.y"
+#line 837 "src/parser.y"
         { (yyval.node) = finalize_typed_statement(process_return((yyvsp[-1].node), text_new(), (yyvsp[0].node)), ND_RETURN); }
-#line 2134 "src/parser.c"
+#line 2151 "src/parser.c"
     break;
 
   case 30: /* return_statement: RETURN stmt_seq SEMI  */
-#line 822 "src/parser.y"
+#line 839 "src/parser.y"
         { (yyval.node) = finalize_typed_statement(process_return((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)), ND_RETURN); }
-#line 2140 "src/parser.c"
+#line 2157 "src/parser.c"
     break;
 
   case 31: /* stmt_seq: stmt_part  */
-#line 827 "src/parser.y"
+#line 844 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2146 "src/parser.c"
+#line 2163 "src/parser.c"
     break;
 
   case 32: /* stmt_seq: stmt_seq stmt_part  */
-#line 829 "src/parser.y"
+#line 846 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2152 "src/parser.c"
+#line 2169 "src/parser.c"
     break;
 
   case 33: /* stmt_part: token_no_comma  */
-#line 834 "src/parser.y"
+#line 851 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2158 "src/parser.c"
+#line 2175 "src/parser.c"
     break;
 
   case 34: /* stmt_part: paren_group  */
-#line 836 "src/parser.y"
+#line 853 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2164 "src/parser.c"
+#line 2181 "src/parser.c"
     break;
 
   case 35: /* stmt_part: bracket_group  */
-#line 838 "src/parser.y"
+#line 855 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2170 "src/parser.c"
+#line 2187 "src/parser.c"
     break;
 
   case 36: /* stmt_part: angle_group  */
-#line 840 "src/parser.y"
+#line 857 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2176 "src/parser.c"
+#line 2193 "src/parser.c"
     break;
 
   case 37: /* paren_group: LPAREN paren_items RPAREN  */
-#line 845 "src/parser.y"
+#line 862 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2182 "src/parser.c"
+#line 2199 "src/parser.c"
     break;
 
   case 38: /* paren_items: %empty  */
-#line 850 "src/parser.y"
+#line 867 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 2188 "src/parser.c"
+#line 2205 "src/parser.c"
     break;
 
   case 39: /* paren_items: paren_items paren_part  */
-#line 852 "src/parser.y"
+#line 869 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2194 "src/parser.c"
+#line 2211 "src/parser.c"
     break;
 
   case 40: /* paren_part: token  */
-#line 857 "src/parser.y"
+#line 874 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2200 "src/parser.c"
+#line 2217 "src/parser.c"
     break;
 
   case 41: /* paren_part: SEMI  */
-#line 859 "src/parser.y"
+#line 876 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2206 "src/parser.c"
+#line 2223 "src/parser.c"
     break;
 
   case 42: /* paren_part: paren_group  */
-#line 861 "src/parser.y"
+#line 878 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2212 "src/parser.c"
+#line 2229 "src/parser.c"
     break;
 
   case 43: /* paren_part: bracket_group  */
-#line 863 "src/parser.y"
+#line 880 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2218 "src/parser.c"
+#line 2235 "src/parser.c"
     break;
 
   case 44: /* paren_part: angle_group  */
-#line 865 "src/parser.y"
+#line 882 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2224 "src/parser.c"
+#line 2241 "src/parser.c"
     break;
 
   case 45: /* bracket_group: LBRACKET bracket_items RBRACKET  */
-#line 870 "src/parser.y"
+#line 887 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2230 "src/parser.c"
+#line 2247 "src/parser.c"
     break;
 
   case 46: /* bracket_items: %empty  */
-#line 875 "src/parser.y"
+#line 892 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 2236 "src/parser.c"
+#line 2253 "src/parser.c"
     break;
 
   case 47: /* bracket_items: bracket_items bracket_part  */
-#line 877 "src/parser.y"
+#line 894 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2242 "src/parser.c"
+#line 2259 "src/parser.c"
     break;
 
   case 48: /* bracket_part: token  */
-#line 882 "src/parser.y"
+#line 899 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2248 "src/parser.c"
+#line 2265 "src/parser.c"
     break;
 
   case 49: /* bracket_part: SEMI  */
-#line 884 "src/parser.y"
+#line 901 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2254 "src/parser.c"
+#line 2271 "src/parser.c"
     break;
 
   case 50: /* bracket_part: paren_group  */
-#line 886 "src/parser.y"
+#line 903 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2260 "src/parser.c"
+#line 2277 "src/parser.c"
     break;
 
   case 51: /* bracket_part: bracket_group  */
-#line 888 "src/parser.y"
+#line 905 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2266 "src/parser.c"
+#line 2283 "src/parser.c"
     break;
 
   case 52: /* bracket_part: angle_group  */
-#line 890 "src/parser.y"
+#line 907 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2272 "src/parser.c"
+#line 2289 "src/parser.c"
     break;
 
   case 53: /* angle_group: LT angle_items GT  */
-#line 895 "src/parser.y"
+#line 912 "src/parser.y"
         { (yyval.node) = text_join3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2278 "src/parser.c"
+#line 2295 "src/parser.c"
     break;
 
   case 54: /* angle_items: %empty  */
-#line 900 "src/parser.y"
+#line 917 "src/parser.y"
         { (yyval.node) = text_new(); }
-#line 2284 "src/parser.c"
+#line 2301 "src/parser.c"
     break;
 
   case 55: /* angle_items: angle_items angle_part  */
-#line 902 "src/parser.y"
+#line 919 "src/parser.y"
         { (yyval.node) = text_join((yyvsp[-1].node), (yyvsp[0].node)); }
-#line 2290 "src/parser.c"
+#line 2307 "src/parser.c"
     break;
 
   case 56: /* angle_part: token  */
-#line 907 "src/parser.y"
+#line 924 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2296 "src/parser.c"
+#line 2313 "src/parser.c"
     break;
 
   case 57: /* angle_part: SEMI  */
-#line 909 "src/parser.y"
+#line 926 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2302 "src/parser.c"
+#line 2319 "src/parser.c"
     break;
 
   case 58: /* angle_part: paren_group  */
-#line 911 "src/parser.y"
+#line 928 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2308 "src/parser.c"
+#line 2325 "src/parser.c"
     break;
 
   case 59: /* angle_part: bracket_group  */
-#line 913 "src/parser.y"
+#line 930 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2314 "src/parser.c"
+#line 2331 "src/parser.c"
     break;
 
   case 60: /* angle_part: angle_group  */
-#line 915 "src/parser.y"
+#line 932 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2320 "src/parser.c"
+#line 2337 "src/parser.c"
     break;
 
   case 61: /* token: IDENT  */
-#line 920 "src/parser.y"
+#line 937 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2326 "src/parser.c"
+#line 2343 "src/parser.c"
     break;
 
   case 62: /* token: NUMBER  */
-#line 922 "src/parser.y"
+#line 939 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2332 "src/parser.c"
+#line 2349 "src/parser.c"
     break;
 
   case 63: /* token: STRING_LITERAL  */
-#line 924 "src/parser.y"
+#line 941 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2338 "src/parser.c"
+#line 2355 "src/parser.c"
     break;
 
   case 64: /* token: CHAR_LITERAL  */
-#line 926 "src/parser.y"
+#line 943 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2344 "src/parser.c"
+#line 2361 "src/parser.c"
     break;
 
   case 65: /* token: KEYWORD  */
-#line 928 "src/parser.y"
+#line 945 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2350 "src/parser.c"
+#line 2367 "src/parser.c"
     break;
 
   case 66: /* token: OP  */
-#line 930 "src/parser.y"
+#line 947 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2356 "src/parser.c"
+#line 2373 "src/parser.c"
     break;
 
   case 67: /* token: LT  */
-#line 932 "src/parser.y"
+#line 949 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2362 "src/parser.c"
+#line 2379 "src/parser.c"
     break;
 
   case 68: /* token: GT  */
-#line 934 "src/parser.y"
+#line 951 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2368 "src/parser.c"
+#line 2385 "src/parser.c"
     break;
 
   case 69: /* token: COMMA  */
-#line 936 "src/parser.y"
+#line 953 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2374 "src/parser.c"
+#line 2391 "src/parser.c"
     break;
 
   case 70: /* token: COLON  */
-#line 938 "src/parser.y"
+#line 955 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2380 "src/parser.c"
+#line 2397 "src/parser.c"
     break;
 
   case 71: /* token: EQUAL  */
-#line 940 "src/parser.y"
+#line 957 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2386 "src/parser.c"
+#line 2403 "src/parser.c"
     break;
 
   case 72: /* token: PERCENT  */
-#line 942 "src/parser.y"
+#line 959 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2392 "src/parser.c"
+#line 2409 "src/parser.c"
     break;
 
   case 73: /* token: OTHER  */
-#line 944 "src/parser.y"
+#line 961 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2398 "src/parser.c"
+#line 2415 "src/parser.c"
     break;
 
   case 74: /* token_no_comma: IDENT  */
-#line 949 "src/parser.y"
+#line 966 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2404 "src/parser.c"
+#line 2421 "src/parser.c"
     break;
 
   case 75: /* token_no_comma: NUMBER  */
-#line 951 "src/parser.y"
+#line 968 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2410 "src/parser.c"
+#line 2427 "src/parser.c"
     break;
 
   case 76: /* token_no_comma: STRING_LITERAL  */
-#line 953 "src/parser.y"
+#line 970 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2416 "src/parser.c"
+#line 2433 "src/parser.c"
     break;
 
   case 77: /* token_no_comma: CHAR_LITERAL  */
-#line 955 "src/parser.y"
+#line 972 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2422 "src/parser.c"
+#line 2439 "src/parser.c"
     break;
 
   case 78: /* token_no_comma: KEYWORD  */
-#line 957 "src/parser.y"
+#line 974 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2428 "src/parser.c"
+#line 2445 "src/parser.c"
     break;
 
   case 79: /* token_no_comma: OP  */
-#line 959 "src/parser.y"
+#line 976 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2434 "src/parser.c"
+#line 2451 "src/parser.c"
     break;
 
   case 80: /* token_no_comma: LT  */
-#line 961 "src/parser.y"
+#line 978 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2440 "src/parser.c"
+#line 2457 "src/parser.c"
     break;
 
   case 81: /* token_no_comma: GT  */
-#line 963 "src/parser.y"
+#line 980 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2446 "src/parser.c"
+#line 2463 "src/parser.c"
     break;
 
   case 82: /* token_no_comma: COLON  */
-#line 965 "src/parser.y"
+#line 982 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2452 "src/parser.c"
+#line 2469 "src/parser.c"
     break;
 
   case 83: /* token_no_comma: EQUAL  */
-#line 967 "src/parser.y"
+#line 984 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2458 "src/parser.c"
+#line 2475 "src/parser.c"
     break;
 
   case 84: /* token_no_comma: PERCENT  */
-#line 969 "src/parser.y"
+#line 986 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2464 "src/parser.c"
+#line 2481 "src/parser.c"
     break;
 
   case 85: /* token_no_comma: OTHER  */
-#line 971 "src/parser.y"
+#line 988 "src/parser.y"
         { (yyval.node) = (yyvsp[0].node); }
-#line 2470 "src/parser.c"
+#line 2487 "src/parser.c"
     break;
 
 
-#line 2474 "src/parser.c"
+#line 2491 "src/parser.c"
 
       default: break;
     }
@@ -2666,7 +2680,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 974 "src/parser.y"
+#line 991 "src/parser.y"
 
 
 static void die(const char *msg)
@@ -6340,6 +6354,8 @@ static void begin_function(void)
 {
     g_owned.count = 0;
     g_finalized_locals.count = 0;
+    g_panic_cleanup_bindings.count = 0;
+    g_panic_cleanup_parameter_count = 0;
     g_moved_locals.count = 0;
     g_borrow_links.count = 0;
     g_locals.count = 0;
@@ -8515,19 +8531,59 @@ static struct SafetyExprNode *safety_parse_primary(struct SafetyExprParser *pars
             return safety_expr_new(SAFETY_EXPR_LITERAL, start, parser->cursor);
         }
         node = safety_expr_new(SAFETY_EXPR_STATEMENT, start, close_paren + 1);
-        node->child = safety_parse_forest_range(open_brace + 1, close_brace);
-        safety_statement_bind_declarations(node->child, open_brace + 1,
-                                           close_brace);
         {
-            const char *result_start;
-            const char *result_end;
-            struct SafetyExprNode *result;
+            const char *body = safety_skip_trivia(parser, open_brace + 1);
+            const char *name_start = starts_word(body, "__typeof__") ?
+                safety_skip_trivia(parser, body + strlen("__typeof__")) : NULL;
+            char move_name[NAME_MAX_LEN] = "";
+            int generated_move = 0;
 
-            safety_statement_result_bounds(open_brace + 1, close_brace,
-                                           &result_start, &result_end);
-            result = result_start == NULL ? NULL :
-                safety_mark_statement_result(node->child, result_start, result_end);
-            if (result != NULL) node->type = result->type;
+            if (name_start != NULL && name_start < close_brace &&
+                *name_start == '(') {
+                const char *name_end = safety_skip_trivia(parser, name_start + 1);
+                const char *after_name;
+
+                name_start = name_end;
+                if (is_ident_start((unsigned char)*name_start)) {
+                    const char *move_marker;
+
+                    after_name = read_name(name_start, move_name);
+                    after_name = safety_skip_trivia(parser, after_name);
+                    move_marker = strstr(after_name, "__cminus_move");
+                    generated_move = after_name < close_brace &&
+                        *after_name == ')' &&
+                        move_marker != NULL && move_marker < close_brace;
+                }
+            }
+            if (generated_move) {
+                struct SafetyExprNode *value = safety_expr_new(
+                    SAFETY_EXPR_IDENTIFIER, name_start,
+                    name_start + strlen(move_name));
+
+                strncpy(value->name, move_name, NAME_MAX_LEN - 1);
+                value->name[NAME_MAX_LEN - 1] = '\0';
+                safety_resolve_identifier_node(value);
+                node->kind = SAFETY_EXPR_MOVE;
+                strcpy(node->op, "move");
+                node->lhs = value;
+                node->type = value->type;
+                node->type.owned = 1;
+            } else {
+                const char *result_start;
+                const char *result_end;
+                struct SafetyExprNode *result;
+
+                node->child = safety_parse_forest_range(open_brace + 1,
+                                                        close_brace);
+                safety_statement_bind_declarations(node->child, open_brace + 1,
+                                                   close_brace);
+                safety_statement_result_bounds(open_brace + 1, close_brace,
+                                               &result_start, &result_end);
+                result = result_start == NULL ? NULL :
+                    safety_mark_statement_result(node->child, result_start,
+                                                 result_end);
+                if (result != NULL) node->type = result->type;
+            }
         }
         parser->cursor = close_paren + 1;
     } else if (*start == '(') {
@@ -9466,9 +9522,21 @@ static struct Node *ast_typed_output(enum NodeKind fallback, const char *text)
     int count = 0;
     struct Node *parent;
     struct Node *body = NULL;
+    const char *panic_cleanup;
 
     if (fallback == ND_RETURN) {
         return ast_typed_statement(fallback, text);
+    }
+    panic_cleanup = strstr(
+        text, "struct __CMinusPanicCleanup __cminus_panic_cleanup_");
+    if (panic_cleanup != NULL) {
+        char *user_text = xstrndup(
+            text, (size_t)(panic_cleanup - text));
+        struct Node *user_node = ast_typed_output(fallback, user_text);
+        struct Node *cleanup_node = ast_new(ND_CLEANUP, panic_cleanup);
+
+        free(user_text);
+        return ast_append(user_node, cleanup_node);
     }
     p = text;
     while (*p != '\0') {
@@ -9611,7 +9679,7 @@ static struct Text *finalize_typed_statement(struct Text *in, enum NodeKind fall
     out = text_new();
     out->tail_return = in->tail_return;
     out->ast = node;
-    ast_emit_statement(out, node);
+    ast_emit_node(out, node);
     in->ast = NULL;
     text_free(in);
     return out;
@@ -13450,11 +13518,135 @@ static void register_owned_parameter_cleanup(const char *function_name)
         }
         if (fn->param[i].type.ptr > 0) {
             owned_add(fn->param[i].name, fn->param[i].type);
+            panic_cleanup_binding_add(fn->param[i].name,
+                                      fn->param[i].type);
         } else if (type_has_finalizer(fn->param[i].type)) {
             finalized_local_add(fn->param[i].name, fn->param[i].type);
+            panic_cleanup_binding_add(fn->param[i].name,
+                                      fn->param[i].type);
         }
     }
+    g_panic_cleanup_parameter_count = g_panic_cleanup_bindings.count;
 }
+
+static int panic_cleanup_binding_index(const char *name)
+{
+    int i;
+
+    for (i = 0; i < g_panic_cleanup_bindings.count; i++) {
+        if (strcmp(g_panic_cleanup_bindings.name[i], name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int panic_cleanup_binding_add(const char *name, struct Type type)
+{
+    struct PanicCleanupBindings *bindings = &g_panic_cleanup_bindings;
+    struct Text *helper_body;
+    char slot_expr[NAME_MAX_LEN * 2];
+    int index;
+    int helper_id;
+
+    if (g_bare_metal || g_current_generic_kind != 0 ||
+        name == NULL || name[0] == '\0' ||
+        panic_cleanup_binding_index(name) >= 0) {
+        return -1;
+    }
+    if (bindings->count >= MAX_OWNED) {
+        die("too many panic cleanup bindings in one function");
+    }
+    index = bindings->count++;
+    helper_id = g_panic_cleanup_helper_id++;
+    strncpy(bindings->name[index], name, NAME_MAX_LEN - 1);
+    bindings->name[index][NAME_MAX_LEN - 1] = '\0';
+    snprintf(bindings->node[index], NAME_MAX_LEN,
+             "__cminus_panic_cleanup_%d", helper_id);
+    snprintf(bindings->helper[index], NAME_MAX_LEN,
+             "__cminus_panic_drop_%d", helper_id);
+
+    text_add(g_defines, "static void ");
+    text_add(g_defines, bindings->helper[index]);
+    text_add(g_defines, "(void* __cminus_raw);\n");
+
+    helper_body = g_thread_owned_helpers;
+    text_add(helper_body, "static void ");
+    text_add(helper_body, bindings->helper[index]);
+    text_add(helper_body, "(void* __cminus_raw)\n{\n    ");
+    append_c_type(helper_body, type);
+    text_add(helper_body, "* __cminus_slot = (");
+    append_c_type(helper_body, type);
+    text_add(helper_body,
+             "*)__cminus_raw;\n    if (__cminus_slot == NULL) { return; }\n");
+    snprintf(slot_expr, sizeof(slot_expr), "(*__cminus_slot)");
+    if (type.ptr > 0) {
+        append_release_pointer(helper_body, "    ", slot_expr, type);
+        text_add(helper_body, "    *__cminus_slot = NULL;\n");
+    } else {
+        append_finalize_for_type(helper_body, "    ", slot_expr, type);
+        text_add(helper_body,
+                 "    memset(__cminus_slot, 0, sizeof(*__cminus_slot));\n");
+    }
+    text_add(helper_body, "}\n");
+    return index;
+}
+
+static void emit_panic_cleanup_parameter_prologue(struct Text *out)
+{
+    int i;
+
+    for (i = 0; i < g_panic_cleanup_parameter_count; i++) {
+        text_add(out, "    struct __CMinusPanicCleanup ");
+        text_add(out, g_panic_cleanup_bindings.node[i]);
+        text_add(out,
+                 " __attribute__((cleanup(cminus_panic_cleanup_scope_leave))) = {0};\n");
+        text_add(out, "    cminus_panic_cleanup_push(&");
+        text_add(out, g_panic_cleanup_bindings.node[i]);
+        text_add(out, ", ");
+        text_add(out, g_panic_cleanup_bindings.helper[i]);
+        text_add(out, ", (void*)&");
+        text_add(out, g_panic_cleanup_bindings.name[i]);
+        text_add(out, ");\n");
+    }
+}
+
+static struct Text *add_panic_cleanup_registration(struct Text *in, int index)
+{
+    struct Text *out;
+    struct Text *indent;
+
+    if (index < 0 || index >= g_panic_cleanup_bindings.count) {
+        return in;
+    }
+    out = text_new();
+    indent = text_new();
+    append_indent_from(in->text, indent);
+    text_add(out, in->text);
+    if (out->len == 0 || out->text[out->len - 1] != '\n') {
+        text_add_ch(out, '\n');
+    }
+    text_add(out, indent->text);
+    text_add(out, "struct __CMinusPanicCleanup ");
+    text_add(out, g_panic_cleanup_bindings.node[index]);
+    text_add(out,
+             " __attribute__((cleanup(cminus_panic_cleanup_scope_leave))) = {0};\n");
+    text_add(out, indent->text);
+    text_add(out, "cminus_panic_cleanup_push(&");
+    text_add(out, g_panic_cleanup_bindings.node[index]);
+    text_add(out, ", ");
+    text_add(out, g_panic_cleanup_bindings.helper[index]);
+    text_add(out, ", (void*)&");
+    text_add(out, g_panic_cleanup_bindings.name[index]);
+    text_add(out, ");");
+    out->tail_return = in->tail_return;
+    out->ast = in->ast;
+    in->ast = NULL;
+    text_free(indent);
+    text_free(in);
+    return out;
+}
+
 
 static const char *unsafe_matching_brace(const char *open)
 {
@@ -16113,23 +16305,7 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             text_add(g_defines, "static void ");
             text_add(g_defines, drop_name);
             text_add(g_defines, "(void* __cminus_raw);\n");
-            if (capture_count == 1 && capture[0]->type.ptr > 0) {
-                text_add(g_thread_owned_helpers, "static void ");
-                text_add(g_thread_owned_helpers, drop_name);
-                text_add(g_thread_owned_helpers,
-                         "(void* __cminus_raw)\n{\n");
-                append_release_pointer(g_thread_owned_helpers, "    ",
-                                       "__cminus_raw", capture[0]->type);
-                text_add(g_thread_owned_helpers, "}\n");
-                text_add(g_thread_owned_helpers, "static int ");
-                text_add(g_thread_owned_helpers, helper_name);
-                text_add(g_thread_owned_helpers,
-                         "(void* __cminus_raw)\n{\n    return ");
-                text_add(g_thread_owned_helpers, worker_name);
-                text_add(g_thread_owned_helpers, "((");
-                append_c_type(g_thread_owned_helpers, worker->param[0].type);
-                text_add(g_thread_owned_helpers, ")__cminus_raw);\n}\n");
-            } else {
+            {
                 snprintf(spawn_name, sizeof(spawn_name),
                          "__cminus_thread_owned_spawn_%d", helper_id);
                 snprintf(context_name, sizeof(context_name),
@@ -16232,19 +16408,21 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
                     snprintf(index_text, sizeof(index_text), "%d", i);
                     text_add(g_thread_owned_helpers, "    context->value_");
                     text_add(g_thread_owned_helpers, index_text);
-                    if (capture[i]->type.ptr > 0) {
-                        text_add(g_thread_owned_helpers, " = (");
-                        append_c_type(g_thread_owned_helpers,
-                                      capture[i]->type);
-                        text_add(g_thread_owned_helpers, ")value_");
-                    } else {
-                        text_add(g_thread_owned_helpers, " = *(");
-                        append_c_type(g_thread_owned_helpers,
-                                      capture[i]->type);
-                        text_add(g_thread_owned_helpers, "*)value_");
-                    }
+                    text_add(g_thread_owned_helpers, " = *(");
+                    append_c_type(g_thread_owned_helpers,
+                                  capture[i]->type);
+                    text_add(g_thread_owned_helpers, "*)value_");
                     text_add(g_thread_owned_helpers, index_text);
                     text_add(g_thread_owned_helpers, ";\n");
+                }
+                for (i = 0; i < capture_count; i++) {
+                    char index_text[32];
+                    snprintf(index_text, sizeof(index_text), "%d", i);
+                    text_add(g_thread_owned_helpers, "    memset(value_");
+                    text_add(g_thread_owned_helpers, index_text);
+                    text_add(g_thread_owned_helpers, ", 0, sizeof(");
+                    append_c_type(g_thread_owned_helpers, capture[i]->type);
+                    text_add(g_thread_owned_helpers, "));\n");
                 }
                 text_add(g_thread_owned_helpers,
                          "    return Thread_spawn_context(context, ");
@@ -16258,25 +16436,12 @@ static int try_rewrite_thread_static_method(const char *s, const char **end, str
             g_thread_owned_entries[g_thread_owned_entry_count][NAME_MAX_LEN - 1] = '\0';
             g_thread_owned_entry_count++;
 
-            if (capture_count == 1 && capture[0]->type.ptr > 0) {
-                text_add(replacement, "Thread_spawn_context((void*)");
-                text_add(replacement, capture_name[0]);
-                text_add(replacement, ", ");
-                text_add(replacement, helper_name);
-                text_add(replacement, ", ");
-                text_add(replacement, drop_name);
-            } else {
-                text_add(replacement, spawn_name);
-                text_add_ch(replacement, '(');
-                for (i = 0; i < capture_count; i++) {
-                    if (i > 0) text_add(replacement, ", ");
-                    if (capture[i]->type.ptr > 0) {
-                        text_add(replacement, "(void*)");
-                    } else {
-                        text_add(replacement, "(void*)&");
-                    }
-                    text_add(replacement, capture_name[i]);
-                }
+            text_add(replacement, spawn_name);
+            text_add_ch(replacement, '(');
+            for (i = 0; i < capture_count; i++) {
+                if (i > 0) text_add(replacement, ", ");
+                text_add(replacement, "(void*)&");
+                text_add(replacement, capture_name[i]);
             }
             text_add_ch(replacement, ')');
             *end = close + 1;
@@ -18156,16 +18321,56 @@ static struct Text *remove_percent(struct Text *in)
             }
             continue;
         }
+        if (strncmp(in->text + i, "move", 4) == 0 &&
+            (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
+            !is_ident((unsigned char)in->text[i + 4])) {
+            size_t name_start = i + 4;
+            size_t name_end;
+
+            while (name_start < in->len &&
+                   isspace((unsigned char)in->text[name_start])) {
+                name_start++;
+            }
+            name_end = name_start;
+            while (name_end < in->len &&
+                   is_ident((unsigned char)in->text[name_end])) {
+                name_end++;
+            }
+            if (strstr(in->text, "Thread.spawn") == NULL &&
+                name_end > name_start) {
+                char tmp[64];
+                char *name = xstrndup(in->text + name_start,
+                                      name_end - name_start);
+
+                snprintf(tmp, sizeof(tmp), "__cminus_move%d",
+                         g_right_value_id++);
+                text_add(out, "({ __typeof__(");
+                text_add(out, name);
+                text_add(out, ") ");
+                text_add(out, tmp);
+                text_add(out, " = ");
+                text_add(out, name);
+                text_add(out, "; ");
+                text_add(out, name);
+                text_add(out, " = (__typeof__(");
+                text_add(out, name);
+                text_add(out, ")){0}; ");
+                text_add(out, tmp);
+                text_add(out, "; })");
+                free(name);
+                i = name_end - 1;
+                continue;
+            }
+            i = name_start - 1;
+            continue;
+        }
         if ((strncmp(in->text + i, "borrow", 6) == 0 &&
              (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
              !is_ident((unsigned char)in->text[i + 6])) ||
             (strncmp(in->text + i, "owned", 5) == 0 &&
              (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
-             !is_ident((unsigned char)in->text[i + 5])) ||
-            (strncmp(in->text + i, "move", 4) == 0 &&
-             (i == 0 || !is_ident((unsigned char)in->text[i - 1])) &&
-             !is_ident((unsigned char)in->text[i + 4]))) {
-            size_t n = in->text[i] == 'b' ? 6 : (in->text[i] == 'o' ? 5 : 4);
+             !is_ident((unsigned char)in->text[i + 5]))) {
+            size_t n = in->text[i] == 'b' ? 6 : 5;
             i += n;
             while (i < in->len && isspace((unsigned char)in->text[i])) {
                 i++;
@@ -19190,9 +19395,18 @@ static void emit_frees(struct Text *out, const char *indent)
     int i;
     for (i = g_finalized_locals.count - 1; i >= 0; i--) {
         append_finalize_for_type(out, indent, g_finalized_locals.name[i], g_finalized_locals.type[i]);
+        text_add(out, indent);
+        text_add(out, "memset(&");
+        text_add(out, g_finalized_locals.name[i]);
+        text_add(out, ", 0, sizeof(");
+        text_add(out, g_finalized_locals.name[i]);
+        text_add(out, "));\n");
     }
     for (i = g_owned.count - 1; i >= 0; i--) {
         append_release_pointer(out, indent, g_owned.name[i], g_owned.type[i]);
+        text_add(out, indent);
+        text_add(out, g_owned.name[i]);
+        text_add(out, " = NULL;\n");
         text_add_ch(out, '\n');
     }
 }
@@ -19586,6 +19800,10 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
                 if (post_free) {
                     append_free_after_statement(out, all->text, post_free_name, post_free_type);
                 }
+                if (g_unsafe_depth == 0) {
+                    out = add_panic_cleanup_registration(
+                        out, panic_cleanup_binding_add(decl.name, decl.type));
+                }
                 out->ast = ast_raw(ND_S_STRING, out->text);
                 text_free(all);
                 return out;
@@ -19693,6 +19911,12 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
         }
         if (post_free) {
             append_free_after_statement(all, all->text, post_free_name, post_free_type);
+        }
+        if (g_unsafe_depth == 0 &&
+            (owned_index_in(&g_owned, decl.name) >= 0 ||
+             owned_index_in(&g_finalized_locals, decl.name) >= 0)) {
+            all = add_panic_cleanup_registration(
+                all, panic_cleanup_binding_add(decl.name, decl.type));
         }
         return all;
     }
@@ -20009,6 +20233,7 @@ static char *extract_return_value_expr(const char *stmt)
 static struct Text *process_return(struct Text *ret, struct Text *expr, struct Text *semi)
 {
     struct Text *all = text_join3(ret, expr, semi);
+    char detached_return_name[NAME_MAX_LEN] = "";
     pending_semantics_capture_return(all->text);
     all->ast = ast_raw(ND_RETURN, all->text);
     if (g_current_generic_kind != 0 || g_current_payload_enum) {
@@ -20090,7 +20315,20 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     free(g_pending_semantics.return_expr);
     g_pending_semantics.return_expr = extract_return_value_expr(all->text);
     {
-        int detached_return_owner = detach_plain_return_owner(all->text);
+        char *return_expr = extract_return_value_expr(all->text);
+        char return_name[NAME_MAX_LEN];
+        int detached_return_owner;
+
+        if (return_expr != NULL &&
+            (extract_plain_name_expr(return_expr, return_name) ||
+             extract_move_name(return_expr, return_name)) &&
+            (owned_index_in(&g_owned, return_name) >= 0 ||
+             owned_index_in(&g_finalized_locals, return_name) >= 0)) {
+            strncpy(detached_return_name, return_name, NAME_MAX_LEN - 1);
+            detached_return_name[NAME_MAX_LEN - 1] = '\0';
+        }
+        free(return_expr);
+        detached_return_owner = detach_plain_return_owner(all->text);
 
         if (g_unsafe_depth == 0 && g_current_function_ret.ptr == 0 &&
             type_has_finalizer(g_current_function_ret) &&
@@ -20119,6 +20357,13 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
             text_add(out, " = (");
             text_add(out, return_expr);
             text_add(out, ");\n");
+            if (detached_return_name[0] != '\0') {
+                text_add(out, indent->text);
+                text_add(out, detached_return_name);
+                text_add(out, " = (__typeof__(");
+                text_add(out, detached_return_name);
+                text_add(out, ")){0};\n");
+            }
             emit_frees(out, indent->text);
             if (g_current_function_stack_guard) {
                 append_stack_leave(out, indent->text);
@@ -20166,6 +20411,13 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
             text_add(out, " = (");
             text_add(out, return_expr);
             text_add(out, ");\n");
+            if (detached_return_name[0] != '\0') {
+                text_add(out, indent->text);
+                text_add(out, detached_return_name);
+                text_add(out, " = (__typeof__(");
+                text_add(out, detached_return_name);
+                text_add(out, ")){0};\n");
+            }
             append_stack_leave(out, indent->text);
             text_add(out, indent->text);
             text_add(out, "return ");
@@ -20414,6 +20666,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         struct Text *prologue = text_new();
         struct Node *function_ast = ast_function(head->text, body_ast);
         int body_tail_return = body->tail_return;
+        emit_panic_cleanup_parameter_prologue(prologue);
         if (g_current_function_stack_guard) {
             append_stack_enter(prologue, "    ");
         }

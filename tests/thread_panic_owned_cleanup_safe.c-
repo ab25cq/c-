@@ -1,0 +1,34 @@
+Atomic<int> entered;
+Mutex gate;
+
+int consume_text(owned string text)
+{
+    return text.len();
+}
+
+int panic_with_owner(owned string input)
+{
+    owned string local = s"local cleanup";
+
+    consume_text(move input);
+    gate.lock();
+    entered.store(local.len());
+    gate.lock();
+    return 0;
+}
+
+int main(void)
+{
+    owned string input = s"moved capture";
+    Thread worker;
+
+    entered.store(0);
+    worker = Thread.spawn(move input, panic_with_owner);
+    worker.detach();
+    while (entered.load() == 0) {
+        Thread.yield();
+    }
+    gate.lock();
+    gate.unlock();
+    return entered.load() == 13 ? 0 : 1;
+}

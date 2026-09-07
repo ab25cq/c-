@@ -523,7 +523,9 @@ raw/non-owning pointers, runtime resources, and structs containing them. The
 moved source cannot be used afterward. User structs and their owned pointees
 are checked recursively, including cyclic `Box<Node>`-style type graphs.
 Moving the same variable twice is rejected, and every moved source becomes
-unusable after the spawn expression.
+unusable after the spawn expression. Generated code also zeroes each source
+immediately after copying it into the startup context, preventing its scope
+cleanup from releasing the transferred value.
 If native thread creation fails after the move, a generated type-directed drop
 callback finalizes all captures and releases the context before panicking.
 
@@ -533,14 +535,15 @@ message and source location, releases the worker's thread-state reference and
 tracked stack metadata, and unlocks the sole synchronization lock if the panic
 occurred while it was held. `join()` then raises the same panic in the joining
 thread. A detached worker panic releases its runtime state and does not abort
-unrelated threads.
+unrelated threads. Non-generic safe functions register owned parameters and
+owned/finalizable locals in a thread-local LIFO chain. The worker panic path
+runs this type-directed chain, finalizing moved captures, strings, boxes, and
+owning value structs exactly once. A finalizer that panics while this cleanup is
+already running causes a fail-stop process abort, matching double-panic
+semantics rather than attempting unsafe recursive recovery.
 
-This is the first stage of panic propagation, not yet general stack unwinding.
-Owned parameters and owned locals whose normal generated cleanup was bypassed
-by a worker panic are not yet finalized, so such a panic can currently leak
-their allocations. Safe code does not regain access to those values, but code
-that requires panic-time resource cleanup should not panic while owning them
-until cleanup-aware ownership unwinding is implemented.
+Concrete generic instantiations do not yet add this panic-cleanup chain; this
+is the remaining ownership-unwinding gap for worker panics.
 
 Outside `Thread.spawn`, an `owned` parameter also consumes its argument:
 
