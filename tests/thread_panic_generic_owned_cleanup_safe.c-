@@ -1,0 +1,57 @@
+Atomic<int> entered;
+Mutex gate;
+
+generic<T>
+owned T generic_identity(owned T input)
+{
+    return input;
+}
+
+int trigger_generic_worker_panic(void)
+{
+    gate.lock();
+    entered.store(1);
+    gate.lock();
+    return 0;
+}
+
+int consume_returned_string(owned string text)
+{
+    return text.len();
+}
+
+generic<T>
+int generic_owned_panic(owned T input)
+{
+    owned T local = move input;
+
+    trigger_generic_worker_panic();
+    return 0;
+}
+
+int generic_worker(owned string input)
+{
+    return generic_owned_panic<string>(move input);
+}
+
+int main(void)
+{
+    owned string identity_input = s"roundtrip";
+    owned string returned = generic_identity<string>(move identity_input);
+    owned string input = s"generic worker owner";
+    Thread worker;
+    int returned_len = consume_returned_string(move returned);
+
+    if (returned_len != 9) {
+        return 1;
+    }
+    entered.store(0);
+    worker = Thread.spawn(move input, generic_worker);
+    worker.detach();
+    while (entered.load() == 0) {
+        Thread.yield();
+    }
+    gate.lock();
+    gate.unlock();
+    return 0;
+}

@@ -535,15 +535,19 @@ message and source location, releases the worker's thread-state reference and
 tracked stack metadata, and unlocks the sole synchronization lock if the panic
 occurred while it was held. `join()` then raises the same panic in the joining
 thread. A detached worker panic releases its runtime state and does not abort
-unrelated threads. Non-generic safe functions register owned parameters and
+unrelated threads. Safe functions register owned parameters and
 owned/finalizable locals in a thread-local LIFO chain. The worker panic path
 runs this type-directed chain, finalizing moved captures, strings, boxes, and
 owning value structs exactly once. A finalizer that panics while this cleanup is
 already running causes a fail-stop process abort, matching double-panic
 semantics rather than attempting unsafe recursive recovery.
 
-Concrete generic instantiations do not yet add this panic-cleanup chain; this
-is the remaining ownership-unwinding gap for worker panics.
+Generic templates retain symbolic ownership-cleanup metadata. Concrete
+instantiation generates helpers for the substituted types and registers both
+owned parameters and owned/finalizable locals. Returning one of those owners
+zeroes the source after copying the return value, so normal scope cleanup does
+not invalidate the transferred result. Concrete generic calls are traversed by
+the same transitive `Thread.spawn` safety analysis as ordinary safe calls.
 
 Outside `Thread.spawn`, an `owned` parameter also consumes its argument:
 

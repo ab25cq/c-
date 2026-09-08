@@ -131,15 +131,17 @@ and unlocks its sole held synchronization mutex before exiting. `Thread.join()`
 re-raises the recorded message at its original source location; an already
 detached worker instead exits without aborting unrelated threads. Panic text is
 copied into bounded state-owned buffers so a message backed by worker storage
-cannot dangle before a later join. Each non-generic safe function registers its
+cannot dangle before a later join. Each safe function registers its
 owned parameters and owned/finalizable locals in a thread-local LIFO cleanup
 chain. A worker panic runs that chain, so moved captures, parameters, strings,
 boxes, and owning value structs are finalized exactly once even though C stack
 unwinding is not available. A panic raised by a finalizer during panic cleanup
 is treated as an unrecoverable double panic and aborts the process.
 
-Generic template bodies do not yet emit the type-specific panic cleanup chain;
-adding cleanup during concrete generic instantiation remains outstanding.
+Generic templates retain symbolic cleanup metadata. Every concrete function
+instantiation receives cleanup helpers specialized for its substituted types,
+including owned parameters and owned/finalizable locals. Generated generic
+functions are also included in the transitive `Thread.spawn` safety analysis.
 
 The same transfer rule applies to ordinary function calls: an `owned`
 parameter requires `move local` or a fresh owned rvalue such as `new`, `clone`,

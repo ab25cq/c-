@@ -1483,6 +1483,23 @@ cc -std=gnu99 -Wall -Wextra tests/thread_panic_owned_cleanup_safe.out.c \
     -o tests/thread_panic_owned_cleanup_safe.out -pthread
 timeout 5 ./tests/thread_panic_owned_cleanup_safe.out
 
+./c- --dump-typed-ast tests/thread_panic_generic_owned_cleanup_safe.c- \
+    > tests/thread_panic_generic_owned_cleanup_safe.out.c \
+    2> tests/thread_panic_generic_owned_cleanup_safe.ast
+grep 'generic_owned_panic_char_ptr_panic_drop_[0-9]*, (void\*)&input);' \
+    tests/thread_panic_generic_owned_cleanup_safe.out.c >/dev/null
+grep 'generic_owned_panic_char_ptr_panic_drop_[0-9]*, (void\*)&local);' \
+    tests/thread_panic_generic_owned_cleanup_safe.out.c >/dev/null
+grep 'input = (__typeof__(input)){0}' \
+    tests/thread_panic_generic_owned_cleanup_safe.out.c >/dev/null
+grep -A12 '^generic-function generic_owned_panic_char_ptr$' \
+    tests/thread_panic_generic_owned_cleanup_safe.ast \
+    | grep '^    declaration local expression=move$' >/dev/null
+cc -std=gnu99 -Wall -Wextra \
+    tests/thread_panic_generic_owned_cleanup_safe.out.c \
+    -o tests/thread_panic_generic_owned_cleanup_safe.out -pthread
+timeout 5 ./tests/thread_panic_generic_owned_cleanup_safe.out
+
 ./c- tests/thread_nested_send_safe.c- > tests/thread_nested_send_safe.out.c
 cc -std=gnu99 -Wall -Wextra tests/thread_nested_send_safe.out.c \
     -o tests/thread_nested_send_safe.out -pthread

@@ -75,6 +75,7 @@ struct PanicCleanupBindings {
     char name[MAX_OWNED][NAME_MAX_LEN];
     char node[MAX_OWNED][NAME_MAX_LEN];
     char helper[MAX_OWNED][NAME_MAX_LEN];
+    struct Type type[MAX_OWNED];
     int count;
 };
 
@@ -412,6 +413,9 @@ struct GenericTemplate {
     char head[DEFAULT_EXPR_MAX * 2];
     char *body;
     struct Node *ast;
+    struct PanicCleanupBindings panic_cleanup_bindings;
+    int panic_cleanup_parameter_count;
+    int body_tail_return;
     struct GenericInstance inst[MAX_GENERIC_INSTANCES];
     int inst_count;
 };
@@ -579,6 +583,9 @@ static void register_function_params(const char *s);
 static void register_function_param_symbols(const char *s);
 static void register_owned_parameter_cleanup(const char *function_name);
 static int panic_cleanup_binding_add(const char *name, struct Type type);
+static void append_panic_cleanup_helper(struct Text *out,
+                                        const char *helper_name,
+                                        struct Type type);
 static void emit_panic_cleanup_parameter_prologue(struct Text *out);
 static struct Text *add_panic_cleanup_registration(struct Text *in,
                                                    int index);
@@ -9559,6 +9566,15 @@ static struct Node *thread_find_function(struct Node *node, const char *name)
     return NULL;
 }
 
+static struct Node *thread_find_visible_function(struct Node *root,
+                                                 const char *name)
+{
+    struct Node *found = thread_find_function(root, name);
+
+    return found != NULL ? found :
+        thread_find_function(g_generated_artifacts, name);
+}
+
 static int thread_safety_stack_contains(struct ThreadSafetyContext *context,
                                         const char *name)
 {
@@ -9622,7 +9638,7 @@ static void thread_analyze_expression(struct ThreadSafetyContext *context,
                         context->entry);
                 exit(1);
             }
-            called = thread_find_function(context->root, callee->name);
+            called = thread_find_visible_function(context->root, callee->name);
             if (called != NULL && !called->runtime_internal) {
                 thread_analyze_function(context, called);
             } else if (called == NULL &&
@@ -9683,7 +9699,7 @@ static void thread_validate_spawn_expression(struct Node *root,
                         "c-: thread safety error: Thread.spawn requires a directly named entry function in safe mode\n");
                 exit(1);
             }
-            entry = thread_find_function(root, argument->name);
+            entry = thread_find_visible_function(root, argument->name);
             if (entry == NULL) {
                 fprintf(stderr,
                         "c-: thread safety error: Thread.spawn entry '%s' has no visible safe definition\n",
@@ -11831,6 +11847,10 @@ static void register_owned_parameter_cleanup(const char *function_name)
             finalized_local_add(fn->param[i].name, fn->param[i].type);
             panic_cleanup_binding_add(fn->param[i].name,
                                       fn->param[i].type);
+        } else if (g_current_generic_kind == 2 &&
+                   fn->param[i].type.kind == TY_GENERIC) {
+            panic_cleanup_binding_add(fn->param[i].name,
+                                      fn->param[i].type);
         }
     }
     g_panic_cleanup_parameter_count = g_panic_cleanup_bindings.count;
@@ -11851,13 +11871,10 @@ static int panic_cleanup_binding_index(const char *name)
 static int panic_cleanup_binding_add(const char *name, struct Type type)
 {
     struct PanicCleanupBindings *bindings = &g_panic_cleanup_bindings;
-    struct Text *helper_body;
-    char slot_expr[NAME_MAX_LEN * 2];
     int index;
     int helper_id;
 
-    if (g_bare_metal || g_current_generic_kind != 0 ||
-        name == NULL || name[0] == '\0' ||
+    if (g_bare_metal || name == NULL || name[0] == '\0' ||
         panic_cleanup_binding_index(name) >= 0) {
         return -1;
     }
@@ -11868,35 +11885,62 @@ static int panic_cleanup_binding_add(const char *name, struct Type type)
     helper_id = g_panic_cleanup_helper_id++;
     strncpy(bindings->name[index], name, NAME_MAX_LEN - 1);
     bindings->name[index][NAME_MAX_LEN - 1] = '\0';
+    bindings->type[index] = type;
     snprintf(bindings->node[index], NAME_MAX_LEN,
              "__cminus_panic_cleanup_%d", helper_id);
+    if (g_current_generic_kind == 2) {
+        struct Text *helper = text_new();
+        char id_text[32];
+
+        snprintf(id_text, sizeof(id_text), "%d", helper_id);
+        text_add(helper, g_current_function_name);
+        text_add_ch(helper, '<');
+        text_add(helper, g_current_generic_param);
+        text_add(helper, ">_panic_drop_");
+        text_add(helper, id_text);
+        if (helper->len >= NAME_MAX_LEN) {
+            text_free(helper);
+            die("generic panic cleanup helper name is too long");
+        }
+        strcpy(bindings->helper[index], helper->text);
+        text_free(helper);
+        return index;
+    }
     snprintf(bindings->helper[index], NAME_MAX_LEN,
              "__cminus_panic_drop_%d", helper_id);
 
     text_add(g_defines, "static void ");
     text_add(g_defines, bindings->helper[index]);
     text_add(g_defines, "(void* __cminus_raw);\n");
+    append_panic_cleanup_helper(g_thread_owned_helpers,
+                                bindings->helper[index], type);
+    return index;
+}
 
-    helper_body = g_thread_owned_helpers;
-    text_add(helper_body, "static void ");
-    text_add(helper_body, bindings->helper[index]);
-    text_add(helper_body, "(void* __cminus_raw)\n{\n    ");
-    append_c_type(helper_body, type);
-    text_add(helper_body, "* __cminus_slot = (");
-    append_c_type(helper_body, type);
-    text_add(helper_body,
+static void append_panic_cleanup_helper(struct Text *out,
+                                        const char *helper_name,
+                                        struct Type type)
+{
+    char slot_expr[NAME_MAX_LEN * 2];
+
+    text_add(out, "static void ");
+    text_add(out, helper_name);
+    text_add(out, "(void* __cminus_raw)\n{\n    ");
+    append_c_type(out, type);
+    text_add(out, "* __cminus_slot = (");
+    append_c_type(out, type);
+    text_add(out,
              "*)__cminus_raw;\n    if (__cminus_slot == NULL) { return; }\n");
     snprintf(slot_expr, sizeof(slot_expr), "(*__cminus_slot)");
     if (type.ptr > 0) {
-        append_release_pointer(helper_body, "    ", slot_expr, type);
-        text_add(helper_body, "    *__cminus_slot = NULL;\n");
+        append_release_pointer(out, "    ", slot_expr, type);
+        text_add(out, "    *__cminus_slot = NULL;\n");
     } else {
-        append_finalize_for_type(helper_body, "    ", slot_expr, type);
-        text_add(helper_body,
+        append_finalize_for_type(out, "    ", slot_expr, type);
+        text_add(out,
                  "    memset(__cminus_slot, 0, sizeof(*__cminus_slot));\n");
     }
-    text_add(helper_body, "}\n");
-    return index;
+    text_add(out, "}\n");
 }
 
 static void emit_panic_cleanup_parameter_prologue(struct Text *out)
@@ -12806,6 +12850,7 @@ static struct Text *strip_attributes(struct Text *in)
                     range_contains_text(in->text + attr_start, in->text + j, "naked") ||
                     range_contains_text(in->text + attr_start, in->text + j, "noreturn") ||
                     range_contains_text(in->text + attr_start, in->text + j, "weak") ||
+                    range_contains_text(in->text + attr_start, in->text + j, "cleanup") ||
                     range_contains_text(in->text + attr_start, in->text + j, "externally_visible")) {
                     text_add_n(out, in->text + attr_start, j - attr_start);
                 }
@@ -17846,6 +17891,19 @@ static struct Text *process_statement(struct Text *stmt, struct Text *semi)
     new_type = type_unknown();
     pending_semantics_capture_statement(all->text);
     if (g_current_generic_kind != 0 || g_current_payload_enum) {
+        if (g_current_generic_kind == 2 &&
+            parse_decl(all->text, &decl) && decl.is_decl &&
+            decl.name[0] != '\0' && !decl.is_function &&
+            (text_has_word(all->text, "owned") ||
+             type_has_finalizer(decl.type))) {
+            int cleanup_index;
+
+            if (text_has_word(all->text, "owned")) {
+                decl.type.owned = 1;
+            }
+            cleanup_index = panic_cleanup_binding_add(decl.name, decl.type);
+            all = add_panic_cleanup_registration(all, cleanup_index);
+        }
         all->tail_return = 0;
         all->ast = ast_raw(ND_RAW, all->text);
         return all;
@@ -18544,6 +18602,27 @@ static struct Text *process_return(struct Text *ret, struct Text *expr, struct T
     pending_semantics_capture_return(all->text);
     all->ast = ast_raw(ND_RETURN, all->text);
     if (g_current_generic_kind != 0 || g_current_payload_enum) {
+        if (g_current_generic_kind == 2) {
+            char *return_expr = extract_return_value_expr(all->text);
+            char return_name[NAME_MAX_LEN];
+
+            if (return_expr != NULL &&
+                extract_plain_name_expr(return_expr, return_name) &&
+                panic_cleanup_binding_index(return_name) >= 0) {
+                struct Text *moved = text_new();
+
+                append_leading_newlines(all->text, moved);
+                append_indent_from(all->text, moved);
+                text_add(moved, "return move ");
+                text_add(moved, return_name);
+                text_add(moved, ";");
+                moved->ast = all->ast;
+                all->ast = NULL;
+                text_free(all);
+                all = moved;
+            }
+            free(return_expr);
+        }
         all->tail_return = 1;
         return all;
     }
@@ -18865,6 +18944,7 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
     }
     if (g_current_generic_kind == 2) {
         struct Node *template_ast;
+        struct GenericTemplate *template;
         const char *signature_head;
 
         if (!parse_generic_function_head(head->text, param, name)) {
@@ -18877,8 +18957,12 @@ static struct Text *finish_top_block(struct Text *head, struct Text *lb, struct 
         strncpy(template_ast->name, name, NAME_MAX_LEN - 1);
         template_ast->name[NAME_MAX_LEN - 1] = '\0';
         template_ast->type_params = ast_type_parameters(param);
-        generic_add(&g_generic_funcs, param, name, head->text, body->text,
-                    template_ast);
+        template = generic_add(&g_generic_funcs, param, name, head->text,
+                               body->text, template_ast);
+        template->panic_cleanup_bindings = g_panic_cleanup_bindings;
+        template->panic_cleanup_parameter_count =
+            g_panic_cleanup_parameter_count;
+        template->body_tail_return = body->tail_return;
         out = text_new();
         g_current_generic_kind = 0;
         g_current_generic_param[0] = '\0';
@@ -19056,6 +19140,12 @@ static struct Node *clone_concrete_generic_ast(const struct Node *source,
                 node->kind = ND_FIELD;
             }
             break;
+        case ND_RAW:
+            node = ast_typed_output(ND_EXPR_STMT, tok == NULL ? "" : tok);
+            if (body != NULL) {
+                node->body = body;
+            }
+            break;
         case ND_IF:
         case ND_WHILE:
         case ND_FOR:
@@ -19231,6 +19321,81 @@ static void emit_generic_struct_instances(FILE *out)
     }
 }
 
+static struct Type generic_panic_cleanup_concrete_type(
+    struct GenericTemplate *tmpl, struct GenericInstance *inst,
+    struct Type symbolic)
+{
+    struct Text *declaration = text_new();
+    struct Text *concrete;
+    struct DeclInfo decl;
+    struct Type result = type_unknown();
+
+    append_c_type(declaration, symbolic);
+    text_add(declaration, " __cminus_cleanup_value;");
+    concrete = replace_param_and_generics(declaration->text,
+                                          tmpl->param, inst->arg,
+                                          tmpl->name, inst->concrete);
+    if (parse_decl(concrete->text, &decl) && decl.is_decl) {
+        result = decl.type;
+        result.owned = symbolic.owned;
+    }
+    text_free(declaration);
+    text_free(concrete);
+    if (!type_is_known(result)) {
+        die("cannot resolve generic panic cleanup type");
+    }
+    return result;
+}
+
+static char *generic_panic_cleanup_helper_name(
+    struct GenericTemplate *tmpl, struct GenericInstance *inst,
+    const char *symbolic)
+{
+    struct Text *concrete = replace_param_and_generics(
+        symbolic, tmpl->param, inst->arg, tmpl->name, inst->concrete);
+    char *result = xstrdup(concrete->text);
+
+    text_free(concrete);
+    return result;
+}
+
+static void emit_generic_panic_cleanup_support(
+    FILE *out, struct Text *prologue, struct GenericTemplate *tmpl,
+    struct GenericInstance *inst)
+{
+    struct Text *helpers = text_new();
+    int i;
+
+    for (i = 0; i < tmpl->panic_cleanup_bindings.count; i++) {
+        struct Type concrete_type = generic_panic_cleanup_concrete_type(
+            tmpl, inst, tmpl->panic_cleanup_bindings.type[i]);
+        char *helper_name = generic_panic_cleanup_helper_name(
+            tmpl, inst, tmpl->panic_cleanup_bindings.helper[i]);
+
+        append_panic_cleanup_helper(helpers, helper_name, concrete_type);
+        if (i < tmpl->panic_cleanup_parameter_count) {
+            text_add(prologue, "    struct __CMinusPanicCleanup ");
+            text_add(prologue, tmpl->panic_cleanup_bindings.node[i]);
+            text_add(prologue,
+                     " __attribute__((cleanup(cminus_panic_cleanup_scope_leave))) = {0};\n");
+            text_add(prologue, "    cminus_panic_cleanup_push(&");
+            text_add(prologue, tmpl->panic_cleanup_bindings.node[i]);
+            text_add(prologue, ", ");
+            text_add(prologue, helper_name);
+            text_add(prologue, ", (void*)&");
+            text_add(prologue, tmpl->panic_cleanup_bindings.name[i]);
+            text_add(prologue, ");\n");
+        }
+        free(helper_name);
+    }
+    if (helpers->len > 0) {
+        emit_generated_text(out, ND_EXPANSION,
+                            "generic-panic-cleanup-helpers", helpers);
+    } else {
+        text_free(helpers);
+    }
+}
+
 static void emit_generic_function_instances(FILE *out)
 {
     int i;
@@ -19249,6 +19414,7 @@ static void emit_generic_function_instances(FILE *out)
                                                                     tmpl->inst[j].concrete);
             struct Text *generated;
             struct Node *generated_ast;
+            struct Text *cleanup_prologue = text_new();
             struct Text *concrete_body = replace_param_and_generics(tmpl->body,
                                                                     tmpl->param,
                                                                     tmpl->inst[j].arg,
@@ -19265,9 +19431,12 @@ static void emit_generic_function_instances(FILE *out)
             concrete_body = remove_percent(strip_attributes(concrete_body));
             concrete_body = rewrite_parameter_calls(concrete_body);
             concrete_body = rewrite_payload_enum_constructors(concrete_body);
+            emit_generic_panic_cleanup_support(out, cleanup_prologue, tmpl,
+                                               &tmpl->inst[j]);
             generated = text_new();
             text_add(generated, concrete_head->text);
             text_add(generated, "{");
+            text_add(generated, cleanup_prologue->text);
             if (head_function_name(concrete_head->text, func_name) &&
                 function_needs_stack_guard(func_name) &&
                 strstr(concrete_head->text, "Iterator_next_") == NULL &&
@@ -19282,7 +19451,7 @@ static void emit_generic_function_instances(FILE *out)
             if (concrete_body->len > 0 && concrete_body->text[concrete_body->len - 1] != '\n') {
                 text_add_ch(generated, '\n');
             }
-            if (func_name[0] != '\0') {
+            if (func_name[0] != '\0' && !tmpl->body_tail_return) {
                 text_add(generated, "    cminus_stack_leave_impl(__cminus_stack_id, __FILE__, __LINE__);\n");
             }
             text_add(generated, "}\n");
@@ -19291,11 +19460,13 @@ static void emit_generic_function_instances(FILE *out)
                 clone_concrete_generic_function_ast(tmpl->ast->body,
                                                      concrete_head->text,
                                                      tmpl, &tmpl->inst[j]));
+            generated_ast->runtime_internal = tmpl->ast->runtime_internal;
             emit_generated_text_ast(out, ND_GENERIC_FUNCTION,
                                     tmpl->inst[j].concrete, generated,
                                     generated_ast);
             text_free(concrete_head);
             text_free(concrete_body);
+            text_free(cleanup_prologue);
         }
     }
 }
