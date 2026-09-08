@@ -1197,7 +1197,9 @@ runs it, so moved captures and worker-local strings, boxes, and owning structs
 are finalized exactly once. Move lowering zeroes the source binding after the
 transfer, keeping later scope cleanup harmless. Generic templates retain this
 metadata and emit type-specific helpers for every concrete instantiation;
-generated generic calls also participate in transitive worker-safety analysis.
+owned pointer returns propagate ownership to the caller while scalar returns
+remain ordinary values. Generated generic calls also participate in transitive
+worker-safety analysis.
 
 The worker must be a visible safe `int` function with matching owned
 parameters in the same order. The `Send` check accepts managed owners such as

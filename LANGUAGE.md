@@ -546,8 +546,12 @@ Generic templates retain symbolic ownership-cleanup metadata. Concrete
 instantiation generates helpers for the substituted types and registers both
 owned parameters and owned/finalizable locals. Returning one of those owners
 zeroes the source after copying the return value, so normal scope cleanup does
-not invalidate the transferred result. Concrete generic calls are traversed by
-the same transitive `Thread.spawn` safety analysis as ordinary safe calls.
+not invalidate the transferred result. An `owned` generic pointer return also
+propagates ownership to the receiving declaration, which receives normal and
+panic cleanup and may be transferred again with `move`. Scalar substitutions
+remain ordinary values rather than being misclassified as heap owners.
+Concrete generic calls are traversed by the same transitive `Thread.spawn`
+safety analysis as ordinary safe calls.
 
 Outside `Thread.spawn`, an `owned` parameter also consumes its argument:
 

@@ -41,8 +41,10 @@ int main(void)
     owned string input = s"generic worker owner";
     Thread worker;
     int returned_len = consume_returned_string(move returned);
+    int scalar_input = 7;
+    int scalar_result = generic_identity<int>(move scalar_input);
 
-    if (returned_len != 9) {
+    if (returned_len != 9 || scalar_result != 7) {
         return 1;
     }
     entered.store(0);

@@ -1492,6 +1492,20 @@ grep 'generic_owned_panic_char_ptr_panic_drop_[0-9]*, (void\*)&local);' \
     tests/thread_panic_generic_owned_cleanup_safe.out.c >/dev/null
 grep 'input = (__typeof__(input)){0}' \
     tests/thread_panic_generic_owned_cleanup_safe.out.c >/dev/null
+grep 'cminus_panic_cleanup_push(&__cminus_panic_cleanup_.*, __cminus_panic_drop_.*, (void\*)&returned);' \
+    tests/thread_panic_generic_owned_cleanup_safe.out.c >/dev/null
+grep -A3 '^      declaration returned expression=call$' \
+    tests/thread_panic_generic_owned_cleanup_safe.ast \
+    | grep '^        ownership owned$' >/dev/null
+grep -A2 '^      declaration scalar_result expression=call$' \
+    tests/thread_panic_generic_owned_cleanup_safe.ast \
+    | grep '^        type type=int$' >/dev/null
+if grep -A3 '^      declaration scalar_result expression=call$' \
+    tests/thread_panic_generic_owned_cleanup_safe.ast \
+    | grep 'ownership owned' >/dev/null; then
+    echo "generic scalar return unexpectedly became a heap owner" >&2
+    exit 1
+fi
 grep -A12 '^generic-function generic_owned_panic_char_ptr$' \
     tests/thread_panic_generic_owned_cleanup_safe.ast \
     | grep '^    declaration local expression=move$' >/dev/null

@@ -5779,7 +5779,7 @@ static struct Text *rewrite_generics(struct Text *in)
 		                                                                                         func_inst->concrete);
 		                                register_function_params(concrete_head->text);
 		                                if (parse_function_signature(concrete_head->text, concrete_func_name, &ret) &&
-		                                    ret.owned) {
+		                                    ret.owned && ret.ptr > 0) {
 		                                    owned_func_add_type(concrete_func_name, ret);
 	                                }
 	                                text_free(concrete_head);
@@ -5857,7 +5857,15 @@ static struct Text *rewrite_generics(struct Text *in)
                                                                         arg,
                                                                         tmpl->name,
                                                                         inst->concrete);
+                char concrete_func_name[NAME_MAX_LEN];
+                struct Type concrete_ret;
                 register_function_params(concrete_head->text);
+                if (parse_function_signature(concrete_head->text,
+                                             concrete_func_name,
+                                             &concrete_ret) &&
+                    concrete_ret.owned && concrete_ret.ptr > 0) {
+                    owned_func_add_type(concrete_func_name, concrete_ret);
+                }
                 text_free(concrete_head);
                 call = skip_ws(after);
                 if (*call == '(') {

@@ -142,6 +142,8 @@ Generic templates retain symbolic cleanup metadata. Every concrete function
 instantiation receives cleanup helpers specialized for its substituted types,
 including owned parameters and owned/finalizable locals. Generated generic
 functions are also included in the transitive `Thread.spawn` safety analysis.
+Owned pointer return metadata is propagated from the concrete signature to the
+caller; non-pointer scalar substitutions are not treated as heap ownership.
 
 The same transfer rule applies to ordinary function calls: an `owned`
 parameter requires `move local` or a fresh owned rvalue such as `new`, `clone`,
